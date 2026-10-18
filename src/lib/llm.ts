@@ -19,8 +19,36 @@ export type ToolTurn = {
   raw: unknown;
   text: string;
   calls: ToolCall[];
-  results: { id: string; name: string; content: string; isError?: boolean }[];
+  results: { id: string; name: string; content: string; isError?: boolean; image?: ToolImage }[];
 };
+
+/** An image a tool returned for the model to look at, e.g. a screenshot (base64 without the data: prefix). */
+export type ToolImage = { mediaType: string; data: string };
+
+/** Only the newest tool images are replayed (they're large); older ones are replaced by a note. */
+const TOOL_IMAGES_KEPT = 2;
+
+/** Tool images to send this step, by call id: the newest few, and only to models that can see images. */
+function toolImages(req: ChatRequest): Map<string, ToolImage> {
+  const kept = new Map<string, ToolImage>();
+  const info = req.provider.models.find((m) => m.id === req.model);
+  if (req.provider.kind === "openai" && !(info?.vision ?? guessVision(req.model))) return kept;
+  const withImages = (req.toolTurns ?? []).flatMap((t) => t.results).filter((r) => r.image);
+  for (const r of withImages.slice(-TOOL_IMAGES_KEPT)) kept.set(r.id, r.image!);
+  return kept;
+}
+
+/** A tool result's text, saying where its image is (or that it was left out). */
+function resultText(r: ToolTurn["results"][number], images: Map<string, ToolImage>, attached: string): string {
+  const text = r.content || "(empty)";
+  if (!r.image) return text;
+  const note = images.has(r.id) ? attached : "[This tool's image isn't included: only the latest images are kept, and only for models that can view images.]";
+  return note ? `${text}\n\n${note}` : text;
+}
+
+const imageBlock = (image: ToolImage) => ({ type: "image", source: { type: "base64", media_type: image.mediaType, data: image.data } });
+const imagePart = (image: ToolImage) => ({ inlineData: { mimeType: image.mediaType, data: image.data } });
+const imageUrlPart = (image: ToolImage) => ({ type: "image_url", image_url: { url: `data:${image.mediaType};base64,${image.data}` } });
 
 /**
  * Providers whose API can search the web itself: Gemini (Google Search grounding), Anthropic
@@ -133,6 +161,9 @@ function buildRequest(req: ChatRequest): { url: string; init: FetchInit } {
   const base = provider.baseUrl.replace(/\/+$/, "");
   const headers: Record<string, string> = { "content-type": "application/json" };
   const history = req.messages.filter((m) => !m.error && (m.content || m.attachments?.length));
+  const images = toolImages(req);
+  // Text-protocol steps are replayed by applyPrompted instead.
+  const nativeTurns = req.toolMode === "prompted" ? [] : (req.toolTurns ?? []);
 
   if (provider.kind === "anthropic") {
     headers["x-api-key"] = provider.apiKey;
@@ -186,12 +217,18 @@ function buildRequest(req: ChatRequest): { url: string; init: FetchInit } {
     }
     if (anthropicTools.length) body.tools = anthropicTools;
     // Earlier steps of this turn, replayed exactly (thinking blocks included, as the API requires).
-    for (const turn of req.toolTurns ?? []) {
+    for (const turn of nativeTurns) {
       (body.messages as unknown[]).push(
         { role: "assistant", content: turn.raw },
         {
           role: "user",
-          content: turn.results.map((r) => ({ type: "tool_result", tool_use_id: r.id, content: r.content || "(empty)", ...(r.isError ? { is_error: true } : {}) })),
+          content: turn.results.map((r) => ({
+            type: "tool_result",
+            tool_use_id: r.id,
+            // Screenshots and other tool images ride inside the tool_result itself.
+            content: images.has(r.id) ? [{ type: "text", text: r.content || "(empty)" }, imageBlock(images.get(r.id)!)] : resultText(r, images, ""),
+            ...(r.isError ? { is_error: true } : {}),
+          })),
         },
       );
     }
@@ -228,12 +265,17 @@ function buildRequest(req: ChatRequest): { url: string; init: FetchInit } {
           ? { tools: [{ google_search: {} }] }
           : {}),
     };
-    for (const turn of req.toolTurns ?? []) {
+    for (const turn of nativeTurns) {
       body.contents.push(
         { role: "model", parts: turn.raw as never },
         {
           role: "user",
-          parts: turn.results.map((r) => ({ functionResponse: { name: r.name, ...(r.id.startsWith("gem_") ? {} : { id: r.id }), response: { content: r.content } } })) as never,
+          parts: [
+            ...turn.results.map((r) => ({
+              functionResponse: { name: r.name, ...(r.id.startsWith("gem_") ? {} : { id: r.id }), response: { content: resultText(r, images, "[The image follows.]") } },
+            })),
+            ...turn.results.flatMap((r) => (images.has(r.id) ? [imagePart(images.get(r.id)!)] : [])),
+          ],
         },
       );
     }
@@ -279,7 +321,7 @@ function buildRequest(req: ChatRequest): { url: string; init: FetchInit } {
   if (req.tools?.length && req.toolMode !== "prompted") {
     body.tools = req.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
   }
-  for (const turn of req.toolTurns ?? []) {
+  for (const turn of nativeTurns) {
     const raw = (turn.raw ?? {}) as { reasoning?: string };
     messages.push({
       role: "assistant",
@@ -288,7 +330,15 @@ function buildRequest(req: ChatRequest): { url: string; init: FetchInit } {
       // DeepSeek's thinking mode needs its reasoning replayed during tool calls.
       ...(provider.presetId === "deepseek" && raw.reasoning ? { reasoning_content: raw.reasoning } : {}),
     });
-    for (const r of turn.results) messages.push({ role: "tool", tool_call_id: r.id, content: r.content || "(empty)" });
+    for (const r of turn.results) messages.push({ role: "tool", tool_call_id: r.id, content: resultText(r, images, "[The image is in the next message.]") });
+    // Tool messages are text-only, so images follow as a user message.
+    const shown = turn.results.filter((r) => images.has(r.id));
+    if (shown.length) {
+      messages.push({
+        role: "user",
+        content: [{ type: "text", text: `Image from ${shown.map((r) => r.name).join(", ")}:` }, ...shown.map((r) => imageUrlPart(images.get(r.id)!))],
+      });
+    }
   }
   applyPrompted(req, body, "openai");
   return { url: `${base}/chat/completions`, init: { method: "POST", headers, body: JSON.stringify(body) } };
@@ -299,29 +349,40 @@ function buildRequest(req: ChatRequest): { url: string; init: FetchInit } {
  * messages (assistant: the call markup; user: the result), so any chat model can use tools.
  */
 function applyPrompted(req: ChatRequest, body: Record<string, any>, kind: "openai" | "anthropic" | "gemini") {
-  if (req.toolMode !== "prompted" || !req.tools?.length) return;
-  const protocol = promptedProtocol(req.tools);
+  if (req.toolMode !== "prompted") return;
+  // On the last step there are no tools left to describe, but earlier steps are still replayed.
+  const protocol = req.tools?.length ? promptedProtocol(req.tools) : "";
   const turns = req.toolTurns ?? [];
+  const images = toolImages(req);
+  const replies = (turn: ToolTurn) => ({
+    text: turn.results.map((r) => promptedResult(r.name, resultText(r, images, "[Image attached.]"))).join("\n\n"),
+    shown: turn.results.flatMap((r) => (images.has(r.id) ? [images.get(r.id)!] : [])),
+  });
   if (kind === "anthropic") {
     body.system = [body.system, protocol].filter(Boolean).join("\n\n");
     for (const turn of turns) {
+      const { text, shown } = replies(turn);
       body.messages.push({ role: "assistant", content: String(turn.raw) });
-      body.messages.push({ role: "user", content: turn.results.map((r) => promptedResult(r.name, r.content)).join("\n\n") });
+      body.messages.push({ role: "user", content: shown.length ? [{ type: "text", text }, ...shown.map(imageBlock)] : text });
     }
   } else if (kind === "gemini") {
     const system = body.systemInstruction?.parts?.[0]?.text ?? "";
-    body.systemInstruction = { parts: [{ text: [system, protocol].filter(Boolean).join("\n\n") }] };
+    if (protocol) body.systemInstruction = { parts: [{ text: [system, protocol].filter(Boolean).join("\n\n") }] };
     for (const turn of turns) {
+      const { text, shown } = replies(turn);
       body.contents.push({ role: "model", parts: [{ text: String(turn.raw) }] });
-      body.contents.push({ role: "user", parts: [{ text: turn.results.map((r) => promptedResult(r.name, r.content)).join("\n\n") }] });
+      body.contents.push({ role: "user", parts: [{ text }, ...shown.map(imagePart)] });
     }
   } else {
     const messages = body.messages as { role: string; content: unknown }[];
-    if (messages[0]?.role === "system") messages[0] = { role: "system", content: `${messages[0].content}\n\n${protocol}` };
-    else messages.unshift({ role: "system", content: protocol });
+    if (protocol) {
+      if (messages[0]?.role === "system") messages[0] = { role: "system", content: `${messages[0].content}\n\n${protocol}` };
+      else messages.unshift({ role: "system", content: protocol });
+    }
     for (const turn of turns) {
+      const { text, shown } = replies(turn);
       messages.push({ role: "assistant", content: String(turn.raw) });
-      messages.push({ role: "user", content: turn.results.map((r) => promptedResult(r.name, r.content)).join("\n\n") });
+      messages.push({ role: "user", content: shown.length ? [{ type: "text", text }, ...shown.map(imageUrlPart)] : text });
     }
   }
 }

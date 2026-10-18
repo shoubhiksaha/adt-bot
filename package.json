@@ -48,7 +48,8 @@
       "category": "public.app-category.productivity",
       "icon": "build/icon.png",
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "ADT Bot uses the microphone for voice input."
+        "NSMicrophoneUsageDescription": "ADT Bot uses the microphone for voice input.",
+        "NSAppleEventsUsageDescription": "ADT Bot sends keystrokes and reads window titles through System Events when you let a bot control this Mac."
       }
     },
     "win": {

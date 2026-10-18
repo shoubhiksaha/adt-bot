@@ -1,0 +1,39 @@
+import { desktopInvoke } from "../../lib/desktop";
+
+/** Typed bridge to electron/features/70-mac-control.cjs ("adt:mac:*"). */
+export type MacPermissions = {
+  supported: boolean;
+  platform: string;
+  accessibility?: boolean | null;
+  screenRecording?: string;
+  app?: string;
+  screen?: { width: number; height: number; backing: number } | null;
+};
+
+export type MacScreenshot = {
+  mediaType: string;
+  data: string;
+  width: number;
+  height: number;
+  scale: number;
+  origin: { x: number; y: number };
+  screen: { width: number; height: number; backing: number };
+  note?: string;
+};
+
+export type MacApp = { name: string; bundleId: string | null; pid: number; active: boolean; hidden: boolean };
+export type MacFrontmost = { name: string; bundleId: string | null; pid: number; window: string | null; bounds: { x: number; y: number; width: number; height: number } | null };
+
+/** Electron prefixes IPC errors with "Error invoking remote method …: Error:"; keep the useful part. */
+export function cleanError(error: unknown): Error {
+  const message = String((error as Error)?.message ?? error).replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
+  return new Error(message);
+}
+
+export async function mac<T>(name: string, payload?: unknown): Promise<T> {
+  try {
+    return await desktopInvoke<T>(`adt:mac:${name}`, payload);
+  } catch (error) {
+    throw cleanError(error);
+  }
+}
