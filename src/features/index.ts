@@ -4,5 +4,5 @@ import "./cli-agents";
 import "./automation";
 import "./projects";
 import "./rooms";
-export {};
 import "./mac-control";
+export {};
