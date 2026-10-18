@@ -241,3 +241,21 @@ describe("calculator", () => {
     expect(() => calculate("process.exit()")).toThrow();
   });
 });
+
+describe("tool discovery", () => {
+  const many: AgentTool[] = Array.from({ length: 30 }, (_, i) => ({ ...echo, name: `extra_tool_${i}` }));
+  const exposedNames = async (p: ProviderConfig) => {
+    bodies.length = 0;
+    script = () => sse([{ choices: [{ delta: { content: "Hi." } }] }, "[DONE]"]);
+    await run(p, [echo, ...many], "native");
+    return (bodies[0].tools ?? []).map((t: any) => t.function.name) as string[];
+  };
+
+  it("shows a large cloud model every tool", async () => {
+    expect(await exposedNames(provider("openai", base, "openai"))).toHaveLength(31);
+  });
+
+  it("gives a local model the core tools plus find_tools", async () => {
+    expect(await exposedNames(provider("openai", base, "ollama"))).toEqual(["find_tools"]);
+  });
+});

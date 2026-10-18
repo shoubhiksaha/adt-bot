@@ -1,4 +1,5 @@
 import { type ChatRequest, type StreamEvent, streamChat, type ToolTurn } from "../llm";
+import { presetById } from "../providers";
 import type { ToolCallRecord } from "../types";
 import { logActivity } from "./activity";
 import { decide, gate, waitForDecision } from "./approvals";
@@ -8,9 +9,27 @@ import type { ToolCall, ToolSchema } from "./vendor/openbot/types";
 
 /** Tool results longer than this are cut (with a visible note) to protect the context window. */
 const RESULT_LIMIT = 16_000;
-/** Above this many tools, expose a few core tools plus "find_tools" (keeps prompts small for local models). */
-const DISCOVERY_THRESHOLD = 24;
-const CORE_TOOLS = new Set(["web_search", "read_url", "search_knowledge", "remember", "find_tools"]);
+/**
+ * Above this many tools, expose the core tools plus "find_tools". Small local models (and the text
+ * protocol) get confused by long catalogs; large cloud models handle them fine.
+ */
+const DISCOVERY_THRESHOLD = { small: 24, large: 64 };
+const CORE_TOOLS = new Set([
+  "web_search",
+  "read_url",
+  "search_knowledge",
+  "remember",
+  "current_time",
+  "calculate",
+  "visualize",
+  "create_image",
+  "find_tools",
+]);
+
+function discoveryThreshold(request: LoopOptions["request"], mode: "native" | "prompted"): number {
+  const local = mode === "prompted" || presetById(request.provider.presetId)?.local || request.provider.kind === "cli";
+  return local ? DISCOVERY_THRESHOLD.small : DISCOVERY_THRESHOLD.large;
+}
 
 /** Models that rejected native tools this session; they use the text protocol from now on. */
 const promptedFallback = new Set<string>();
@@ -51,7 +70,7 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
   const { request, tools, context, callbacks } = options;
   const key = `${request.provider.id}::${request.model}`;
   let mode: "native" | "prompted" = options.mode === "auto" ? (promptedFallback.has(key) ? "prompted" : "native") : options.mode;
-  const discovery = tools.length > DISCOVERY_THRESHOLD;
+  const discovery = tools.length > discoveryThreshold(request, mode);
   const exposed = new Set(discovery ? tools.filter((t) => CORE_TOOLS.has(t.name)).map((t) => t.name) : tools.map((t) => t.name));
   const records: ToolCallRecord[] = [];
   const turns: ToolTurn[] = [];
