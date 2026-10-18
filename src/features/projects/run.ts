@@ -5,13 +5,15 @@
  * works, and to Review when the reply is in, with the chat linked on the card. Failures leave the
  * card where it is, flagged, so nothing is ever silently lost.
  */
-import { sendMessage } from "../../lib/chat";
-import { newConversation, openConversation, updateConversation, useStore } from "../../lib/store";
+import { sendInBackground } from "../../lib/chat";
+import { updateConversation, useStore } from "../../lib/store";
+import { addBackgroundConversation } from "../automation/conversations";
 import type { Bot } from "../../lib/types";
 import { type Card, findColumn, locateCard, type Project } from "./model";
 import { addComment, addEvent, getProject, moveCard, updateCard } from "./store";
 
-export type RunDeps = { send: (text: string) => Promise<void> };
+/** Runs in the background: the user keeps whatever chat they had open, and several cards can run at once. */
+export type RunDeps = { send: (conversationId: string, text: string) => Promise<unknown> };
 
 export type RunResult = { ok: true; conversationId: string } | { ok: false; error: string; conversationId?: string };
 
@@ -45,7 +47,7 @@ export function botFor(card: Card): Bot | undefined {
   return card.botId ? useStore.getState().bots.find((b) => b.id === card.botId) : undefined;
 }
 
-export async function runCardWithBot(projectId: string, cardId: string, deps: RunDeps = { send: (text) => sendMessage(text) }): Promise<RunResult> {
+export async function runCardWithBot(projectId: string, cardId: string, deps: RunDeps = { send: (conversationId, text) => sendInBackground(conversationId, text) }): Promise<RunResult> {
   const project = getProject(projectId);
   const found = locateCard(project, cardId);
   if (!project || !found) return { ok: false, error: "That card no longer exists." };
@@ -54,16 +56,14 @@ export async function runCardWithBot(projectId: string, cardId: string, deps: Ru
   if (!bot) return { ok: false, error: "Assign a bot to this card first." };
   if (card.run?.state === "running") return { ok: false, error: "This card is already running." };
   const chat = useStore.getState();
-  if (chat.streamingId) return { ok: false, error: "Another reply is still being written. Try again when it finishes." };
 
   // One chat per card: reuse it while it exists and belongs to the same bot.
   const existing = card.conversationId ? chat.conversations[card.conversationId] : undefined;
   let conversationId: string;
   if (existing && existing.botId === bot.id && !existing.temporary) {
     conversationId = existing.id;
-    openConversation(conversationId);
   } else {
-    conversationId = newConversation(bot.id).id;
+    conversationId = addBackgroundConversation(bot.id, card.title).id;
   }
   const keepTitle = () => updateConversation(conversationId, (c) => ({ ...c, title: card.title.slice(0, 60), titled: true }));
   keepTitle();
@@ -77,10 +77,7 @@ export async function runCardWithBot(projectId: string, cardId: string, deps: Ru
 
   let failure: string | undefined;
   try {
-    const pending = deps.send(taskPrompt(project, card, doing?.name ?? startColumn.name));
-    // sendMessage names a new chat after its first line; the card's title reads better.
-    keepTitle();
-    await pending;
+    await deps.send(conversationId, taskPrompt(project, card, doing?.name ?? startColumn.name));
     keepTitle();
   } catch (error) {
     failure = (error as Error).message || "The run failed.";

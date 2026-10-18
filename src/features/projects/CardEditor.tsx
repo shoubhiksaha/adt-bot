@@ -48,7 +48,6 @@ export function CardEditor({
 }) {
   const found = locateCard(project, cardId);
   const bots = useStore((s) => s.bots);
-  const streaming = useStore((s) => Boolean(s.streamingId));
   const conversation = useStore((s) => (found?.card.conversationId ? s.conversations[found.card.conversationId] : undefined));
   const card = found?.card;
   const [title, setTitle, flushTitle] = useDraft(card?.title ?? "", (t) => card && t.trim() && updateCard(project.id, card.id, { title: t }));
@@ -156,8 +155,7 @@ export function CardEditor({
             <button
               type="button"
               className="btn primary"
-              disabled={!bot || running || streaming}
-              title={streaming && !running ? "Wait for the current reply to finish" : undefined}
+              disabled={!bot || running}
               onClick={() => onRun(card.id)}
             >
               <Play size={15} /> {card.run ? "Run again" : "Run with bot"}

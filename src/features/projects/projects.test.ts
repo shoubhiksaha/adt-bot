@@ -227,22 +227,19 @@ describe("run with bot", () => {
   /** Stands in for sendMessage: adds the user turn and a reply to the active chat. */
   function fakeChat(reply: { content?: string; error?: string }, during?: () => void) {
     const prompts: string[] = [];
-    const send = vi.fn(async (text: string) => {
-      const { activeConversationId } = useStore.getState();
+    const send = vi.fn(async (activeConversationId: string, text: string) => {
       prompts.push(text);
       updateConversation(activeConversationId!, (c) => ({
         ...c,
         title: c.messages.length ? c.title : text.slice(0, 40),
         messages: [...c.messages, { id: uid(), role: "user", content: text, createdAt: Date.now() }],
       }));
-      useStore.setState({ streamingId: activeConversationId });
       await Promise.resolve();
       during?.();
       updateConversation(activeConversationId!, (c) => ({
         ...c,
         messages: [...c.messages, { id: uid(), role: "assistant", content: reply.content ?? "", error: reply.error, createdAt: Date.now() }],
       }));
-      useStore.setState({ streamingId: null });
     });
     return { send, prompts };
   }
@@ -313,18 +310,21 @@ describe("run with bot", () => {
     expect(columnOf(p.id, card.id)).toBe("done");
   });
 
-  it("refuses without a bot, while another reply streams, or twice at once", async () => {
+  it("refuses without a bot or for a missing card, and runs in the background", async () => {
     const p = createProject({ name: "P" });
     const unassigned = addCard(p.id, "todo", { title: "U" })!;
     const send = vi.fn(async () => undefined);
     expect(await runCardWithBot(p.id, unassigned.id, { send })).toMatchObject({ ok: false, error: expect.stringMatching(/Assign a bot/) });
     const card = addCard(p.id, "todo", { title: "T", botId: ada.id })!;
-    useStore.setState({ streamingId: "other" });
-    expect(await runCardWithBot(p.id, card.id, { send })).toMatchObject({ ok: false, error: expect.stringMatching(/Another reply/) });
-    useStore.setState({ streamingId: null });
     expect(send).not.toHaveBeenCalled();
     expect(columnOf(p.id, card.id)).toBe("todo");
     expect(await runCardWithBot(p.id, "missing", { send })).toMatchObject({ ok: false });
+    // Another chat streaming doesn't block a card, and the user's open chat stays open.
+    useStore.setState({ streamingId: "other", activeConversationId: "mine" });
+    const result = await runCardWithBot(p.id, card.id, fakeChat({ content: "ok" }));
+    expect(result.ok).toBe(true);
+    expect(useStore.getState().activeConversationId).toBe("mine");
+    useStore.setState({ streamingId: null, activeConversationId: null });
   });
 
   it("tools default to the project of the chat a card runs in", async () => {

@@ -483,14 +483,13 @@ function KanbanCard(props: {
   const running = card.run?.state === "running";
   const due = dueState(card.due, column.done);
   const comments = card.activity.filter((a) => a.kind === "comment").length;
-  const streaming = useStore((s) => Boolean(s.streamingId));
   const chatExists = useStore((s) => Boolean(card.conversationId && s.conversations[card.conversationId]));
 
   // Moves are relative to visible neighbours, so they stay intuitive while a filter is on.
   const moveBefore = (anchor: string | null) => moveCard(project.id, card.id, column.id, indexBefore(project, card.id, column.id, anchor));
   const menu: MenuItem[] = [
     { label: "Open", onSelect: props.onOpen },
-    { label: running ? "Running…" : "Run with bot", disabled: !bot || running || streaming, onSelect: props.onRun },
+    { label: running ? "Running…" : "Run with bot", disabled: !bot || running, onSelect: props.onRun },
     ...(card.conversationId && chatExists ? [{ label: "Open chat", onSelect: () => props.onOpenChat(card.conversationId!) }] : []),
     "separator",
     { label: "Move up", disabled: index === 0, onSelect: () => moveBefore(neighbours[index - 1]?.id ?? null) },
@@ -561,7 +560,7 @@ function KanbanCard(props: {
           </button>
         )}
         {bot && !running && (
-          <button type="button" className="icon-btn pj-small-btn" aria-label={`Run ${card.title} with ${bot.name}`} title={`Run with ${bot.name}`} disabled={streaming} onClick={props.onRun}>
+          <button type="button" className="icon-btn pj-small-btn" aria-label={`Run ${card.title} with ${bot.name}`} title={`Run with ${bot.name}`} disabled={running} onClick={props.onRun}>
             <Play size={14} />
           </button>
         )}
