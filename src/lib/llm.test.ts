@@ -281,6 +281,6 @@ describe("presets", () => {
   it("have unique ids and a group", () => {
     const ids = PROVIDER_PRESETS.map((p) => p.id);
     expect(new Set(ids).size).toBe(ids.length);
-    expect(PROVIDER_PRESETS.every((p) => ["cloud", "local", "private"].includes(p.group))).toBe(true);
+    expect(PROVIDER_PRESETS.every((p) => ["cloud", "local", "private", "cli"].includes(p.group))).toBe(true);
   });
 });

@@ -10,7 +10,8 @@ export type ProviderPreset = {
   needsKey: boolean;
   /** Runs on hardware the user controls: pick the default model from what is installed. */
   local?: boolean;
-  group: "cloud" | "local" | "private";
+  /** "cli" = coding agent CLIs run by the desktop app (hidden elsewhere). */
+  group: "cloud" | "local" | "private" | "cli";
   defaultModel: string;
   note?: string;
 };
@@ -328,6 +329,26 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     needsKey: true,
     defaultModel: "",
   },
+  ...(
+    [
+      ["claude", "Claude Code (local CLI)", "Uses your Claude Code login and its tools (default permissions), working in the ADT Bot Workspace folder."],
+      ["codex", "Codex (local CLI)", "Uses your Codex CLI login, working in the ADT Bot Workspace folder."],
+      ["gemini", "Gemini CLI (local)", "Uses your Gemini CLI login, working in the ADT Bot Workspace folder."],
+      ["opencode", "OpenCode (local CLI)", "Uses the models configured in your OpenCode install."],
+    ] as const
+  ).map(
+    ([agent, name, note]): ProviderPreset => ({
+      id: `cli-${agent}`,
+      name,
+      group: "cli",
+      kind: "cli",
+      baseUrl: `cli:${agent}`,
+      needsKey: false,
+      local: true,
+      defaultModel: "default",
+      note: `${note} Desktop app only; each reply runs the command-line tool once.`,
+    }),
+  ),
 ];
 
 export function presetById(id: string): ProviderPreset | undefined {

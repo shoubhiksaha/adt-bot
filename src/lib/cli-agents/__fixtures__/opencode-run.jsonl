@@ -1,0 +1,4 @@
+{"type":"step_start","timestamp":1760781600000,"sessionID":"ses_6a1b2c3d4e5fABCDEF","part":{"id":"prt_1","sessionID":"ses_6a1b2c3d4e5fABCDEF","messageID":"msg_1","type":"step-start"}}
+{"type":"tool_use","timestamp":1760781601000,"sessionID":"ses_6a1b2c3d4e5fABCDEF","part":{"id":"prt_2","callID":"call_1","tool":"bash","type":"tool","state":{"status":"completed","input":{"command":"ls","description":"List files"},"output":"README.md\n","title":"ls"}}}
+{"type":"text","timestamp":1760781602000,"sessionID":"ses_6a1b2c3d4e5fABCDEF","part":{"id":"prt_3","type":"text","text":"The folder has a README."}}
+{"type":"step_finish","timestamp":1760781602100,"sessionID":"ses_6a1b2c3d4e5fABCDEF","part":{"id":"prt_4","type":"step-finish","reason":"stop","cost":0.0021,"tokens":{"input":900,"output":20}}}
