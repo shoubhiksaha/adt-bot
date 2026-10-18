@@ -7,3 +7,4 @@ import "../visualize/tool";
 import "../mcp";
 import "../../features/automation/tools";
 import "../cli-agents/tool";
+import "../../features/projects/tools";
