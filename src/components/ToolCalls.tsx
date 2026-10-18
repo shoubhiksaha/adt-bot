@@ -1,7 +1,9 @@
-import { Ban, Check, ChevronRight, Loader2, ShieldAlert, Wrench, X } from "lucide-react";
+import { Ban, Check, ChevronRight, Loader2, MessageSquare, ShieldAlert, Wrench, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { isPending, onApprovalsChanged } from "../lib/agent/approvals";
 import { answerApproval } from "../lib/agent/loop";
+import { openConversation, useStore } from "../lib/store";
+import { openView } from "../features/registry";
 import type { ToolCallRecord } from "../lib/types";
 
 const LABELS: Record<string, string> = {
@@ -18,11 +20,12 @@ const LABELS: Record<string, string> = {
   list_files: "Listed files",
   open_on_computer: "Opened on your computer",
   find_tools: "Looked for tools",
+  ask_bot: "Asked another bot",
 };
 
 function label(call: ToolCallRecord): string {
   const base = LABELS[call.name] ?? call.name.replace(/[_-]+/g, " ");
-  const main = ["query", "url", "command", "path", "fact", "expression", "prompt", "target"].map((k) => call.args[k]).find((v) => typeof v === "string") as
+  const main = ["query", "url", "command", "path", "fact", "expression", "prompt", "target", "task"].map((k) => call.args[k]).find((v) => typeof v === "string") as
     | string
     | undefined;
   return main ? `${base}: ${main.length > 90 ? `${main.slice(0, 90)}…` : main}` : base;
@@ -110,11 +113,12 @@ function ToolCallRow({ call }: { call: ToolCallRecord }) {
 
       {call.display?.kind === "image" && <img className="tool-image" src={call.display.src} alt={call.display.caption ?? "Tool output"} />}
       {call.display?.kind === "terminal" && (details || call.status === "error") && <pre className="tool-terminal">{call.display.text}</pre>}
+      {call.display?.kind === "conversation" && <ConversationLink display={call.display} />}
       {details && (
         <div className="tool-details">
           <div className="small muted">Input</div>
           <pre>{JSON.stringify(call.args, null, 2)}</pre>
-          {call.result && call.display?.kind !== "terminal" && (
+          {call.result && call.display?.kind !== "terminal" && call.display?.kind !== "conversation" && (
             <>
               <div className="small muted">Result</div>
               <pre>{call.result}</pre>
@@ -123,5 +127,26 @@ function ToolCallRow({ call }: { call: ToolCallRecord }) {
         </div>
       )}
     </li>
+  );
+}
+
+function ConversationLink({ display }: { display: Extract<NonNullable<ToolCallRecord["display"]>, { kind: "conversation" }> }) {
+  const exists = useStore((s) => Boolean(s.conversations[display.conversationId]));
+  return (
+    <div className="tool-progress small">
+      {display.text && <pre className="tool-terminal">{display.text}</pre>}
+      {exists && (
+        <button
+          type="button"
+          className="link-btn"
+          onClick={() => {
+            openConversation(display.conversationId);
+            openView(null);
+          }}
+        >
+          <MessageSquare size={13} /> {display.label}
+        </button>
+      )}
+    </div>
   );
 }

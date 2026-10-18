@@ -16,6 +16,10 @@ export type SendOptions = {
   imagine?: boolean;
   /** Spoken conversation: short answers, lighter reasoning, optional faster voice model. */
   voice?: boolean;
+  /** Routines and bot-to-bot work: runs alongside the visible chat (no stop button, no read-aloud). */
+  background?: boolean;
+  /** Cancels a background run. */
+  signal?: AbortSignal;
 };
 
 const VOICE_STYLE =
@@ -136,6 +140,21 @@ export async function resendFrom(conversationId: string, messageId: string, newT
   });
 }
 
+/**
+ * Sends `text` to a conversation's bot without touching the chat on screen and waits for the reply
+ * (routines, bots asking other bots). Same flow as a normal message: the bot's model, prompt,
+ * knowledge and tools.
+ */
+export async function sendInBackground(conversationId: string, text: string, options: { signal?: AbortSignal } = {}): Promise<Message | undefined> {
+  const conversation = useStore.getState().conversations[conversationId];
+  if (!conversation) throw new Error("That conversation no longer exists.");
+  const userMessage: Message = { id: uid(), role: "user", content: text, createdAt: Date.now() };
+  updateConversation(conversationId, (c) => ({ ...c, messages: [...c.messages, userMessage], updatedAt: Date.now() }));
+  await runAssistant(conversationId, conversation.botId, { background: true, signal: options.signal });
+  const messages = useStore.getState().conversations[conversationId]?.messages ?? [];
+  return messages.slice(messages.findIndex((m) => m.id === userMessage.id) + 1).find((m) => m.role === "assistant");
+}
+
 export function stopStreaming() {
   controller?.abort();
 }
@@ -162,9 +181,14 @@ async function runAssistant(conversationId: string, botId: string, opts: SendOpt
       messages: c.messages.map((m) => (m.id === reply.id ? { ...m, ...patch } : m)),
     }));
 
-  controller = new AbortController();
-  const signal = controller.signal;
-  useStore.setState({ streamingId: conversationId });
+  const own = new AbortController();
+  if (opts.signal?.aborted) own.abort();
+  opts.signal?.addEventListener("abort", () => own.abort(), { once: true });
+  const signal = own.signal;
+  if (!opts.background) {
+    controller = own;
+    useStore.setState({ streamingId: conversationId });
+  }
 
   try {
     if (opts.imagine) {
@@ -307,7 +331,7 @@ async function runAssistant(conversationId: string, botId: string, opts: SendOpt
       sources: sources.length ? sources : undefined,
       stats: { ms: Math.round(performance.now() - started), firstMs: firstMs && Math.round(firstMs) },
     });
-    if (settings.autoSpeak && finalText && !signal.aborted && !voiceModeActive) {
+    if (settings.autoSpeak && finalText && !signal.aborted && !voiceModeActive && !opts.background) {
       speak(finalText, { voice: settings.voice, providers, useProxy: settings.useProxy });
     }
     if (!signal.aborted) void autoTitle(conversationId);
@@ -315,9 +339,11 @@ async function runAssistant(conversationId: string, botId: string, opts: SendOpt
     if ((error as Error).name !== "AbortError") patchReply({ error: (error as Error).message, status: undefined });
     else patchReply({ status: undefined });
   } finally {
-    controller = null;
     updateConversation(conversationId, (c) => ({ ...c, updatedAt: Date.now() }));
-    useStore.setState({ streamingId: null });
+    if (!opts.background) {
+      controller = null;
+      useStore.setState({ streamingId: null });
+    }
     flushStorage();
   }
 }

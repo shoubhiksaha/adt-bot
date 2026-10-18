@@ -70,7 +70,9 @@ export type ToolCallRecord = {
 export type ToolDisplay =
   | { kind: "image"; src: string; caption?: string }
   | { kind: "terminal"; text: string }
-  | { kind: "markdown"; text: string };
+  | { kind: "markdown"; text: string }
+  /** A link to another chat (e.g. the one a delegated bot worked in). */
+  | { kind: "conversation"; conversationId: string; label: string; text?: string };
 
 /** Agent settings: tools and the approval gate. */
 export type AgentSettings = {
