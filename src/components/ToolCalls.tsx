@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { isPending, onApprovalsChanged } from "../lib/agent/approvals";
 import { answerApproval } from "../lib/agent/loop";
 import type { ToolCallRecord } from "../lib/types";
+import { Visualization } from "./viz/Visualization";
 
 const LABELS: Record<string, string> = {
   web_search: "Searched the web",
@@ -18,6 +19,7 @@ const LABELS: Record<string, string> = {
   list_files: "Listed files",
   open_on_computer: "Opened on your computer",
   find_tools: "Looked for tools",
+  visualize: "Drew a chart",
 };
 
 function label(call: ToolCallRecord): string {
@@ -63,6 +65,15 @@ export function ToolCalls({ calls, live }: { calls: ToolCallRecord[]; live: bool
             <ToolCallRow key={call.id} call={call} />
           ))}
         </ol>
+      )}
+      {/* Charts stay visible when the list is collapsed. */}
+      {calls.map(
+        (call) =>
+          call.display?.kind === "visualization" && (
+            <div key={`viz-${call.id}`} className="tool-visualizations">
+              <Visualization spec={call.display.spec} />
+            </div>
+          ),
       )}
     </div>
   );

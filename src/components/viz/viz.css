@@ -1,0 +1,504 @@
+/*
+ * Inline charts and rich cards.
+ * Adapted from OpenBOT (github.com/ashhart/OpenBot), MIT, (c) 2026 OpenBOT contributors.
+ *
+ * Every colour comes from the app's theme variables, so light and dark both work with no
+ * per-theme rules. An element carries `data-tone`; the block below turns it into `--viz-tone`
+ * and the rest of the file only reads that.
+ */
+
+.viz {
+  --viz-strong: color-mix(in srgb, var(--muted-foreground) 55%, transparent);
+  --viz-raised: var(--secondary);
+  --viz-text-2: color-mix(in srgb, var(--foreground) 72%, var(--muted-foreground));
+  max-width: 100%;
+  min-width: 0;
+  margin: 0 0 12px;
+  overflow: hidden;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 14px;
+}
+
+/* Charts render inside `.md`, whose element rules (`.md ol`, `li + li`) would otherwise win. */
+.viz .viz-bars,
+.viz .viz-timeline,
+.viz .viz-stats {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.viz .viz-bar + .viz-bar,
+.viz .viz-event + .viz-event {
+  margin-top: 0;
+}
+.viz p,
+.viz dd {
+  margin: 0;
+}
+
+/* Tone vocabulary ------------------------------------------------------- */
+
+.viz [data-tone] {
+  --viz-tone: var(--muted-foreground);
+}
+.viz [data-tone="accent"] {
+  --viz-tone: var(--link);
+}
+.viz [data-tone="positive"] {
+  --viz-tone: var(--success);
+}
+.viz [data-tone="warning"] {
+  --viz-tone: var(--warning);
+}
+.viz [data-tone="danger"] {
+  --viz-tone: var(--destructive);
+}
+
+/* Frame ----------------------------------------------------------------- */
+
+.viz-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 12px 16px 0;
+}
+.viz-kind {
+  flex: none;
+  padding: 1px 8px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--muted-foreground);
+  background: var(--input);
+  border-radius: 999px;
+}
+.viz-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.viz-title {
+  font-size: 15px;
+  line-height: 1.35;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.viz-subtitle {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--viz-text-2);
+}
+.viz-body {
+  padding: 14px 16px;
+}
+.viz-empty {
+  font-size: 13px;
+  color: var(--muted-foreground);
+}
+.viz-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+.viz-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.viz-swatch {
+  width: 12px;
+  height: 12px;
+  background: var(--viz-tone);
+  border-radius: 3px;
+}
+.viz-caption {
+  flex: 1 1 200px;
+}
+.viz-scroll {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  padding-bottom: 4px;
+}
+
+/* Bars ------------------------------------------------------------------ */
+
+.viz-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.viz-bar-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 6px;
+  font-size: 13px;
+  line-height: 1.3;
+}
+.viz-bar-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.viz-bar-detail {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.viz-bar-value {
+  flex: none;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  color: var(--viz-text-2);
+}
+.viz-bar-track {
+  height: 10px;
+  overflow: hidden;
+  background: var(--input);
+  border-radius: 999px;
+}
+.viz-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--viz-tone);
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+
+/* Stats ----------------------------------------------------------------- */
+
+.viz-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+}
+.viz-stat {
+  min-width: 0;
+  padding: 10px 12px;
+  background: var(--viz-raised);
+  border-radius: calc(var(--radius) * 0.84);
+}
+.viz-stat-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--muted-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.viz-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  background: var(--viz-tone);
+  border-radius: 999px;
+}
+.viz .viz-stat-value {
+  margin-top: 4px;
+  overflow: hidden;
+  font-size: 22px;
+  line-height: 1.25;
+  font-weight: 600;
+  color: var(--foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.viz .viz-stat-detail {
+  margin-top: 2px;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--muted-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Timeline -------------------------------------------------------------- */
+
+.viz-event {
+  display: flex;
+  gap: 12px;
+}
+.viz-event-rail {
+  position: relative;
+  flex: none;
+  width: 12px;
+}
+.viz-event-rail::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: var(--viz-strong);
+  transform: translateX(-50%);
+}
+.viz-event:first-child .viz-event-rail::before {
+  top: 8px;
+}
+.viz-event[data-last="true"] .viz-event-rail::before {
+  bottom: auto;
+  height: 8px;
+}
+.viz-event:only-child .viz-event-rail::before {
+  display: none;
+}
+.viz-event-dot {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  width: 9px;
+  height: 9px;
+  background: var(--viz-tone);
+  border: 2px solid var(--card);
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+  box-sizing: content-box;
+}
+.viz-event-body {
+  min-width: 0;
+  flex: 1;
+  padding-bottom: 14px;
+}
+.viz-event[data-last="true"] .viz-event-body {
+  padding-bottom: 0;
+}
+.viz-event-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.viz-event-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 1.35;
+  font-weight: 550;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+}
+.viz-event-time {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 40%;
+  overflow: hidden;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.viz .viz-event-detail {
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--viz-text-2);
+  overflow-wrap: anywhere;
+}
+
+/* Flow ------------------------------------------------------------------ */
+
+.viz-flow {
+  position: relative;
+}
+.viz-wires {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.viz-wires path {
+  fill: none;
+  stroke: var(--viz-strong);
+  stroke-width: 1.4;
+}
+.viz-wires marker path {
+  fill: var(--viz-strong);
+  stroke: none;
+}
+.viz-wires text {
+  fill: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 500;
+  paint-order: stroke;
+  stroke: var(--card);
+  stroke-width: 4;
+  stroke-linejoin: round;
+}
+.viz-node {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding: 0 12px;
+  overflow: hidden;
+  text-align: center;
+  background: color-mix(in srgb, var(--viz-tone) 14%, var(--viz-raised));
+  border: 1px solid color-mix(in srgb, var(--viz-tone) 45%, transparent);
+  border-radius: calc(var(--radius) * 0.84);
+  box-sizing: border-box;
+}
+.viz-node-title {
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.3;
+  font-weight: 600;
+  color: var(--foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.viz-node-subtitle {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  font-size: 11.5px;
+  line-height: 1.3;
+  color: var(--viz-text-2);
+}
+
+/* Rich cards ------------------------------------------------------------ */
+/* Prose-shaped on purpose (a quoted block), never the app's own panel chrome. */
+
+.rich-card {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 2px 0 2px 14px;
+  border-left: 3px solid var(--border);
+  min-width: 0;
+}
+.rich-card header {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.rich-card-kind,
+.rich-card-fields dt {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.rich-card-kind {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.rich-card-title {
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+.rich-card .rich-card-fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 13px;
+}
+.rich-card-fields dt {
+  line-height: 1.7;
+}
+.rich-card-fields dd {
+  margin: 0;
+  min-width: 0;
+}
+.rich-card .rich-card-people {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-wrap: anywhere;
+}
+.rich-card .rich-card-people li + li {
+  margin-top: 0;
+}
+.rich-card .rich-card-body {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--secondary);
+  border-radius: calc(var(--radius) * 0.84);
+  white-space: pre-wrap;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.rich-card .rich-card-host {
+  margin: 0;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  color: var(--link);
+  overflow-wrap: anywhere;
+}
+.rich-card .rich-card-origin {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+.rich-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.md .rich-card-btn,
+.rich-card-btn {
+  padding: 6px 12px;
+  font-size: 13px;
+  color: inherit;
+  text-decoration: none;
+}
+.md .rich-card-btn.primary,
+.rich-card-btn.primary {
+  color: var(--primary-foreground);
+}
+
+/* Charts shown under a tool call, outside the collapsible list. */
+.tool-visualizations {
+  margin-top: 8px;
+}
+
+@media (max-width: 560px) {
+  .viz-head,
+  .viz-body {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .viz-foot {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .viz-stats {
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  }
+  .viz .viz-stat-value {
+    font-size: 19px;
+  }
+  .rich-card-actions .btn {
+    flex: 1 1 auto;
+  }
+}

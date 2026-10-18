@@ -9,6 +9,7 @@ import { addMemory, flushStorage, newConversation, uid, updateConversation, useS
 import type { Attachment, Bot, Message, Source } from "./types";
 import { knowledgeContext } from "./knowledge";
 import { speak } from "./voice";
+import { RICH_BLOCKS_GUIDANCE } from "./visualize/fences";
 
 export type SendOptions = {
   search?: boolean;
@@ -39,10 +40,18 @@ export function stripMemoryTags(text: string): string {
   return text.replace(REMEMBER_TAG, "").trimEnd();
 }
 
-type PromptExtras = { userName?: string; about?: string; customInstructions?: string; knowledge?: string; voice?: boolean };
+type PromptExtras = {
+  userName?: string;
+  about?: string;
+  customInstructions?: string;
+  knowledge?: string;
+  voice?: boolean;
+  /** Tell the bot about ```chart / ```card blocks (default: unless voice). */
+  richBlocks?: boolean;
+};
 
 export function buildSystemPrompt(bot: Bot, extras: PromptExtras = {}): string {
-  const { userName = "", about = "", customInstructions = "", knowledge = "", voice = false } = extras;
+  const { userName = "", about = "", customInstructions = "", knowledge = "", voice = false, richBlocks = !voice } = extras;
   const parts = [bot.systemPrompt.trim()];
   if (bot.nickname?.trim() && bot.nickname.trim().toLowerCase() !== bot.name.toLowerCase()) {
     parts.push(`Your name is ${bot.name}; the user also calls you "${bot.nickname.trim()}".`);
@@ -63,6 +72,7 @@ export function buildSystemPrompt(bot: Bot, extras: PromptExtras = {}): string {
     );
   }
   if (knowledge) parts.push(knowledge);
+  if (richBlocks) parts.push(RICH_BLOCKS_GUIDANCE);
   if (voice) parts.push(VOICE_STYLE);
   return parts.filter(Boolean).join("\n\n");
 }
@@ -194,6 +204,7 @@ async function runAssistant(conversationId: string, botId: string, opts: SendOpt
       customInstructions: settings.customInstructions,
       knowledge: knowledge.prompt,
       voice: opts.voice && settings.voice.concise,
+      richBlocks: !opts.voice,
     });
     let content = "";
     let reasoning = "";

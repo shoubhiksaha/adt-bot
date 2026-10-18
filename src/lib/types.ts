@@ -1,3 +1,4 @@
+import type { VisualizationSpec } from "./agent/vendor/openbot/visualization";
 /** Wire protocol a provider speaks. Almost everything (including local servers) is "openai". */
 export type ProviderKind = "openai" | "anthropic" | "gemini";
 
@@ -70,7 +71,8 @@ export type ToolCallRecord = {
 export type ToolDisplay =
   | { kind: "image"; src: string; caption?: string }
   | { kind: "terminal"; text: string }
-  | { kind: "markdown"; text: string };
+  | { kind: "markdown"; text: string }
+  | { kind: "visualization"; spec: VisualizationSpec };
 
 /** Agent settings: tools and the approval gate. */
 export type AgentSettings = {

@@ -120,15 +120,15 @@ function createWindow() {
     },
   });
 
-  // Links open in the user's browser, never inside the app window.
+  // Links open in the user's browser (mailto: in the mail app), never inside the app window.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:/.test(url)) shell.openExternal(url);
+    if (/^(https?|mailto):/.test(url)) shell.openExternal(url);
     return { action: "deny" };
   });
   win.webContents.on("will-navigate", (event, url) => {
     if (!url.startsWith("app://") && !url.startsWith("http://localhost:5173")) {
       event.preventDefault();
-      if (/^https?:/.test(url)) shell.openExternal(url);
+      if (/^(https?|mailto):/.test(url)) shell.openExternal(url);
     }
   });
 
