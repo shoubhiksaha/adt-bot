@@ -171,6 +171,9 @@ export function createProxyHandler(options = {}) {
       const responseHeaders = { "cache-control": "no-cache" };
       const type = upstream.headers.get("content-type");
       if (type) responseHeaders["content-type"] = type;
+      // MCP connectors (Streamable HTTP) keep their session in this header.
+      const mcpSession = upstream.headers.get("mcp-session-id");
+      if (mcpSession) responseHeaders["mcp-session-id"] = mcpSession;
       res.writeHead(upstream.status, responseHeaders);
       if (!upstream.body) return res.end();
       // Forward chunks as they arrive so streamed replies stay streamed.
