@@ -1,0 +1,149 @@
+/* Settings → Connectors (MCP servers) */
+.connectors .connector-card .card-row {
+  align-items: flex-start;
+}
+.connectors .connector-card .card-row > svg {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+.connector-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.connector-switch input {
+  accent-color: var(--ring);
+}
+.connector-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--muted-foreground);
+}
+.connector-status .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted-foreground);
+  flex-shrink: 0;
+}
+.connector-status.ok {
+  color: var(--success);
+}
+.connector-status.ok .dot {
+  background: var(--success);
+}
+.connector-status.err {
+  color: var(--destructive);
+}
+.connector-status.err .dot {
+  background: var(--destructive);
+}
+.connector-status.busy .dot {
+  background: var(--warning);
+}
+.connector-error {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  color: var(--destructive);
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) * 0.6);
+}
+.connector-actions {
+  margin-top: 10px;
+}
+.connector-actions .btn {
+  padding: 6px 11px;
+  font-size: 13px;
+}
+.connector-tools {
+  margin-top: 10px;
+}
+.connector-tools .link-btn {
+  margin: 0;
+}
+.connector-tools ul {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 340px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+}
+.connector-tools li label {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 7px 2px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.connector-tools li input {
+  margin-top: 3px;
+  accent-color: var(--ring);
+}
+.connector-tools .grow {
+  flex: 1;
+  min-width: 0;
+}
+.connector-tools code {
+  font-size: 13px;
+  word-break: break-all;
+}
+.connector-tool-desc {
+  margin-top: 2px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.badge.risk-read {
+  color: var(--success);
+}
+.badge.risk-destructive {
+  color: var(--destructive);
+}
+.connector-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.connector-presets .btn {
+  padding: 5px 10px;
+  font-size: 12.5px;
+  white-space: normal;
+  text-align: left;
+}
+.connector-advanced {
+  margin: 4px 0 10px;
+}
+.connector-advanced summary {
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+.connector-form .connector-command {
+  flex: 0 0 34%;
+}
+.connector-timeout {
+  max-width: 120px;
+}
+@media (max-width: 560px) {
+  .connector-form .field-row {
+    flex-direction: column;
+  }
+  .connector-form .connector-command {
+    flex: 1 1 auto;
+  }
+}

@@ -41,6 +41,9 @@ async function relay(request) {
     const responseHeaders = { "cache-control": "no-cache" };
     const type = upstream.headers.get("content-type");
     if (type) responseHeaders["content-type"] = type;
+    // MCP connectors (Streamable HTTP) keep their session in this header.
+    const mcpSession = upstream.headers.get("mcp-session-id");
+    if (mcpSession) responseHeaders["mcp-session-id"] = mcpSession;
     return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
   } catch (error) {
     const message = String(error?.message ?? error);

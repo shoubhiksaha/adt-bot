@@ -84,10 +84,11 @@ async function nativeFetch(url: string, init: FetchInit) {
     responseType: "text",
   });
   const text = typeof res.data === "string" ? res.data : JSON.stringify(res.data);
-  return new Response(text, {
-    status: res.status,
-    headers: { "content-type": res.headers["Content-Type"] ?? res.headers["content-type"] ?? "" },
-  });
+  const headers: Record<string, string> = { "content-type": res.headers["Content-Type"] ?? res.headers["content-type"] ?? "" };
+  // MCP connectors (Streamable HTTP) keep their session in this header.
+  const mcpSession = Object.entries(res.headers).find(([key]) => key.toLowerCase() === "mcp-session-id")?.[1];
+  if (mcpSession) headers["mcp-session-id"] = mcpSession;
+  return new Response(text, { status: res.status, headers });
 }
 
 function parseBody(body: string): unknown {

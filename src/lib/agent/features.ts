@@ -4,3 +4,4 @@
  */
 import "./builtin";
 import "../visualize/tool";
+import "../mcp";
