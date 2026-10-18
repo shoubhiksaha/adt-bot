@@ -1,0 +1,12 @@
+{
+  "name": "ADT Bot",
+  "logo": "",
+  "logoAsAvatar": false,
+  "theme": {
+    "preset": "adt",
+    "accent": "#3b82f6",
+    "background": "",
+    "font": "system",
+    "radius": 12
+  }
+}

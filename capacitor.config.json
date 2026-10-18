@@ -1,0 +1,14 @@
+{
+  "appId": "app.adtbot.mobile",
+  "appName": "ADT Bot",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": true
+  },
+  "ios": {
+    "contentInset": "never"
+  }
+}

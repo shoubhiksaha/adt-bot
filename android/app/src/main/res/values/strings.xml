@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">ADT Bot</string>
+    <string name="title_activity_main">ADT Bot</string>
+    <string name="package_name">app.adtbot.mobile</string>
+    <string name="custom_url_scheme">app.adtbot.mobile</string>
+</resources>

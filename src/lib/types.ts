@@ -1,0 +1,179 @@
+/** Wire protocol a provider speaks. Almost everything (including local servers) is "openai". */
+export type ProviderKind = "openai" | "anthropic" | "gemini";
+
+export type ThinkingLevel = "off" | "low" | "medium" | "high";
+
+/** A provider connection the user configured: preset defaults plus their key and overrides. */
+export type ProviderConfig = {
+  id: string;
+  presetId: string;
+  name: string;
+  kind: ProviderKind;
+  baseUrl: string;
+  apiKey: string;
+  /** Models discovered from the provider's /models endpoint (or the bundled catalog). */
+  models: ModelInfo[];
+  /** Extra request headers, e.g. for a private server behind a login. */
+  headers?: Record<string, string>;
+};
+
+export type ModelInfo = {
+  id: string;
+  name?: string;
+  vision?: boolean;
+  reasoning?: boolean;
+  context?: number | null;
+};
+
+/** A document the bots can draw on. Its text lives in IndexedDB, keyed by id. */
+export type KnowledgeRef = { id: string; name: string; size: number; chars: number; addedAt: number };
+
+export type Bot = {
+  id: string;
+  name: string;
+  /** What you call it out loud; also its wake word ("Hey Jarvis"). */
+  nickname?: string;
+  /** Files only this bot uses (product docs, its instructions…). */
+  knowledge?: KnowledgeRef[];
+  avatar: string;
+  description: string;
+  systemPrompt: string;
+  providerId: string;
+  model: string;
+  temperature: number | null;
+  thinking: ThinkingLevel;
+  /** Durable facts the bot carries into every conversation. */
+  memory: string[];
+  /** Let the bot save new memories by emitting <remember> tags. */
+  autoMemory: boolean;
+  createdAt: number;
+};
+
+export type Attachment =
+  | { kind: "image"; dataUrl: string; name: string }
+  | { kind: "file"; name: string; text: string; size: number; truncated?: boolean };
+
+export type Source = { title: string; url: string; snippet: string; content?: string };
+
+export type Message = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  reasoning?: string;
+  attachments?: Attachment[];
+  /** Web pages used for this answer, cited as [1], [2]… */
+  sources?: Source[];
+  /** Knowledge files that were consulted for this answer. */
+  knowledge?: string[];
+  model?: string;
+  error?: string;
+  /** Transient progress line, e.g. "Searching the web…". */
+  status?: string;
+  /** Total time and time to first token, in milliseconds. */
+  stats?: { ms: number; firstMs?: number };
+  createdAt: number;
+};
+
+export type Conversation = {
+  id: string;
+  botId: string;
+  title: string;
+  messages: Message[];
+  updatedAt: number;
+  /** Private chat: never written to storage and gone when you leave it. */
+  temporary?: boolean;
+  titled?: boolean;
+};
+
+/**
+ * Speech recognition engine. "auto" picks per platform: the phone's or browser's own recognizer when
+ * it exists, otherwise cloud Whisper (if set up), otherwise Whisper running inside the app.
+ */
+export type SttEngine = "auto" | "device" | "whisper-local" | "whisper-cloud";
+
+export type TtsEngine = "system" | "openai" | "elevenlabs";
+
+export type VoiceSettings = {
+  engine: SttEngine;
+  /** Cloud Whisper: provider + model (OpenAI, Groq, LocalAI, speaches…). */
+  providerId: string;
+  model: string;
+  /** In-app Whisper size. */
+  localModel: "tiny" | "base" | "small";
+  /** Spoken replies: device voice name ("" = best available) and speed. */
+  voiceName: string;
+  rate: number;
+  /** Reply voice engine: device voices, any OpenAI-compatible /audio/speech server, or ElevenLabs. */
+  tts: TtsEngine;
+  ttsProviderId: string;
+  ttsModel: string;
+  ttsVoice: string;
+  elevenKey: string;
+  elevenVoiceId: string;
+  elevenModel: string;
+  /** How long a pause ends your turn. */
+  endSilence: "fast" | "normal" | "patient";
+  /** Interrupt the bot by talking. "auto" = instantly with natural voices, after a short check with device voices. */
+  bargeIn: "auto" | "on" | "off";
+  /** Short, spoken-style answers in voice mode. */
+  concise: boolean;
+  /** Optional faster model just for voice conversations ("" = the bot's own model). */
+  voiceProviderId: string;
+  voiceModel: string;
+  /** In voice mode, go to standby after a quiet spell and wake on "Hey <nickname>". */
+  wakeWord: boolean;
+  /** Listen for the wake word whenever the app is open (opt-in, shows an indicator). */
+  handsFree: boolean;
+};
+
+export type ThemeConfig = {
+  /** Preset id, or "custom". */
+  preset: string;
+  /** Brand colour used for buttons, links, highlights. */
+  accent: string;
+  /** Optional page colour (""= neutral). Light or dark mode is derived from it. */
+  background: string;
+  font: string;
+  /** Corner roundness in px. */
+  radius: number;
+};
+
+export type Brand = {
+  /** App name shown in the sidebar, welcome screen and window title. */
+  name: string;
+  /** Logo image as a data URL ("" = default ADT logo). */
+  logo: string;
+  /** Use the logo as the main bot's avatar. */
+  logoAsAvatar: boolean;
+  theme: ThemeConfig;
+};
+
+export type SearchEngine = "duckduckgo" | "brave" | "tavily" | "searxng";
+
+export type Settings = {
+  theme: "system" | "dark" | "light";
+  brand: Brand;
+  /** What the bots should call you. */
+  userName: string;
+  /** Who you are, what your team or company does, what the bots are for. */
+  about: string;
+  /** Files every bot can draw on (company profile, handbook, product docs…). */
+  knowledge: KnowledgeRef[];
+  sendOnEnter: boolean;
+  /** Route requests through the bundled relay when one is available (desktop, self-hosted web). */
+  useProxy: boolean;
+  /** Applies to every bot: who you are and how you like answers. */
+  customInstructions: string;
+  /** Name chats from their first exchange using the chat's own model. */
+  smartTitles: boolean;
+  /** Read every reply aloud when it finishes. */
+  autoSpeak: boolean;
+  search: { engine: SearchEngine; apiKey: string; url: string; readPages: boolean; native: boolean };
+  /** Provider + model used for "Imagine". Empty = pick automatically. */
+  image: { providerId: string; model: string };
+  voice: VoiceSettings;
+  /** Composer toggles, remembered between messages. */
+  modes: { search: boolean; think: boolean };
+  /** Recently used "providerId::model" keys, newest first. */
+  recentModels: string[];
+};
