@@ -8,6 +8,7 @@ import { useStore } from "../lib/store";
 import { canSpeak, speak } from "../lib/voice";
 import { Avatar } from "./Avatar";
 import { CopyButton } from "./CopyButton";
+import { ToolCalls } from "./ToolCalls";
 
 const Markdown = lazy(() => import("./Markdown"));
 
@@ -187,6 +188,7 @@ export const MessageItem = memo(function MessageItem({
             <BookOpen size={13} /> {message.knowledge.join(", ")}
           </div>
         )}
+        {message.toolCalls && message.toolCalls.length > 0 && <ToolCalls calls={message.toolCalls} live={live} />}
         {reasoning && (
           <details className="reasoning" open={thinkingNow}>
             <summary>

@@ -2017,3 +2017,154 @@ input[type="color"] {
   padding-bottom: 6px;
   row-gap: 4px;
 }
+
+/* Tool calls & approvals ---------------------------------------------------------- */
+.tool-calls {
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  font-size: 13.5px;
+}
+.tool-calls-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 7px 11px;
+  color: var(--muted-foreground);
+  font-weight: 550;
+}
+.tool-calls-head .chev {
+  margin-left: auto;
+}
+.chev.open {
+  transform: rotate(90deg);
+}
+.tool-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tool-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 6px;
+  border-radius: calc(var(--radius) * 0.6);
+  text-align: left;
+}
+.tool-row-head:hover {
+  background: var(--accent);
+}
+.tool-row.denied .tool-row-head,
+.tool-row.error .tool-row-head {
+  color: var(--muted-foreground);
+}
+.ok-icon {
+  color: var(--success);
+}
+.warn-icon {
+  color: var(--warning);
+}
+.tool-progress {
+  padding: 0 6px 4px 28px;
+}
+.approval-card {
+  margin: 4px 6px 6px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--warning) 50%, var(--border));
+  background: color-mix(in srgb, var(--warning) 9%, var(--card));
+  border-radius: var(--radius);
+}
+.approval-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
+}
+.approval-detail,
+.tool-details pre,
+.tool-terminal {
+  margin: 4px 0 8px;
+  padding: 8px 10px;
+  max-height: 220px;
+  overflow: auto;
+  font: 12.5px/1.45 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) * 0.6);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tool-details {
+  padding: 0 6px 4px 28px;
+}
+.tool-terminal {
+  margin: 2px 6px 6px 28px;
+}
+.tool-image {
+  display: block;
+  max-width: min(420px, 100%);
+  margin: 4px 6px 8px 28px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+/* Workspace views ------------------------------------------------------------------- */
+.nav-icon {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  color: var(--muted-foreground);
+  flex-shrink: 0;
+}
+.feature-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.tool-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 2px 12px;
+}
+.toggle.compact {
+  margin-bottom: 4px;
+  align-items: center;
+}
+.toggle.compact input {
+  margin-top: 0;
+}
+.activity-log {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+}
+.activity-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.activity-row:last-child {
+  border-bottom: 0;
+}
+.outcome-denied,
+.outcome-error {
+  color: var(--destructive);
+}
+.outcome-done {
+  color: var(--success);
+}

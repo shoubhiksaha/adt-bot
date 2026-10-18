@@ -1,5 +1,6 @@
 import { FileUp, ImagePlus, Trash2, X } from "lucide-react";
 import { useRef, useState } from "react";
+import { allToolGroups } from "../lib/agent/tools";
 import { fileText } from "../lib/images";
 import { presetById } from "../lib/providers";
 import { deleteBot, updateBot, useStore } from "../lib/store";
@@ -181,6 +182,34 @@ export default function BotDialog({ botId, onClose }: { botId: string; onClose: 
           />
         </label>
         {notice && <span className="small muted">{notice}</span>}
+      </div>
+
+      <div className="field">
+        <label>Tools this bot can use</label>
+        <div className="tool-groups">
+          {allToolGroups().map((group) => {
+            const groupsOn = bot.toolGroups ?? "all";
+            const on = groupsOn === "all" || groupsOn.includes(group.id);
+            return (
+              <label key={group.id} className="toggle compact" title={group.description}>
+                <input
+                  type="checkbox"
+                  checked={on}
+                  onChange={(e) => {
+                    const current = groupsOn === "all" ? allToolGroups().map((g) => g.id) : groupsOn;
+                    const next = e.target.checked ? [...new Set([...current, group.id])] : current.filter((id) => id !== group.id);
+                    set({ toolGroups: next.length === allToolGroups().length ? "all" : next });
+                  }}
+                />
+                <span>
+                  {group.label}
+                  {group.platforms?.includes("desktop") && group.platforms.length === 1 && <span className="badge">desktop</span>}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+        <span className="small muted">Actions that change things ask for approval first (Settings → Tools & safety).</span>
       </div>
 
       <div className="field">

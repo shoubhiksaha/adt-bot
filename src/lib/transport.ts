@@ -13,7 +13,13 @@ type Env = { platform: Platform; proxy: boolean; proxyToken?: string };
 
 declare global {
   interface Window {
-    adtbotDesktop?: { proxyToken: string; platform: string; version: string };
+    adtbotDesktop?: {
+      proxyToken: string;
+      platform: string;
+      version: string;
+      invoke?: (channel: string, payload?: unknown) => Promise<unknown>;
+      on?: (channel: string, listener: (payload: unknown) => void) => () => void;
+    };
   }
 }
 

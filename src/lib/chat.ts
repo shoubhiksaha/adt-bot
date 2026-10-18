@@ -1,5 +1,9 @@
 import { generateImage, resolveImageModel } from "./imagine";
-import { complete, streamChat, supportsNativeSearch } from "./llm";
+import "./agent/features";
+import { runToolLoop } from "./agent/loop";
+import { toolsFor } from "./agent/tools";
+import { complete, type StreamEvent, streamChat, supportsNativeSearch } from "./llm";
+import { detectEnv } from "./transport";
 import { findUrls, readPage, sourcesPrompt, webSearch } from "./search";
 import { addMemory, flushStorage, newConversation, uid, updateConversation, useStore } from "./store";
 import type { Attachment, Bot, Message, Source } from "./types";
@@ -211,32 +215,27 @@ async function runAssistant(conversationId: string, botId: string, opts: SendOpt
       return query;
     };
 
+    // Tools the bot may use for this answer (voice mode: only ones that never need approval).
+    const platform = (await detectEnv()).platform;
+    let agentTools = toolsFor({ settings, providers, platform, bot });
+    if (opts.voice) agentTools = agentTools.filter((t) => t.risk === "read" && !t.riskFor);
+
     const stream = async (nativeSearch: boolean, query: string) => {
       const context = pages.length || sources.length ? sourcesPrompt(query, sources, pages) : "";
       const system = [basePrompt, context].filter(Boolean).join("\n\n");
       let lastPaint = 0;
       // A search problem stays visible under the answer; otherwise the progress line goes away.
       patchReply({ status: nativeSearch ? "Searching the web…" : note, sources: sources.length ? sources : undefined });
-      for await (const event of streamChat({
-        provider,
-        model,
-        system,
-        messages: history,
-        temperature: bot.temperature,
-        thinking,
-        useProxy: settings.useProxy,
-        nativeSearch,
-        fast: opts.voice,
-        signal,
-      })) {
+      const handle = (event: StreamEvent) => {
+        if (event.type === "tool_calls") return;
         if (event.type === "sources") {
           sources = event.sources;
           patchReply({ sources });
-          continue;
+          return;
         }
         if (event.type === "status") {
           patchReply({ status: event.text });
-          continue;
+          return;
         }
         firstMs ??= performance.now() - started;
         if (event.type === "text") content += event.text;
@@ -247,7 +246,33 @@ async function runAssistant(conversationId: string, botId: string, opts: SendOpt
           lastPaint = now;
           patchReply({ content, reasoning: reasoning || undefined, status: undefined });
         }
+      };
+      const request = {
+        provider,
+        model,
+        system,
+        messages: history,
+        temperature: bot.temperature,
+        thinking,
+        useProxy: settings.useProxy,
+        // Gemini can't combine Google Search with function calling; the web_search tool covers it.
+        nativeSearch: nativeSearch && !(agentTools.length && provider.kind === "gemini"),
+        fast: opts.voice,
+        signal,
+      };
+      if (agentTools.length) {
+        await runToolLoop({
+          request,
+          tools: agentTools,
+          context: { bot, conversationId, settings, providers, platform, signal, progress: () => undefined },
+          mode: settings.agent.mode,
+          maxSteps: settings.agent.maxSteps,
+          callbacks: { onEvent: handle, onCalls: (toolCalls) => patchReply({ toolCalls, status: undefined }) },
+        });
+      } else {
+        for await (const event of streamChat(request)) handle(event);
       }
+      patchReply({ content, reasoning: reasoning || undefined });
     };
 
     // Prefer the provider's own search (more reliable, no scraping); fall back to ours if it errors.

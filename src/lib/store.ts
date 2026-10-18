@@ -76,6 +76,14 @@ export const DEFAULT_THEME: Settings["brand"]["theme"] = { ...brandDefaults.them
 
 export const defaultSettings: Settings = {
   theme: "system",
+  agent: {
+    enabled: true,
+    approvalPolicy: "ask-first-time",
+    allowlist: [],
+    denylist: ["rm -rf /", "sudo *", "mkfs*", ":(){*", "shutdown*", "reboot*"],
+    maxSteps: 12,
+    mode: "auto",
+  },
   brand: { name: brandDefaults.name || "ADT Bot", logo: brandDefaults.logo || "", logoAsAvatar: Boolean(brandDefaults.logoAsAvatar), theme: DEFAULT_THEME },
   userName: "",
   about: "",
@@ -176,7 +184,7 @@ export const useStore = create<State>()(
       merge: (persisted, current) => {
         const saved = (persisted ?? {}) as Partial<Persisted>;
         const settings = { ...defaultSettings, ...saved.settings } as Settings;
-        for (const key of ["search", "image", "voice", "modes", "brand"] as const) {
+        for (const key of ["search", "image", "voice", "modes", "brand", "agent"] as const) {
           settings[key] = { ...defaultSettings[key], ...saved.settings?.[key] } as never;
         }
         settings.brand.theme = { ...DEFAULT_THEME, ...saved.settings?.brand?.theme };

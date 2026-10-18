@@ -1,8 +1,10 @@
 import { Check, Pencil, Plus, Search, Settings, SquarePen, Trash2, X } from "lucide-react";
-import { useDeferredValue, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import { MOD } from "../lib/keys";
 import { createBot, deleteConversation, openConversation, renameConversation, selectBot, startNewChat, useStore } from "../lib/store";
 import type { Conversation } from "../lib/types";
+import { openView, useFeatureRegistry, useNav } from "../features/registry";
+import { detectEnv, type Platform } from "../lib/transport";
 import { Avatar, BotAvatar } from "./Avatar";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -46,6 +48,13 @@ export function Sidebar({
   const activeConversationId = useStore((s) => s.activeConversationId);
   const listKey = useStore((s) => chatListKey(s.conversations));
   const [query, setQuery] = useState("");
+  const views = useFeatureRegistry((s) => s.views);
+  const activeView = useNav((s) => s.view);
+  const [platform, setPlatform] = useState<Platform | null>(null);
+  useEffect(() => {
+    void detectEnv().then((env) => setPlatform(env.platform));
+  }, []);
+  const visibleViews = views.filter((v) => !v.platforms || (platform && v.platforms.includes(platform)));
   const [renaming, setRenaming] = useState<string | null>(null);
   const deferredQuery = useDeferredValue(query);
 
@@ -96,6 +105,7 @@ export function Sidebar({
             className="btn new-chat"
             onClick={() => {
               if (activeBot) startNewChat(activeBot.id);
+              openView(null);
               onClose();
             }}
           >
@@ -121,6 +131,30 @@ export function Sidebar({
           </label>
         </div>
         <div className="sidebar-scroll">
+          {!query && visibleViews.length > 0 && (
+            <>
+              <div className="section-label">Workspace</div>
+              {visibleViews.map((view) => {
+                const Icon = view.icon;
+                return (
+                  <button
+                    key={view.id}
+                    type="button"
+                    className={`nav-item${activeView === view.id ? " active" : ""}`}
+                    onClick={() => {
+                      openView(view.id);
+                      onClose();
+                    }}
+                  >
+                    <span className="nav-icon">
+                      <Icon size={16} />
+                    </span>
+                    <span className="label">{view.label}</span>
+                  </button>
+                );
+              })}
+            </>
+          )}
           {!query && (
             <>
               <div className="section-label">
@@ -143,9 +177,10 @@ export function Sidebar({
                 <button
                   key={bot.id}
                   type="button"
-                  className={`nav-item${bot.id === activeBotId && !activeConversationId ? " active" : ""}`}
+                  className={`nav-item${bot.id === activeBotId && !activeConversationId && !activeView ? " active" : ""}`}
                   onClick={() => {
                     selectBot(bot.id);
+                    openView(null);
                     onClose();
                   }}
                 >
@@ -196,9 +231,10 @@ export function Sidebar({
                     key={c.id}
                     role="button"
                     tabIndex={0}
-                    className={`nav-item${c.id === activeConversationId ? " active" : ""}`}
+                    className={`nav-item${c.id === activeConversationId && !activeView ? " active" : ""}`}
                     onClick={() => {
                       openConversation(c.id);
+                      openView(null);
                       onClose();
                     }}
                     onKeyDown={(e) => e.key === "Enter" && openConversation(c.id)}

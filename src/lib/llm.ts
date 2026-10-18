@@ -1,3 +1,6 @@
+import { OPEN as PROMPTED_OPEN, PromptedFilter, promptedProtocol, promptedResult } from "./agent/prompted";
+import { ToolCallAccumulator, parseToolArgs } from "./agent/vendor/openbot/toolCallAccumulator";
+import type { ToolCall, ToolSchema } from "./agent/vendor/openbot/types";
 import { guessVision } from "./providers";
 import { providerFetch, type FetchInit } from "./transport";
 import type { Message, ModelInfo, ProviderConfig, Source, ThinkingLevel } from "./types";
@@ -7,7 +10,17 @@ export type StreamEvent =
   | { type: "reasoning"; text: string }
   /** Web pages the provider's own search used (cumulative list). */
   | { type: "sources"; sources: Source[] }
-  | { type: "status"; text: string };
+  | { type: "status"; text: string }
+  /** The model asked for tools. `raw` is its turn in the provider's own format, replayed on the next step. */
+  | { type: "tool_calls"; calls: ToolCall[]; raw: unknown; text: string };
+
+/** One completed step of a tool loop: what the model said/asked, and what the tools answered. */
+export type ToolTurn = {
+  raw: unknown;
+  text: string;
+  calls: ToolCall[];
+  results: { id: string; name: string; content: string; isError?: boolean }[];
+};
 
 /**
  * Providers whose API can search the web itself: Gemini (Google Search grounding), Anthropic
@@ -34,6 +47,11 @@ export type ChatRequest = {
   nativeSearch?: boolean;
   /** Favour speed (voice conversations): lighter reasoning on models that reason by default. */
   fast?: boolean;
+  /** Tools the model may call this step, and the steps of the current turn so far. */
+  tools?: ToolSchema[];
+  toolTurns?: ToolTurn[];
+  /** "native" uses the provider's tool calling; "prompted" a text protocol for models without it. */
+  toolMode?: "native" | "prompted";
   signal?: AbortSignal;
 };
 
@@ -44,9 +62,16 @@ export async function* streamChat(req: ChatRequest): AsyncGenerator<StreamEvent>
   const res = await providerFetch(url, { ...init, signal: req.signal }, req.useProxy);
   if (!res.ok) throw new Error(await describeHttpError(res));
 
-  const parse = createParser(req.provider);
+  const parser = createParser(req.provider, req);
+  const prompted = req.toolMode === "prompted" && req.tools?.length ? new PromptedFilter() : null;
+  const route = function* (event: StreamEvent): Generator<StreamEvent> {
+    if (prompted && event.type === "text") {
+      const visible = prompted.push(event.text);
+      if (visible) yield { type: "text", text: visible };
+    } else yield event;
+  };
   for await (const data of sseData(res)) {
-    if (data === "[DONE]") return;
+    if (data === "[DONE]") break;
     let json: any;
     try {
       json = JSON.parse(data);
@@ -54,8 +79,26 @@ export async function* streamChat(req: ChatRequest): AsyncGenerator<StreamEvent>
       continue;
     }
     if (json.error || json.type === "error") throw new Error(errorText(json.error ?? json));
-    yield* parse(json);
+    for (const event of parser.parse(json)) yield* route(event);
   }
+  for (const event of parser.finish()) yield* route(event);
+  if (prompted && req.tools) {
+    const { tail, call, text } = prompted.finish(req.tools);
+    if (tail) yield { type: "text", text: tail };
+    if (call) yield { type: "tool_calls", calls: [call], raw: text, text: text.slice(0, text.indexOf(PROMPTED_OPEN)).trim() };
+  }
+}
+
+/** Gemini accepts an OpenAPI subset: drop JSON-Schema keywords it rejects. */
+function geminiSchema(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(geminiSchema);
+  if (!schema || typeof schema !== "object") return schema;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(schema as Record<string, unknown>)) {
+    if (["additionalProperties", "$schema", "default", "examples", "$defs", "definitions", "$ref", "const"].includes(key)) continue;
+    out[key] = geminiSchema(value);
+  }
+  return out;
 }
 
 /** Runs a short request to completion and returns only the answer text (titles, search queries). */
@@ -131,10 +174,28 @@ function buildRequest(req: ChatRequest): { url: string; init: FetchInit } {
       // Cache the system prompt and history so long chats and knowledge files are cheaper and faster.
       body.cache_control = { type: "ephemeral" };
     }
+    const anthropicTools: unknown[] = [];
     if (req.nativeSearch) {
       // Server-side web search; the dynamic-filtering version needs Claude 4.6 or newer.
-      body.tools = [{ type: legacy ? "web_search_20250305" : "web_search_20260209", name: "web_search", max_uses: 5 }];
+      anthropicTools.push({ type: legacy ? "web_search_20250305" : "web_search_20260209", name: "web_search", max_uses: 5 });
     }
+    if (req.tools?.length && req.toolMode !== "prompted") {
+      // Claude's own search is named web_search too; ours steps aside when it's on.
+      const own = req.nativeSearch ? req.tools.filter((t) => t.name !== "web_search") : req.tools;
+      anthropicTools.push(...own.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters })));
+    }
+    if (anthropicTools.length) body.tools = anthropicTools;
+    // Earlier steps of this turn, replayed exactly (thinking blocks included, as the API requires).
+    for (const turn of req.toolTurns ?? []) {
+      (body.messages as unknown[]).push(
+        { role: "assistant", content: turn.raw },
+        {
+          role: "user",
+          content: turn.results.map((r) => ({ type: "tool_result", tool_use_id: r.id, content: r.content || "(empty)", ...(r.isError ? { is_error: true } : {}) })),
+        },
+      );
+    }
+    applyPrompted(req, body, "anthropic");
     return { url: `${base}/v1/messages`, init: { method: "POST", headers, body: JSON.stringify(body) } };
   }
 
@@ -148,7 +209,7 @@ function buildRequest(req: ChatRequest): { url: string; init: FetchInit } {
         thinkingBudget: { low: 1024, medium: 8192, high: 24576 }[req.thinking],
       };
     }
-    const body = {
+    const body: { contents: { role: string; parts: unknown[] }[]; [key: string]: unknown } = {
       ...(req.system ? { systemInstruction: { parts: [{ text: req.system }] } } : {}),
       contents: history.map((m) => ({
         role: m.role === "assistant" ? "model" : "user",
@@ -161,8 +222,22 @@ function buildRequest(req: ChatRequest): { url: string; init: FetchInit } {
         ],
       })),
       generationConfig,
-      ...(req.nativeSearch ? { tools: [{ google_search: {} }] } : {}),
+      ...(req.tools?.length && req.toolMode !== "prompted"
+        ? { tools: [{ functionDeclarations: req.tools.map((t) => ({ name: t.name, description: t.description, parameters: geminiSchema(t.parameters) })) }] }
+        : req.nativeSearch
+          ? { tools: [{ google_search: {} }] }
+          : {}),
     };
+    for (const turn of req.toolTurns ?? []) {
+      body.contents.push(
+        { role: "model", parts: turn.raw as never },
+        {
+          role: "user",
+          parts: turn.results.map((r) => ({ functionResponse: { name: r.name, ...(r.id.startsWith("gem_") ? {} : { id: r.id }), response: { content: r.content } } })) as never,
+        },
+      );
+    }
+    applyPrompted(req, body, "gemini");
     const model = req.model.replace(/^models\//, "");
     return {
       url: `${base}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`,
@@ -201,11 +276,61 @@ function buildRequest(req: ChatRequest): { url: string; init: FetchInit } {
   if (req.nativeSearch && (provider.presetId === "openrouter" || base.includes("openrouter.ai"))) {
     body.plugins = [{ id: "web", max_results: 5 }];
   }
+  if (req.tools?.length && req.toolMode !== "prompted") {
+    body.tools = req.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
+  }
+  for (const turn of req.toolTurns ?? []) {
+    const raw = (turn.raw ?? {}) as { reasoning?: string };
+    messages.push({
+      role: "assistant",
+      content: turn.text || null,
+      tool_calls: turn.calls.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: JSON.stringify(c.args) } })),
+      // DeepSeek's thinking mode needs its reasoning replayed during tool calls.
+      ...(provider.presetId === "deepseek" && raw.reasoning ? { reasoning_content: raw.reasoning } : {}),
+    });
+    for (const r of turn.results) messages.push({ role: "tool", tool_call_id: r.id, content: r.content || "(empty)" });
+  }
+  applyPrompted(req, body, "openai");
   return { url: `${base}/chat/completions`, init: { method: "POST", headers, body: JSON.stringify(body) } };
 }
 
+/**
+ * Text-protocol tools: describe the tools in the system prompt and replay earlier steps as plain
+ * messages (assistant: the call markup; user: the result), so any chat model can use tools.
+ */
+function applyPrompted(req: ChatRequest, body: Record<string, any>, kind: "openai" | "anthropic" | "gemini") {
+  if (req.toolMode !== "prompted" || !req.tools?.length) return;
+  const protocol = promptedProtocol(req.tools);
+  const turns = req.toolTurns ?? [];
+  if (kind === "anthropic") {
+    body.system = [body.system, protocol].filter(Boolean).join("\n\n");
+    for (const turn of turns) {
+      body.messages.push({ role: "assistant", content: String(turn.raw) });
+      body.messages.push({ role: "user", content: turn.results.map((r) => promptedResult(r.name, r.content)).join("\n\n") });
+    }
+  } else if (kind === "gemini") {
+    const system = body.systemInstruction?.parts?.[0]?.text ?? "";
+    body.systemInstruction = { parts: [{ text: [system, protocol].filter(Boolean).join("\n\n") }] };
+    for (const turn of turns) {
+      body.contents.push({ role: "model", parts: [{ text: String(turn.raw) }] });
+      body.contents.push({ role: "user", parts: [{ text: turn.results.map((r) => promptedResult(r.name, r.content)).join("\n\n") }] });
+    }
+  } else {
+    const messages = body.messages as { role: string; content: unknown }[];
+    if (messages[0]?.role === "system") messages[0] = { role: "system", content: `${messages[0].content}\n\n${protocol}` };
+    else messages.unshift({ role: "system", content: protocol });
+    for (const turn of turns) {
+      messages.push({ role: "assistant", content: String(turn.raw) });
+      messages.push({ role: "user", content: turn.results.map((r) => promptedResult(r.name, r.content)).join("\n\n") });
+    }
+  }
+}
+
 /** Turns provider stream chunks into events. Stateful: sources and citations build up over the stream. */
-function createParser(provider: ProviderConfig): (json: any) => Generator<StreamEvent> {
+type Parser = { parse: (json: any) => Generator<StreamEvent>; finish: () => Generator<StreamEvent> };
+
+function createParser(provider: ProviderConfig, req: ChatRequest): Parser {
+  const native = Boolean(req.tools?.length) && req.toolMode !== "prompted";
   const sources: Source[] = [];
   const addSource = (url: string | undefined, title?: string, snippet = ""): number => {
     if (!url) return -1;
@@ -218,9 +343,15 @@ function createParser(provider: ProviderConfig): (json: any) => Generator<Stream
   const blockCitations = new Map<number, Set<number>>();
 
   if (provider.kind === "anthropic") {
-    return function* (json) {
+    // The full assistant turn, block by block, so a tool step can be replayed exactly.
+    const blocks: Record<string, any>[] = [];
+    const partialJson = new Map<number, string>();
+    let text = "";
+    const parse = function* (json: any): Generator<StreamEvent> {
       if (json.type === "content_block_start") {
         const block = json.content_block ?? {};
+        blocks[json.index] = { ...block };
+        if (block.type === "tool_use" || block.type === "server_tool_use") partialJson.set(json.index, "");
         if (block.type === "server_tool_use") yield { type: "status", text: "Searching the web…" };
         if (block.type === "web_search_tool_result" && Array.isArray(block.content)) {
           for (const r of block.content) addSource(r.url, r.title, r.page_age ? `Updated ${r.page_age}` : "");
@@ -228,8 +359,18 @@ function createParser(provider: ProviderConfig): (json: any) => Generator<Stream
         }
       } else if (json.type === "content_block_delta") {
         const delta = json.delta ?? {};
-        if (delta.type === "text_delta" && delta.text) yield { type: "text", text: delta.text };
-        if (delta.type === "thinking_delta" && delta.thinking) yield { type: "reasoning", text: delta.thinking };
+        const block = blocks[json.index];
+        if (delta.type === "text_delta" && delta.text) {
+          text += delta.text;
+          if (block) block.text = (block.text ?? "") + delta.text;
+          yield { type: "text", text: delta.text };
+        }
+        if (delta.type === "thinking_delta" && delta.thinking) {
+          if (block) block.thinking = (block.thinking ?? "") + delta.thinking;
+          yield { type: "reasoning", text: delta.thinking };
+        }
+        if (delta.type === "signature_delta" && block) block.signature = (block.signature ?? "") + (delta.signature ?? "");
+        if (delta.type === "input_json_delta") partialJson.set(json.index, (partialJson.get(json.index) ?? "") + (delta.partial_json ?? ""));
         if (delta.type === "citations_delta" && delta.citation?.url) {
           const n = addSource(delta.citation.url, delta.citation.title, delta.citation.cited_text ?? "");
           if (!blockCitations.has(json.index)) blockCitations.set(json.index, new Set());
@@ -243,14 +384,34 @@ function createParser(provider: ProviderConfig): (json: any) => Generator<Stream
       } else if (json.type === "message_delta" && json.delta?.stop_reason === "refusal") {
         yield { type: "text", text: "\n\n_The model declined to answer this request._" };
       }
+      if (json.type === "content_block_stop" && partialJson.has(json.index)) {
+        blocks[json.index].input = parseToolArgs(partialJson.get(json.index) ?? "");
+        partialJson.delete(json.index);
+      }
     };
+    const finish = function* (): Generator<StreamEvent> {
+      const calls = blocks.filter((b) => b?.type === "tool_use").map((b) => ({ id: b.id, name: b.name, args: b.input ?? {} }));
+      if (!native || !calls.length) return;
+      // Citations aren't needed on replay and some fields aren't accepted back.
+      const raw = blocks.filter(Boolean).map((b) => {
+        const { citations: _c, ...rest } = b;
+        return b.type === "text" ? { type: "text", text: b.text ?? "" } : rest;
+      });
+      yield { type: "tool_calls", calls, raw, text };
+    };
+    return { parse, finish };
   }
 
   if (provider.kind === "gemini") {
-    return function* (json) {
+    // Every part, kept as sent: function calls carry thought signatures that must be replayed.
+    const parts: Record<string, any>[] = [];
+    let text = "";
+    const parse = function* (json: any): Generator<StreamEvent> {
       const candidate = json.candidates?.[0];
       for (const part of candidate?.content?.parts ?? []) {
+        parts.push(part);
         if (typeof part.text !== "string" || !part.text) continue;
+        if (!part.thought) text += part.text;
         yield { type: part.thought ? "reasoning" : "text", text: part.text };
       }
       const chunks: any[] = candidate?.groundingMetadata?.groundingChunks ?? [];
@@ -259,9 +420,20 @@ function createParser(provider: ProviderConfig): (json: any) => Generator<Stream
         yield { type: "sources", sources: [...sources] };
       }
     };
+    const finish = function* (): Generator<StreamEvent> {
+      const calls = parts
+        .filter((p) => p.functionCall?.name)
+        .map((p, i) => ({ id: p.functionCall.id ?? `gem_${i}_${crypto.randomUUID().slice(0, 8)}`, name: p.functionCall.name, args: p.functionCall.args ?? {} }));
+      if (!native || !calls.length) return;
+      yield { type: "tool_calls", calls, raw: parts, text };
+    };
+    return { parse, finish };
   }
 
-  return function* (json) {
+  const accumulator = new ToolCallAccumulator();
+  let text = "";
+  let reasoningText = "";
+  const parse = function* (json: any): Generator<StreamEvent> {
     // Perplexity lists the pages behind its [1], [2] markers on the chunk itself.
     const listed: any[] = json.search_results ?? (json.citations ?? []).map((url: string) => ({ url }));
     if (listed.length > sources.length) {
@@ -276,10 +448,22 @@ function createParser(provider: ProviderConfig): (json: any) => Generator<Stream
       for (const a of annotations) addSource(a.url_citation?.url, a.url_citation?.title, a.url_citation?.content ?? "");
       yield { type: "sources", sources: [...sources] };
     }
+    if (delta.tool_calls) accumulator.push(delta.tool_calls);
     const reasoning = delta.reasoning_content ?? delta.reasoning;
-    if (typeof reasoning === "string" && reasoning) yield { type: "reasoning", text: reasoning };
-    if (typeof delta.content === "string" && delta.content) yield { type: "text", text: delta.content };
+    if (typeof reasoning === "string" && reasoning) {
+      reasoningText += reasoning;
+      yield { type: "reasoning", text: reasoning };
+    }
+    if (typeof delta.content === "string" && delta.content) {
+      text += delta.content;
+      yield { type: "text", text: delta.content };
+    }
   };
+  const finish = function* (): Generator<StreamEvent> {
+    if (!native || !accumulator.size) return;
+    yield { type: "tool_calls", calls: accumulator.finish(), raw: { reasoning: reasoningText }, text };
+  };
+  return { parse, finish };
 }
 
 /** Yields the `data:` payload of each server-sent event. Also copes with fully buffered bodies. */

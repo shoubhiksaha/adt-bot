@@ -2,7 +2,8 @@
 // The UI is served from a private app:// origin (so saved chats survive restarts), and
 // app://adtbot/api/proxy relays provider calls outside the page, which avoids CORS for every
 // cloud provider, local LLM server and private model server.
-const { app, BrowserWindow, Menu, net, protocol, session, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, Menu, net, protocol, session, shell } = require("electron");
+const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 
@@ -72,6 +73,34 @@ async function serveFile(pathname) {
   return new Response(response.body, { status: response.status, headers });
 }
 
+let mainWindow = null;
+
+/**
+ * Desktop-only features (local commands, Docker computers, Mac control, CLI agents, LAN rooms…)
+ * live in electron/features/*.cjs. Each exports register(ctx) and handles "adt:<feature>:*" IPC.
+ */
+function loadFeatures() {
+  const dir = path.join(__dirname, "features");
+  if (!fs.existsSync(dir)) return;
+  const ctx = {
+    app,
+    ipcMain,
+    shell,
+    BrowserWindow,
+    getWindow: () => mainWindow,
+    /** Push an event to the app UI (channel must start with "adt:"). */
+    send: (channel, payload) => mainWindow?.webContents.send(channel, payload),
+    userData: app.getPath("userData"),
+  };
+  for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".cjs")).sort()) {
+    try {
+      require(path.join(dir, file)).register(ctx);
+    } catch (error) {
+      console.error(`Feature ${file} failed to load:`, error);
+    }
+  }
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1200,
@@ -104,6 +133,10 @@ function createWindow() {
   });
 
   win.loadURL(DEV ? "http://localhost:5173" : "app://adtbot/");
+  mainWindow = win;
+  win.on("closed", () => {
+    if (mainWindow === win) mainWindow = null;
+  });
 }
 
 app.whenReady().then(() => {
@@ -131,6 +164,7 @@ app.whenReady().then(() => {
     Menu.setApplicationMenu(Menu.buildFromTemplate([{ role: "editMenu" }, { role: "viewMenu" }]));
   }
 
+  loadFeatures();
   createWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

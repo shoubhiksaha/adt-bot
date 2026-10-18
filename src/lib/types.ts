@@ -35,6 +35,8 @@ export type Bot = {
   nickname?: string;
   /** Files only this bot uses (product docs, its instructions…). */
   knowledge?: KnowledgeRef[];
+  /** Tool groups this bot may use ("all" = every available group). */
+  toolGroups?: string[] | "all";
   avatar: string;
   description: string;
   systemPrompt: string;
@@ -47,6 +49,42 @@ export type Bot = {
   /** Let the bot save new memories by emitting <remember> tags. */
   autoMemory: boolean;
   createdAt: number;
+};
+
+/** One tool the bot used while answering, as shown in the chat and recorded in the activity log. */
+export type ToolCallRecord = {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  status: "pending" | "awaiting" | "denied" | "running" | "done" | "error";
+  /** What the tool reported back (trimmed for storage). */
+  result?: string;
+  /** Rich output for the chat: an image/screenshot, terminal output, or a chart. */
+  display?: ToolDisplay;
+  /** Present while waiting for the user's decision. */
+  approval?: { summary: string; detail: string; reason: string; kind: string; allowAlways: boolean };
+  startedAt?: number;
+  ms?: number;
+};
+
+export type ToolDisplay =
+  | { kind: "image"; src: string; caption?: string }
+  | { kind: "terminal"; text: string }
+  | { kind: "markdown"; text: string };
+
+/** Agent settings: tools and the approval gate. */
+export type AgentSettings = {
+  /** Let bots use tools (search, files, computers…). */
+  enabled: boolean;
+  approvalPolicy: "ask-every-time" | "ask-first-time" | "allowlist" | "auto-run";
+  /** Patterns that never need approval (e.g. "git status", "tool:web_search"). */
+  allowlist: string[];
+  /** Patterns that are always refused, whatever the policy. */
+  denylist: string[];
+  /** Safety cap on tool steps per answer. */
+  maxSteps: number;
+  /** How tools are offered: native tool calling, a text protocol for models without it, or automatic. */
+  mode: "auto" | "native" | "prompted";
 };
 
 export type Attachment =
@@ -65,6 +103,8 @@ export type Message = {
   sources?: Source[];
   /** Knowledge files that were consulted for this answer. */
   knowledge?: string[];
+  /** Tools used while producing this answer, in order. */
+  toolCalls?: ToolCallRecord[];
   model?: string;
   error?: string;
   /** Transient progress line, e.g. "Searching the web…". */
@@ -152,6 +192,7 @@ export type SearchEngine = "duckduckgo" | "brave" | "tavily" | "searxng";
 
 export type Settings = {
   theme: "system" | "dark" | "light";
+  agent: AgentSettings;
   brand: Brand;
   /** What the bots should call you. */
   userName: string;

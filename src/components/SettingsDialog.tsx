@@ -9,24 +9,43 @@ import { detectEnv, type Platform } from "../lib/transport";
 import { Dialog } from "./Dialog";
 import { ProviderSetup } from "./ProviderSetup";
 import { AppearanceSettings } from "./settings/Appearance";
+import { useFeatureRegistry } from "../features/registry";
 import { ModelInput, Toggle } from "./settings/controls";
+import { ToolsSettings } from "./settings/ToolsSettings";
 import { VoiceSettings } from "./settings/VoiceSettings";
 import { WorkspaceSettings } from "./settings/Workspace";
 
-export type SettingsTab = "general" | "appearance" | "workspace" | "providers" | "search" | "images" | "voice" | "data";
-const TABS: SettingsTab[] = ["general", "appearance", "workspace", "providers", "search", "images", "voice", "data"];
+export type SettingsTab = "general" | "appearance" | "workspace" | "providers" | "tools" | "search" | "images" | "voice" | "data" | (string & {});
+const TABS: { id: SettingsTab; label: string }[] = [
+  { id: "general", label: "General" },
+  { id: "appearance", label: "Appearance" },
+  { id: "workspace", label: "Workspace" },
+  { id: "providers", label: "Providers" },
+  { id: "tools", label: "Tools & safety" },
+  { id: "search", label: "Search" },
+  { id: "images", label: "Images" },
+  { id: "voice", label: "Voice" },
+  { id: "data", label: "Data" },
+];
 
 export default function SettingsDialog({ onClose, initialTab = "general" }: { onClose: () => void; initialTab?: SettingsTab }) {
   const [tab, setTab] = useState<SettingsTab>(initialTab);
+  const featureTabs = useFeatureRegistry((s) => s.tabs);
+  const [platform, setPlatform] = useState<Platform | null>(null);
+  useEffect(() => {
+    void detectEnv().then((env) => setPlatform(env.platform));
+  }, []);
+  const extra = featureTabs.filter((t) => !t.platforms || (platform && t.platforms.includes(platform)));
+  const FeatureTab = extra.find((t) => t.id === tab)?.Component;
   return (
     <Dialog
       title="Settings"
       onClose={onClose}
       tabs={
         <div className="tabs" role="tablist">
-          {TABS.map((t) => (
-            <button key={t} type="button" role="tab" aria-selected={tab === t} className={tab === t ? "active" : ""} onClick={() => setTab(t)}>
-              {t[0].toUpperCase() + t.slice(1)}
+          {[...TABS, ...extra.map((t) => ({ id: t.id, label: t.label }))].map((t) => (
+            <button key={t.id} type="button" role="tab" aria-selected={tab === t.id} className={tab === t.id ? "active" : ""} onClick={() => setTab(t.id)}>
+              {t.label}
             </button>
           ))}
         </div>
@@ -36,6 +55,8 @@ export default function SettingsDialog({ onClose, initialTab = "general" }: { on
       {tab === "appearance" && <AppearanceSettings />}
       {tab === "workspace" && <WorkspaceSettings />}
       {tab === "providers" && <ProvidersTab />}
+      {tab === "tools" && <ToolsSettings />}
+      {FeatureTab && <FeatureTab />}
       {tab === "search" && <SearchTab />}
       {tab === "images" && <ImagesTab />}
       {tab === "voice" && <VoiceSettings />}
