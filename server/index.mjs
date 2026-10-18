@@ -87,4 +87,14 @@ if (isMain) {
     },
   });
   console.log(`ADT Bot running at ${url}`);
+  // ROOMS=1: also open a LAN chat room (people only; bots in rooms need the desktop app).
+  if (process.env.ROOMS === "1") {
+    const { createRoomHub } = await import("./rooms.mjs");
+    const room = await createRoomHub({ brand: process.env.ROOM_BRAND }).startRoom({
+      name: process.env.ROOM_NAME ?? "Chat room",
+      pin: process.env.ROOM_PIN,
+      hostName: process.env.ROOM_HOST ?? "Host",
+    });
+    console.log(`Room "${room.name}" is open on your network, PIN ${room.pin}:\n  ${room.urls.join("\n  ")}`);
+  }
 }

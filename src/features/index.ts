@@ -2,5 +2,6 @@
 import "./connectors";
 import "./cli-agents";
 import "./automation";
-export {};
 import "./projects";
+import "./rooms";
+export {};
