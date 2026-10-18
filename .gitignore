@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 dist/
 release/
 *.log
@@ -14,3 +14,4 @@ android/app/build/
 android/.gradle/
 ios/App/build/
 *.tsbuildinfo
+.claude/
