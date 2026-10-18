@@ -1,5 +1,6 @@
 import { OPEN as PROMPTED_OPEN, PromptedFilter, promptedProtocol, promptedResult } from "./agent/prompted";
 import { ToolCallAccumulator, parseToolArgs } from "./agent/vendor/openbot/toolCallAccumulator";
+import { cliModels, streamCliChat } from "./cli-agents/provider";
 import type { ToolCall, ToolSchema } from "./agent/vendor/openbot/types";
 import { guessVision } from "./providers";
 import { providerFetch, type FetchInit } from "./transport";
@@ -57,6 +58,7 @@ export type ChatRequest = {
 
 /** Stream a reply from any supported provider as text and reasoning deltas. */
 export async function* streamChat(req: ChatRequest): AsyncGenerator<StreamEvent> {
+  if (req.provider.kind === "cli") return yield* streamCliChat(req);
   const { url, init } = buildRequest(req);
   init.headers = withCustomHeaders(init.headers, req.provider.headers);
   const res = await providerFetch(url, { ...init, signal: req.signal }, req.useProxy);
@@ -499,6 +501,7 @@ export async function* sseData(res: Response): AsyncGenerator<string> {
 
 /** Models a provider offers, read from its own /models endpoint. */
 export async function listModels(provider: ProviderConfig, useProxy: boolean, signal?: AbortSignal): Promise<ModelInfo[]> {
+  if (provider.kind === "cli") return cliModels(provider);
   const base = provider.baseUrl.replace(/\/+$/, "");
   const headers: Record<string, string> = {};
   let url = `${base}/models`;

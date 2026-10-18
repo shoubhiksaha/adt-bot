@@ -1,5 +1,6 @@
 /** Wire protocol a provider speaks. Almost everything (including local servers) is "openai". */
-export type ProviderKind = "openai" | "anthropic" | "gemini";
+/** "cli" = a coding agent CLI on this computer (desktop app), see src/lib/cli-agents. */
+export type ProviderKind = "openai" | "anthropic" | "gemini" | "cli";
 
 export type ThinkingLevel = "off" | "low" | "medium" | "high";
 

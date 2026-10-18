@@ -1,5 +1,6 @@
 import { Check, ChevronDown, Cpu, ExternalLink, Loader2, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { isDesktop } from "../lib/desktop";
 import { detectLocalServers, type FoundServer } from "../lib/detect";
 import { listModels } from "../lib/llm";
 import { PROVIDER_PRESETS, parseHeaders, presetById, type ProviderPreset } from "../lib/providers";
@@ -11,6 +12,7 @@ const GROUPS: { group: ProviderPreset["group"]; label: string }[] = [
   { group: "cloud", label: "Cloud providers" },
   { group: "local", label: "Local AI on this computer (no key)" },
   { group: "private", label: "Private, self-hosted or custom servers" },
+  { group: "cli", label: "Coding agents on this computer (command-line tools)" },
 ];
 
 /** The model a new provider's bots start with: the preset default, or the first installed model. */
@@ -114,10 +116,10 @@ export function ProviderSetup({ onDone }: { onDone?: (provider: ProviderConfig) 
 
   const visible = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    return PROVIDER_PRESETS.filter((p) => !q || p.name.toLowerCase().includes(q) || p.id.includes(q));
+    return PROVIDER_PRESETS.filter((p) => (p.kind !== "cli" || isDesktop()) && (!q || p.name.toLowerCase().includes(q) || p.id.includes(q)));
   }, [filter]);
 
-  const showUrl = preset.group !== "cloud" || !preset.baseUrl;
+  const showUrl = (preset.group !== "cloud" && preset.group !== "cli") || !preset.baseUrl;
   const canConnect = Boolean(baseUrl.trim()) && (!preset.needsKey || apiKey.trim().length > 0) && !busy;
 
   const tile = (p: ProviderPreset) => (
@@ -196,7 +198,7 @@ export function ProviderSetup({ onDone }: { onDone?: (provider: ProviderConfig) 
             </a>
           )}
         </div>
-        {(preset.needsKey || preset.group !== "local") && (
+        {(preset.needsKey || (preset.group !== "local" && preset.group !== "cli")) && (
           <div className="field">
             <label htmlFor="api-key">
               API key {!preset.needsKey && <span className="badge">optional</span>}
