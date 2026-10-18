@@ -5,3 +5,4 @@ import "./automation";
 import "./projects";
 import "./rooms";
 export {};
+import "./mac-control";

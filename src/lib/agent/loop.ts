@@ -172,7 +172,7 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
         ms: Date.now() - started,
         conversationId: context.conversationId,
       });
-      return { id: call.id, name: call.name, content };
+      return { id: call.id, name: call.name, content, ...(value.image ? { image: value.image } : {}) };
     } catch (error) {
       const content = `Error: ${(error as Error).message}`;
       update(call.id, { status: "error", result: content, ms: Date.now() - started });

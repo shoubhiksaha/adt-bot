@@ -1,4 +1,5 @@
 import type { Platform } from "../transport";
+import type { ToolImage } from "../llm";
 import type { Bot, ProviderConfig, Settings, ToolDisplay } from "../types";
 import type { JsonSchema, ToolSchema } from "./vendor/openbot/types";
 
@@ -39,6 +40,8 @@ export type ToolResult =
       display?: ToolDisplay;
       /** Name the outside source when the content came from the web, a file, another program… */
       untrustedSource?: string;
+      /** An image the model should see (e.g. a screenshot), sent with the result to models that can view images. */
+      image?: ToolImage;
     };
 
 export type AgentTool = ToolSchema & {
