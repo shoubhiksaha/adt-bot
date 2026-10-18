@@ -4,7 +4,9 @@ import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 import { linkCitations, splitBlocks } from "../lib/markdown-utils";
 import type { Source } from "../lib/types";
+import { parseRichBlock } from "../lib/visualize/fences";
 import { CopyButton } from "./CopyButton";
+import { RichBlockView } from "./viz/RichBlock";
 
 function textOf(node: ReactNode): string {
   if (typeof node === "string" || typeof node === "number") return String(node);
@@ -19,6 +21,9 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   const child = Array.isArray(children) ? children[0] : children;
   const className: string = (child as { props?: { className?: string } })?.props?.className ?? "";
   const language = /language-([\w+-]+)/.exec(className)?.[1] ?? "text";
+  // ```chart / ```card blocks become inline charts and cards; malformed JSON stays a code block.
+  const rich = parseRichBlock(language, textOf(children));
+  if (rich) return <RichBlockView block={rich} />;
   return (
     <div className="code-block">
       <div className="code-head">
