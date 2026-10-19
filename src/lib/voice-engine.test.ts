@@ -89,3 +89,21 @@ describe("echo filter", () => {
     expect(isEcho("stop, I meant Germany", "The capital of France is Paris, a lovely city.")).toBe(false);
   });
 });
+
+describe("Whisper noise guards", () => {
+  it("drops phrases Whisper invents from noise", async () => {
+    const { isLikelyHallucination } = await import("./voice-commands");
+    for (const t of ["Thank you.", "Thanks for watching!", "Love you, Duane.", "[Music]", "(silence)", "♪ ♪", "you", "Subtitles by the Amara.org community"]) {
+      expect(isLikelyHallucination(t), t).toBe(true);
+    }
+    for (const t of ["What is the capital of France?", "Thank you, now summarise it", "Yes", "Open my calendar"]) {
+      expect(isLikelyHallucination(t), t).toBe(false);
+    }
+  });
+
+  it("needs a real sentence to cut in", async () => {
+    const { isSubstantial } = await import("./voice-commands");
+    expect(isSubstantial("no wait")).toBe(false);
+    expect(isSubstantial("Actually tell me about Berlin instead")).toBe(true);
+  });
+});

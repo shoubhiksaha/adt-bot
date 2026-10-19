@@ -127,3 +127,21 @@ export function isEcho(heard: string, spoken: string): boolean {
   const overlap = h.filter((w) => s.has(w)).length / h.length;
   return overlap >= 0.6;
 }
+
+/**
+ * Whisper invents short phrases from noise or silence ("Thank you.", "Thanks for watching!",
+ * "Love you.", "[Music]"). These are dropped instead of being treated as the user speaking.
+ */
+const HALLUCINATIONS =
+  /^(?:thank you(?: (?:so much|very much|for watching|for listening))?|thanks(?: for watching| for listening)?|love you(?: \w+)?|bye(?: bye)?|you|oh|ah|uh|um|hmm|mm|so|the|i|amen|music|applause|laughter|silence|subtitles.*|please subscribe.*|see you(?: next time| later)?)$/;
+
+export function isLikelyHallucination(text: string): boolean {
+  if (/^\s*[[(*♪].*[\])*♪]\s*$/.test(text)) return true; // [Music], (silence), ♪ ♪
+  const t = normalize(text);
+  return !t || HALLUCINATIONS.test(t);
+}
+
+/** Enough real words to count as the user cutting in (single words are usually noise or echo). */
+export function isSubstantial(text: string): boolean {
+  return normalize(text).split(" ").filter((w) => w.length > 2).length >= 3;
+}

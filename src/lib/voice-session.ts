@@ -3,7 +3,7 @@ import { splitThink } from "./llm";
 import { selectBot, startNewChat, updateSettings, useStore } from "./store";
 import { chime, createSpeaker, type Speaker, takeSentences } from "./tts";
 import { END_SILENCE_MS, type Engine, ENGINE_LABELS, listen, type ListenSession, resolveEngine, transcribe } from "./voice";
-import { isEcho, matchWakeWord, parseVoiceCommand } from "./voice-commands";
+import { isEcho, isLikelyHallucination, isSubstantial, matchWakeWord, parseVoiceCommand } from "./voice-commands";
 import { Listener, type ListenerEvent, onWhisperProgress, toWav } from "./whisper";
 
 export type VoicePhase = "loading" | "listening" | "hearing" | "thinking" | "speaking" | "standby" | "muted" | "error";
@@ -28,7 +28,7 @@ export type VoiceState = {
   wakeName: string;
 };
 
-const IDLE_TO_STANDBY_MS = 25_000;
+const IDLE_TO_STANDBY_MS = 60_000;
 
 /**
  * A hands-free voice conversation: listens continuously, detects turns, handles spoken commands
@@ -284,10 +284,13 @@ export class VoiceSession {
 
   private async onUtterance(text: string) {
     const { phase } = this.state;
-    if (!text) {
+    if (!text || isLikelyHallucination(text)) {
       if (phase === "hearing") this.enterListening();
       return;
     }
+    // While the bot thinks or talks, only a command ("stop") or a real sentence cuts in;
+    // a stray word is usually noise, echo or Whisper guessing.
+    if ((phase === "speaking" || phase === "thinking") && !isSubstantial(text) && !parseVoiceCommand(text, useStore.getState().bots)) return;
     if (phase === "standby") {
       const wake = this.matchWake(text);
       if (!wake) return;
