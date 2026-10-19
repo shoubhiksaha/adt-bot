@@ -2181,3 +2181,21 @@ h2,
 .sidebar-head strong {
   font-family: var(--font-display, inherit);
 }
+
+.custom-voice {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+}
+.custom-voice details summary {
+  cursor: pointer;
+  margin: 4px 0 8px;
+}
+.textarea.mono {
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+  font-size: 12px;
+}

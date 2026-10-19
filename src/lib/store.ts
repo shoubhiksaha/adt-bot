@@ -112,6 +112,7 @@ export const defaultSettings: Settings = {
       cartesia: { key: "", voice: "", model: "sonic-3.6" },
       deepgram: { key: "", voice: "", model: "aura-2-thalia-en" },
     },
+    customVoices: [],
     elevenVoiceId: "",
     elevenModel: "eleven_flash_v2_5",
     endSilence: "normal",

@@ -1,7 +1,13 @@
 import { Capacitor } from "@capacitor/core";
 import { describeHttpError, withCustomHeaders } from "./llm";
 import { providerFetch } from "./transport";
+import { audioFromJson, buildCustomRequest } from "./custom-tts";
 import type { CloudTts, ProviderConfig, VoiceSettings } from "./types";
+
+export function customVoiceFor(voice: VoiceSettings) {
+  const id = voice.tts.startsWith("custom:") ? voice.tts.slice(7) : "";
+  return (voice.customVoices ?? []).find((c) => c.id === id);
+}
 
 export const OPENAI_TTS_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse"];
 export const ELEVENLABS_DEFAULT_VOICE = "21m00Tcm4TlvDq8ikWAM";
@@ -109,6 +115,7 @@ export function ttsLabel(voice: VoiceSettings): string {
   if (voice.tts === "openai") return `${voice.ttsModel || "OpenAI"} · ${voice.ttsVoice || "alloy"}`;
   if (voice.tts === "elevenlabs") return "ElevenLabs";
   if (voice.tts in CLOUD_TTS) return CLOUD_TTS[voice.tts as CloudTts].label;
+  if (voice.tts.startsWith("custom:")) return customVoiceFor(voice)?.name || "Custom voice";
   return "Device voice";
 }
 
@@ -293,6 +300,16 @@ export const CLOUD_TTS: Record<
 
 /** Natural voices: any OpenAI-compatible /audio/speech server, ElevenLabs, Fish Audio, Cartesia or Deepgram. Returns encoded audio. */
 async function synthesize(text: string, { voice, providers, useProxy }: TtsContext, signal: AbortSignal): Promise<ArrayBuffer> {
+  if (voice.tts.startsWith("custom:")) {
+    const custom = customVoiceFor(voice);
+    if (!custom) throw new Error("That voice service was removed. Choose another in Settings → Voice.");
+    if (!/^https?:\/\/[^/]+/.test(custom.url)) throw new Error(`Add the web address for ${custom.name} in Settings → Voice.`);
+    const { url, headers, body } = buildCustomRequest(custom, text, voice.rate);
+    const res = await providerFetch(url, { method: "POST", headers, body, signal }, useProxy);
+    if (!res.ok) throw new Error(`${custom.name}: ${(await describeHttpError(res)).replace("Settings → Providers", "Settings → Voice")}`);
+    if (custom.response === "json") return audioFromJson(await res.json(), custom.audioPath);
+    return res.arrayBuffer();
+  }
   if (voice.tts in CLOUD_TTS) {
     const service = CLOUD_TTS[voice.tts as CloudTts];
     const config = voice.cloudTts?.[voice.tts as CloudTts];

@@ -21,7 +21,7 @@ database or server stack to run.
 | Image creation | Yes | Yes, via OpenRouter, OpenAI, xAI, Gemini or any `/images/generations` server |
 | Reads PDFs, documents, code, links | Yes | Yes: PDFs, text and code files, images, and any link you paste |
 | Personalities | A few built-in modes and companions | Unlimited bots, each with its own personality, model and memory |
-| Voice | Yes | Hands-free voice mode with wake word (“Hey <nickname>”), voice commands, interrupting, live captions, natural voices (OpenAI, ElevenLabs, self-hosted Kokoro) or free device voices, on every platform |
+| Voice | Yes | Hands-free voice mode with wake word (“Hey <nickname>”), voice commands, interrupting, live captions, natural voices (OpenAI, ElevenLabs, Fish Audio, Cartesia, Deepgram, Sarvam, Google, Azure, self-hosted Kokoro, or any voice API you add) or free device voices, on every platform |
 | Your company's look | No | Your name, logo and theme, imported from a logo, brand guide, CSS file or website |
 | Knows your business | Limited | “About us”, custom instructions and knowledge files (PDF, Word, Markdown, HTML…), shared or per bot |
 | Price | Free tier with limits; subscriptions for more | Free app; pay your provider per use, or nothing with local models |
@@ -113,7 +113,10 @@ Click the **sound-wave button** next to the mic for a hands-free conversation:
 
 **Natural voices** (Settings → Voice → Reply voice): any OpenAI-compatible `/audio/speech` server (OpenAI
 `gpt-4o-mini-tts`, or a free self-hosted [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI) server added as a
-private server) or ElevenLabs. With device voices, macOS's free “Premium”/“Enhanced” voices sound much better
+private server), ElevenLabs, Fish Audio, Cartesia or Deepgram Aura, each with your own API key. Choose
+**＋ Add a voice provider…** to use any other text-to-speech API: templates fill in Sarvam AI (Indian languages),
+Google Cloud and Azure, or describe any service yourself (web address, headers, a body with `{{text}}`, `{{voice}}`,
+`{{model}}`, `{{speed}}`, `{{key}}`, and whether it returns audio or base64 audio in JSON). With device voices, macOS's free “Premium”/“Enhanced” voices sound much better
 (System Settings → Accessibility → Spoken Content → Manage voices); the best one is picked automatically.
 
 For the snappiest conversations, pick a fast **voice model** in Settings → Voice (e.g. Claude Haiku, Gemini Flash
@@ -294,7 +297,8 @@ src/lib/voice-session.ts  Hands-free voice conversation: turns, commands, wake w
 src/lib/speech.worker.ts  Silero VAD + Whisper in a worker (speculative transcription, live captions)
 src/lib/segmenter.ts      Turn detection from voice probabilities
 src/lib/voice-commands.ts Voice commands, wake-word matching, echo detection
-src/lib/tts.ts            Reply voices: device, OpenAI-compatible, ElevenLabs; sentence streaming
+src/lib/tts.ts            Reply voices: device, OpenAI-compatible, ElevenLabs, Fish Audio, Cartesia, Deepgram; sentence streaming
+src/lib/custom-tts.ts     Voice services you add yourself (templates: Sarvam, Google Cloud, Azure)
 src/lib/voice.ts          Speech engines (browser, Android, Whisper, cloud) for dictation
 src/lib/knowledge.ts      Knowledge files: storage, chunking, BM25 retrieval
 src/lib/theme.ts          Theme engine (contrast-safe palettes from brand colours)

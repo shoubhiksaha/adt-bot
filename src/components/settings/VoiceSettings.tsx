@@ -1,7 +1,8 @@
 import { AudioLines, Volume2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { updateSettings, useStore } from "../../lib/store";
-import { bestVoice, CLOUD_TTS, type DeviceVoice, listVoices, OPENAI_TTS_VOICES, rankVoice } from "../../lib/tts";
+import { CUSTOM_VOICE_TEMPLATES, type CustomVoice, newCustomVoice } from "../../lib/custom-tts";
+import { bestVoice, CLOUD_TTS, customVoiceFor, type DeviceVoice, listVoices, OPENAI_TTS_VOICES, rankVoice } from "../../lib/tts";
 import type { CloudTts, VoiceSettings } from "../../lib/types";
 import { ENGINE_LABELS, resolveEngine, speak, TRANSCRIBE_MODEL_SUGGESTIONS } from "../../lib/voice";
 import { onWhisperProgress, preloadWhisper, WHISPER_SIZES, whisperDownloaded } from "../../lib/whisper";
@@ -53,13 +54,29 @@ export function VoiceSettings() {
 
       <Section title="Reply voice" hint="Natural voices sound like Grok's; device voices are free and instant.">
         <div className="field">
-          <select id="tts-engine" className="select" value={voice.tts} onChange={(e) => set({ tts: e.target.value as typeof voice.tts })}>
+          <select
+            id="tts-engine"
+            className="select"
+            value={voice.tts}
+            onChange={(e) => {
+              if (e.target.value === "__add") {
+                const added = newCustomVoice("blank");
+                set({ customVoices: [...(voice.customVoices ?? []), added], tts: `custom:${added.id}` });
+              } else set({ tts: e.target.value as typeof voice.tts });
+            }}
+          >
             <option value="system">Device voice (free, instant)</option>
             <option value="openai">Natural: OpenAI-compatible (OpenAI, or a self-hosted Kokoro/LocalAI server)</option>
             <option value="elevenlabs">Natural: ElevenLabs</option>
             <option value="fish">Natural: Fish Audio</option>
             <option value="cartesia">Natural: Cartesia</option>
             <option value="deepgram">Natural: Deepgram Aura</option>
+            {(voice.customVoices ?? []).map((c) => (
+              <option key={c.id} value={`custom:${c.id}`}>
+                Yours: {c.name || "Voice service"}
+              </option>
+            ))}
+            <option value="__add">＋ Add a voice provider…</option>
           </select>
         </div>
 
@@ -128,6 +145,7 @@ export function VoiceSettings() {
         )}
 
         {voice.tts in CLOUD_TTS && <CloudVoiceFields id={voice.tts as CloudTts} voice={voice} set={set} />}
+        {voice.tts.startsWith("custom:") && customVoiceFor(voice) && <CustomVoiceFields voice={voice} set={set} />}
 
         <div className="field">
           <label htmlFor="tts-rate">
@@ -311,5 +329,104 @@ function CloudVoiceFields({ id, voice, set }: { id: CloudTts; voice: VoiceSettin
       </div>
       <span className="small muted">{service.voiceHint}. Keys stay on this device.</span>
     </>
+  );
+}
+
+/** Any HTTP text-to-speech service: URL, key, headers, body template and where the audio is. */
+function CustomVoiceFields({ voice, set }: { voice: VoiceSettings; set: (patch: Partial<VoiceSettings>) => void }) {
+  const current = customVoiceFor(voice)!;
+  const [template, setTemplate] = useState("");
+  const update = (patch: Partial<CustomVoice>) =>
+    set({ customVoices: voice.customVoices.map((c) => (c.id === current.id ? { ...c, ...patch } : c)) });
+  const applyTemplate = (id: string) => {
+    setTemplate(id);
+    const { hint: _hint, keyUrl: _keyUrl, ...shape } = CUSTOM_VOICE_TEMPLATES[id];
+    update(shape);
+  };
+  const remove = () => set({ customVoices: voice.customVoices.filter((c) => c.id !== current.id), tts: "system" });
+  const info = CUSTOM_VOICE_TEMPLATES[template];
+  return (
+    <div className="custom-voice">
+      <div className="field">
+        <label htmlFor="cv-template">Start from</label>
+        <select id="cv-template" className="select" value={template} onChange={(e) => e.target.value && applyTemplate(e.target.value)}>
+          <option value="">Choose a template (optional)…</option>
+          {Object.entries(CUSTOM_VOICE_TEMPLATES).map(([id, t]) => (
+            <option key={id} value={id}>
+              {id === "blank" ? "Any other service (blank)" : t.name}
+            </option>
+          ))}
+        </select>
+        {info && (
+          <span className="small muted">
+            {info.hint}{" "}
+            {info.keyUrl && (
+              <a href={info.keyUrl} target="_blank" rel="noreferrer">
+                Get a key
+              </a>
+            )}
+          </span>
+        )}
+      </div>
+      <div className="field-row">
+        <div className="field">
+          <label htmlFor="cv-name">Name</label>
+          <input id="cv-name" className="input" value={current.name} onChange={(e) => update({ name: e.target.value })} />
+        </div>
+        <div className="field">
+          <label htmlFor="cv-key">API key</label>
+          <input id="cv-key" className="input" type="password" autoComplete="off" value={current.key} onChange={(e) => update({ key: e.target.value.trim() })} />
+        </div>
+      </div>
+      <div className="field">
+        <label htmlFor="cv-url">Web address (POST)</label>
+        <input id="cv-url" className="input" placeholder="https://api.example.com/v1/tts" value={current.url} onChange={(e) => update({ url: e.target.value.trim() })} />
+      </div>
+      <div className="field-row">
+        <div className="field">
+          <label htmlFor="cv-voice">Voice</label>
+          <input id="cv-voice" className="input" value={current.voice} onChange={(e) => update({ voice: e.target.value })} />
+        </div>
+        <div className="field">
+          <label htmlFor="cv-model">Model</label>
+          <input id="cv-model" className="input" value={current.model} onChange={(e) => update({ model: e.target.value })} />
+        </div>
+      </div>
+      <details>
+        <summary className="small">Request and response details</summary>
+        <div className="field">
+          <label htmlFor="cv-headers">Headers (one "Name: value" per line)</label>
+          <textarea id="cv-headers" className="textarea mono" rows={3} value={current.headers} onChange={(e) => update({ headers: e.target.value })} />
+        </div>
+        <div className="field">
+          <label htmlFor="cv-body">Body</label>
+          <textarea id="cv-body" className="textarea mono" rows={4} value={current.body} onChange={(e) => update({ body: e.target.value })} />
+          <span className="small muted">
+            {"{{text}}"}, {"{{voice}}"}, {"{{model}}"}, {"{{speed}}"} and {"{{key}}"} are filled in for each sentence (escaped for JSON or XML).
+          </span>
+        </div>
+        <div className="field-row">
+          <div className="field">
+            <label htmlFor="cv-response">The service replies with</label>
+            <select id="cv-response" className="select" value={current.response} onChange={(e) => update({ response: e.target.value as CustomVoice["response"] })}>
+              <option value="audio">An audio file (mp3, wav…)</option>
+              <option value="json">JSON with base64 audio</option>
+            </select>
+          </div>
+          {current.response === "json" && (
+            <div className="field">
+              <label htmlFor="cv-path">Audio is at</label>
+              <input id="cv-path" className="input" placeholder="audios.0" value={current.audioPath} onChange={(e) => update({ audioPath: e.target.value.trim() })} />
+            </div>
+          )}
+        </div>
+      </details>
+      <div className="btn-row">
+        <button type="button" className="btn danger" onClick={remove}>
+          Remove this voice service
+        </button>
+      </div>
+      <span className="small muted">Keys stay on this device. Use Test voice below to check it.</span>
+    </div>
   );
 }

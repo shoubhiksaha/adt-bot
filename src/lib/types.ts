@@ -1,3 +1,4 @@
+import type { CustomVoice } from "./custom-tts";
 import type { VisualizationSpec } from "./agent/vendor/openbot/visualization";
 /** Wire protocol a provider speaks. Almost everything (including local servers) is "openai". */
 /** "cli" = a coding agent CLI on this computer (desktop app), see src/lib/cli-agents. */
@@ -136,7 +137,7 @@ export type Conversation = {
  */
 export type SttEngine = "auto" | "device" | "whisper-local" | "whisper-cloud";
 
-export type TtsEngine = "system" | "openai" | "elevenlabs" | CloudTts;
+export type TtsEngine = "system" | "openai" | "elevenlabs" | CloudTts | `custom:${string}`;
 /** Natural-voice services that only need an API key. */
 export type CloudTts = "fish" | "cartesia" | "deepgram";
 
@@ -160,6 +161,8 @@ export type VoiceSettings = {
   elevenModel: string;
   /** Keys and voices for Fish Audio, Cartesia and Deepgram. */
   cloudTts: Record<CloudTts, { key: string; voice: string; model: string }>;
+  /** Voice services the user added (any HTTP text-to-speech API). Selected as tts = "custom:<id>". */
+  customVoices: CustomVoice[];
   /** How long a pause ends your turn. */
   endSilence: "fast" | "normal" | "patient";
   /** Interrupt the bot by talking. "auto" = instantly with natural voices, after a short check with device voices. */
