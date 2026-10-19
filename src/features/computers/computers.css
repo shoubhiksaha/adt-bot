@@ -1,0 +1,376 @@
+/* Computers screen and settings. Uses the app's tokens from src/styles.css.
+   The .cframe-* rules are adapted from OpenBOT (github.com/ashhart/OpenBot), MIT, (c) 2026 OpenBOT contributors
+   (ComputerFrame.css: frame, head, badge, terminal). */
+.computers {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 18px 16px 40px;
+}
+.computers-engine-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 8px 0 14px;
+}
+.computers-engine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+.computers-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--success);
+}
+.computers-help {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.computers-help .btn {
+  justify-self: start;
+}
+.computers-help code,
+.computers-settings code,
+.computers code {
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--code-bg);
+}
+.computers-build {
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  background: var(--card);
+}
+.computers-build pre {
+  max-height: 220px;
+  overflow: auto;
+  margin: 8px 0;
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.computers-empty {
+  text-align: center;
+  padding: 36px 12px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+}
+.computers-empty h2 {
+  margin: 0 0 6px;
+  font-size: 18px;
+}
+.computers-list {
+  list-style: none;
+  margin: 0 0 18px;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.computers-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  padding: 12px 14px;
+}
+.computers-card.selected {
+  border-color: var(--ring);
+}
+.computers-card-top {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+.computers-card-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.computers-chip {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--secondary);
+  color: var(--muted-foreground);
+}
+.computers-chip.on {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+}
+.computers-link {
+  background: transparent;
+  border-color: transparent;
+}
+
+/* Frame (from OpenBOT's ComputerFrame) */
+.cframe {
+  padding: 16px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.cframe-head {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.cframe-head h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 15px;
+}
+.cframe-badge {
+  padding: 2px 8px;
+  font-size: 10px;
+  line-height: 1.2;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+  border-radius: 999px;
+}
+.cframe-badge.off {
+  color: var(--muted-foreground);
+  background: var(--secondary);
+}
+.computers-panels {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 14px;
+}
+.cframe-terminal {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  flex-direction: column;
+  gap: 10px;
+}
+.cframe-terminal-output {
+  flex: 1;
+  min-height: 320px;
+  max-height: 60vh;
+  margin: 0;
+  overflow: auto;
+  padding: 16px;
+  color: #e8e8ea;
+  background: #101112;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.cframe-terminal-input {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+}
+.cframe-terminal-input .input {
+  min-width: 0;
+  flex: 1;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.cframe-terminal-buttons {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.cframe-terminal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.computers-inline {
+  margin: 0;
+  align-items: center;
+}
+.computers-inline input {
+  margin-top: 0;
+}
+
+/* Files */
+.computers-files {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.computers-files-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.computers-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.computers-file-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  max-height: 340px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.computers-file-list li {
+  display: flex;
+  align-items: center;
+}
+.computers-file {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.computers-file:hover {
+  background: var(--accent);
+}
+.computers-file span.grow {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.computers-file-empty {
+  padding: 8px;
+}
+.computers-new-file {
+  display: flex;
+  gap: 6px;
+}
+.computers-new-file .input {
+  min-width: 0;
+  flex: 1;
+}
+.computers-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.computers-editor-text {
+  min-height: 220px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+}
+
+/* Settings tab */
+.computers-bot {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.computers-bot.on {
+  background: var(--card);
+}
+.computers-bot-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+.computers-bot-options {
+  margin: 12px 0 2px 36px;
+}
+.computers-shared {
+  display: grid;
+  gap: 6px;
+  margin: 4px 0 10px;
+}
+.computers-switch {
+  position: relative;
+  flex: none;
+  width: 38px;
+  height: 22px;
+}
+.computers-switch input {
+  position: absolute;
+  opacity: 0;
+  inset: 0;
+  margin: 0;
+  cursor: pointer;
+}
+.computers-switch span {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--input);
+  border: 1px solid var(--border);
+  transition: background 0.15s;
+  pointer-events: none;
+}
+.computers-switch span::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--muted-foreground);
+  transition: transform 0.15s, background 0.15s;
+}
+.computers-switch input:checked + span {
+  background: var(--success);
+  border-color: transparent;
+}
+.computers-switch input:checked + span::after {
+  transform: translateX(16px);
+  background: var(--primary-foreground);
+}
+.computers-switch input:focus-visible + span {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+@media (max-width: 760px) {
+  .computers-panels {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .cframe-terminal-input {
+    flex-direction: column;
+  }
+  .cframe-terminal-buttons {
+    flex-direction: row;
+  }
+  .computers-bot-options {
+    margin-left: 0;
+  }
+}
