@@ -107,6 +107,11 @@ export const defaultSettings: Settings = {
     ttsModel: "gpt-4o-mini-tts",
     ttsVoice: "alloy",
     elevenKey: "",
+    cloudTts: {
+      fish: { key: "", voice: "", model: "s2.1-pro" },
+      cartesia: { key: "", voice: "", model: "sonic-3.6" },
+      deepgram: { key: "", voice: "", model: "aura-2-thalia-en" },
+    },
     elevenVoiceId: "",
     elevenModel: "eleven_flash_v2_5",
     endSilence: "normal",
@@ -195,6 +200,10 @@ export const useStore = create<State>()(
           settings[key] = { ...defaultSettings[key], ...saved.settings?.[key] } as never;
         }
         settings.brand.theme = { ...DEFAULT_THEME, ...saved.settings?.brand?.theme };
+        const savedCloud = saved.settings?.voice?.cloudTts;
+        settings.voice.cloudTts = Object.fromEntries(
+          Object.entries(defaultSettings.voice.cloudTts).map(([id, d]) => [id, { ...d, ...savedCloud?.[id as keyof typeof savedCloud] }]),
+        ) as Settings["voice"]["cloudTts"];
         return { ...current, ...saved, settings };
       },
       onRehydrateStorage: () => () => useStore.setState({ hydrated: true }),

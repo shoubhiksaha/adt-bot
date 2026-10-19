@@ -136,7 +136,9 @@ export type Conversation = {
  */
 export type SttEngine = "auto" | "device" | "whisper-local" | "whisper-cloud";
 
-export type TtsEngine = "system" | "openai" | "elevenlabs";
+export type TtsEngine = "system" | "openai" | "elevenlabs" | CloudTts;
+/** Natural-voice services that only need an API key. */
+export type CloudTts = "fish" | "cartesia" | "deepgram";
 
 export type VoiceSettings = {
   engine: SttEngine;
@@ -156,6 +158,8 @@ export type VoiceSettings = {
   elevenKey: string;
   elevenVoiceId: string;
   elevenModel: string;
+  /** Keys and voices for Fish Audio, Cartesia and Deepgram. */
+  cloudTts: Record<CloudTts, { key: string; voice: string; model: string }>;
   /** How long a pause ends your turn. */
   endSilence: "fast" | "normal" | "patient";
   /** Interrupt the bot by talking. "auto" = instantly with natural voices, after a short check with device voices. */

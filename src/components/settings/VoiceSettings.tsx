@@ -1,7 +1,8 @@
 import { AudioLines, Volume2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { updateSettings, useStore } from "../../lib/store";
-import { bestVoice, type DeviceVoice, listVoices, OPENAI_TTS_VOICES, rankVoice } from "../../lib/tts";
+import { bestVoice, CLOUD_TTS, type DeviceVoice, listVoices, OPENAI_TTS_VOICES, rankVoice } from "../../lib/tts";
+import type { CloudTts, VoiceSettings } from "../../lib/types";
 import { ENGINE_LABELS, resolveEngine, speak, TRANSCRIBE_MODEL_SUGGESTIONS } from "../../lib/voice";
 import { onWhisperProgress, preloadWhisper, WHISPER_SIZES, whisperDownloaded } from "../../lib/whisper";
 import { ModelInput, Section, Toggle } from "./controls";
@@ -32,7 +33,11 @@ export function VoiceSettings() {
   useEffect(() => onWhisperProgress((p) => setProgress(p ? Math.round(p.progress) : null)), []);
 
   const sortedVoices = [...voices].sort((a, b) => rankVoice(b) - rankVoice(a) || a.name.localeCompare(b.name));
-  const test = () => speak("Hi! This is how I'll sound when we talk.", { voice, providers, useProxy });
+  const [testError, setTestError] = useState("");
+  const test = () => {
+    setTestError("");
+    speak("Hi! This is how I'll sound when we talk.", { voice, providers, useProxy }, setTestError);
+  };
 
   return (
     <div>
@@ -52,6 +57,9 @@ export function VoiceSettings() {
             <option value="system">Device voice (free, instant)</option>
             <option value="openai">Natural: OpenAI-compatible (OpenAI, or a self-hosted Kokoro/LocalAI server)</option>
             <option value="elevenlabs">Natural: ElevenLabs</option>
+            <option value="fish">Natural: Fish Audio</option>
+            <option value="cartesia">Natural: Cartesia</option>
+            <option value="deepgram">Natural: Deepgram Aura</option>
           </select>
         </div>
 
@@ -119,6 +127,8 @@ export function VoiceSettings() {
           </>
         )}
 
+        {voice.tts in CLOUD_TTS && <CloudVoiceFields id={voice.tts as CloudTts} voice={voice} set={set} />}
+
         <div className="field">
           <label htmlFor="tts-rate">
             Speed <span className="muted small">{voice.rate.toFixed(2)}×</span>
@@ -129,6 +139,7 @@ export function VoiceSettings() {
           <button type="button" className="btn" onClick={test}>
             <Volume2 size={14} /> Test voice
           </button>
+          {testError && <span className="small error-text">{testError}</span>}
         </div>
         <Toggle checked={autoSpeak} onChange={(v) => updateSettings({ autoSpeak: v })} title="Read every reply aloud" hint="Also speak answers in normal chats, not just in voice mode." />
       </Section>
@@ -267,5 +278,38 @@ export function VoiceSettings() {
         )}
       </Section>
     </div>
+  );
+}
+
+/** API key, voice and model for a natural-voice service (Fish Audio, Cartesia, Deepgram). */
+function CloudVoiceFields({ id, voice, set }: { id: CloudTts; voice: VoiceSettings; set: (patch: Partial<VoiceSettings>) => void }) {
+  const service = CLOUD_TTS[id];
+  const config = voice.cloudTts[id];
+  const update = (patch: Partial<typeof config>) => set({ cloudTts: { ...voice.cloudTts, [id]: { ...config, ...patch } } });
+  return (
+    <>
+      <div className="field">
+        <label htmlFor={`${id}-key`}>
+          {service.label} API key{" "}
+          <a className="small" href={service.keyUrl} target="_blank" rel="noreferrer">
+            Get a key
+          </a>
+        </label>
+        <input id={`${id}-key`} className="input" type="password" autoComplete="off" value={config.key} onChange={(e) => update({ key: e.target.value.trim() })} />
+      </div>
+      <div className="field-row">
+        {id !== "deepgram" && (
+          <div className="field">
+            <label htmlFor={`${id}-voice`}>Voice ID</label>
+            <input id={`${id}-voice`} className="input" placeholder={service.voiceRequired ? "Required" : "Default voice"} value={config.voice} onChange={(e) => update({ voice: e.target.value.trim() })} />
+          </div>
+        )}
+        <div className="field">
+          <label htmlFor={`${id}-model`}>{id === "deepgram" ? "Voice model" : "Model"}</label>
+          <ModelInput id={`${id}-model`} value={config.model} onChange={(model) => update({ model })} suggestions={service.models} placeholder={service.models[0]} />
+        </div>
+      </div>
+      <span className="small muted">{service.voiceHint}. Keys stay on this device.</span>
+    </>
   );
 }

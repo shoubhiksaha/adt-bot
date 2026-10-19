@@ -1,7 +1,7 @@
 import { Capacitor } from "@capacitor/core";
 import { describeHttpError, withCustomHeaders } from "./llm";
 import { providerFetch } from "./transport";
-import type { ProviderConfig, VoiceSettings } from "./types";
+import type { CloudTts, ProviderConfig, VoiceSettings } from "./types";
 
 export const OPENAI_TTS_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse"];
 export const ELEVENLABS_DEFAULT_VOICE = "21m00Tcm4TlvDq8ikWAM";
@@ -108,13 +108,14 @@ export type TtsContext = { voice: VoiceSettings; providers: ProviderConfig[]; us
 export function ttsLabel(voice: VoiceSettings): string {
   if (voice.tts === "openai") return `${voice.ttsModel || "OpenAI"} · ${voice.ttsVoice || "alloy"}`;
   if (voice.tts === "elevenlabs") return "ElevenLabs";
+  if (voice.tts in CLOUD_TTS) return CLOUD_TTS[voice.tts as CloudTts].label;
   return "Device voice";
 }
 
 /** Queues sentences and speaks them in order, fetching network audio one sentence ahead. */
 export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Speaker {
   const { voice } = context;
-  const network = voice.tts === "openai" || voice.tts === "elevenlabs";
+  const network = voice.tts !== "system";
   const queue: Clip[] = [];
   const controller = new AbortController();
   let busy = false;
@@ -241,8 +242,67 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
   };
 }
 
-/** Natural voices: any OpenAI-compatible /audio/speech server, or ElevenLabs. Returns encoded audio. */
+/** Natural-voice services that only need an API key: how each one is called. */
+export const CLOUD_TTS: Record<
+  CloudTts,
+  { label: string; keyUrl: string; voiceHint: string; voiceRequired: boolean; models: string[]; request: (text: string, c: { key: string; voice: string; model: string }, rate: number) => { url: string; headers: Record<string, string>; body: string } }
+> = {
+  fish: {
+    label: "Fish Audio",
+    keyUrl: "https://fish.audio/app/api-keys/",
+    voiceHint: "Voice model ID from fish.audio (blank = default voice)",
+    voiceRequired: false,
+    models: ["s2.1-pro", "s2-pro", "s1", "drama-3"],
+    request: (text, c, rate) => ({
+      url: "https://api.fish.audio/v1/tts",
+      headers: { "content-type": "application/json", authorization: `Bearer ${c.key}`, model: c.model || "s2.1-pro" },
+      body: JSON.stringify({ text, format: "mp3", latency: "balanced", ...(c.voice ? { reference_id: c.voice } : {}), prosody: { speed: Math.min(2, Math.max(0.5, rate)) } }),
+    }),
+  },
+  cartesia: {
+    label: "Cartesia",
+    keyUrl: "https://play.cartesia.ai/keys",
+    voiceHint: "Voice ID from the Cartesia voice library (required)",
+    voiceRequired: true,
+    models: ["sonic-3.6", "sonic-3", "sonic-2"],
+    request: (text, c, rate) => ({
+      url: "https://api.cartesia.ai/tts/bytes",
+      headers: { "content-type": "application/json", authorization: `Bearer ${c.key}`, "cartesia-version": "2026-08-14" },
+      body: JSON.stringify({
+        model_id: c.model || "sonic-3.6",
+        transcript: text,
+        voice: { id: c.voice },
+        output_format: { container: "mp3", sample_rate: 44100, bit_rate: 128000 },
+        generation_config: { speed: Math.min(1.5, Math.max(0.6, rate)) },
+      }),
+    }),
+  },
+  deepgram: {
+    label: "Deepgram Aura",
+    keyUrl: "https://console.deepgram.com/",
+    voiceHint: "The voice is part of the model name (e.g. aura-2-thalia-en, aura-2-orion-en)",
+    voiceRequired: false,
+    models: ["aura-2-thalia-en", "aura-2-andromeda-en", "aura-2-orion-en", "aura-2-apollo-en"],
+    request: (text, c) => ({
+      url: `https://api.deepgram.com/v1/speak?model=${encodeURIComponent(c.model || "aura-2-thalia-en")}&encoding=mp3`,
+      headers: { "content-type": "application/json", authorization: `Token ${c.key}` },
+      body: JSON.stringify({ text }),
+    }),
+  },
+};
+
+/** Natural voices: any OpenAI-compatible /audio/speech server, ElevenLabs, Fish Audio, Cartesia or Deepgram. Returns encoded audio. */
 async function synthesize(text: string, { voice, providers, useProxy }: TtsContext, signal: AbortSignal): Promise<ArrayBuffer> {
+  if (voice.tts in CLOUD_TTS) {
+    const service = CLOUD_TTS[voice.tts as CloudTts];
+    const config = voice.cloudTts?.[voice.tts as CloudTts];
+    if (!config?.key) throw new Error(`Add your ${service.label} API key in Settings → Voice.`);
+    if (service.voiceRequired && !config.voice) throw new Error(`Add a ${service.label} voice ID in Settings → Voice.`);
+    const { url, headers, body } = service.request(text, config, voice.rate);
+    const res = await providerFetch(url, { method: "POST", headers, body, signal }, useProxy);
+    if (!res.ok) throw new Error(`${service.label}: ${(await describeHttpError(res)).replace("Settings → Providers", "Settings → Voice")}`);
+    return res.arrayBuffer();
+  }
   if (voice.tts === "elevenlabs") {
     if (!voice.elevenKey) throw new Error("Add your ElevenLabs key in Settings → Voice.");
     const id = voice.elevenVoiceId || ELEVENLABS_DEFAULT_VOICE;
@@ -256,7 +316,7 @@ async function synthesize(text: string, { voice, providers, useProxy }: TtsConte
       },
       useProxy,
     );
-    if (!res.ok) throw new Error(`ElevenLabs: ${await describeHttpError(res)}`);
+    if (!res.ok) throw new Error(`ElevenLabs: ${(await describeHttpError(res)).replace("Settings → Providers", "Settings → Voice")}`);
     return res.arrayBuffer();
   }
   const provider = providers.find((p) => p.id === voice.ttsProviderId);

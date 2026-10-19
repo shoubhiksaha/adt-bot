@@ -7,6 +7,11 @@ import { Readable } from "node:stream";
 
 /** Hosts the public web server may relay to. Desktop mode allows any host behind a token. */
 export const DEFAULT_ALLOWED_HOSTS = [
+  // Natural voices.
+  "api.elevenlabs.io",
+  "api.fish.audio",
+  "api.cartesia.ai",
+  "api.deepgram.com",
   "api.x.ai",
   "api.openai.com",
   "api.anthropic.com",

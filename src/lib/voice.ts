@@ -291,13 +291,13 @@ export async function transcribe(audio: Blob, provider: ProviderConfig, model: s
 let readAloud: Speaker | null = null;
 
 /** Read a reply aloud with the configured voice. Calling again while it is speaking stops it. */
-export function speak(text: string, context: ListenContext): boolean {
+export function speak(text: string, context: ListenContext, onError?: (message: string) => void): boolean {
   if (readAloud?.speaking) {
     readAloud.stop();
     readAloud = null;
     return false;
   }
-  readAloud = createSpeaker(context);
+  readAloud = createSpeaker(context, { onError });
   for (const sentence of takeSentences(text, true).sentences) readAloud.say(sentence);
   return true;
 }
