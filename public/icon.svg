@@ -1,24 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#1d2028"/>
-      <stop offset="1" stop-color="#0b0c0e"/>
-    </linearGradient>
-    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#3b82f6"/>
-      <stop offset="1" stop-color="#8b5cf6"/>
-    </linearGradient>
-  </defs>
-  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
-  <g transform="translate(0 -18)">
-  <g fill="#f1f1ef" fill-rule="evenodd">
-    <!-- A -->
-    <path d="M58 330 L106 170 L148 170 L196 330 L157 330 L147 296 L107 296 L97 330 Z M116 264 L138 264 L127 222 Z"/>
-    <!-- D -->
-    <path d="M212 170 L268 170 A80 80 0 0 1 268 330 L212 330 Z M250 204 L266 204 A46 46 0 0 1 266 296 L250 296 Z"/>
-    <!-- T -->
-    <path d="M338 170 L456 170 L456 206 L416 206 L416 330 L378 330 L378 206 L338 206 Z"/>
-  </g>
-  <rect x="58" y="356" width="398" height="22" rx="11" fill="url(#accent)"/>
-  </g>
+<title>ADT mark — signal on deep black tile</title>
+<rect x="0" y="0" width="512" height="512" rx="112" fill="#0A0A0A"/>
+<path fill="#01F9C9" d="M 52 250 A 64.7 64.7 0 0 1 181.4 250 A 28.2 28.2 0 0 0 237.8 250 V 188.6 H 367.1 V 274.9 H 423.5 V 250 H 460 V 311.4 H 330.6 V 225.1 H 274.2 V 250 A 64.7 64.7 0 0 1 144.9 250 A 28.2 28.2 0 0 0 88.5 250 Z"/>
 </svg>

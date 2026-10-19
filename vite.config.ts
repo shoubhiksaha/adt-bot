@@ -43,7 +43,7 @@ export default defineConfig({
       },
       workbox: {
         navigateFallbackDenylist: [/^\/api\//],
-        globPatterns: ["**/*.{js,css,html,svg,png,woff2}"],
+        globPatterns: ["**/*.{js,css,html,svg,png,woff2,ttf}"],
         // The PDF reader is large and only needed when a PDF is attached.
         globIgnores: ["**/pdf-*.js", "**/pdf.worker*", "**/whisper.worker*", "**/transformers*", "**/ort*"],
       },

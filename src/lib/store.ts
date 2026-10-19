@@ -154,7 +154,7 @@ export const useStore = create<State>()(
     }),
     {
       name: STORAGE_KEY,
-      version: 3,
+      version: 4,
       storage,
       // Private chats never touch the disk.
       partialize: ({ streamingId: _s, hydrated: _h, conversations, activeConversationId, ...rest }) => {
@@ -178,6 +178,13 @@ export const useStore = create<State>()(
         }
         if (version < 3) {
           state.bots = (state.bots ?? []).map((bot) => ({ ...bot, nickname: bot.nickname ?? "", knowledge: bot.knowledge ?? [] }));
+        }
+        if (version < 4) {
+          // The default look became the ADT brand. Only untouched old defaults move; custom themes stay.
+          const theme = state.settings?.brand?.theme as Partial<Settings["brand"]["theme"]> | undefined;
+          const untouched =
+            !theme || (theme.preset === "adt" && theme.accent?.toLowerCase() === "#3b82f6" && !theme.background && (theme.font ?? "system") === "system");
+          if (state.settings?.brand && untouched) state.settings.brand.theme = { ...DEFAULT_THEME };
         }
         return state;
       },

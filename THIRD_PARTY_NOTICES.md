@@ -8,6 +8,8 @@ ADT Bot includes code adapted from these projects. Their licenses are kept next 
 | [CopilotKit OpenBot](https://github.com/CopilotKit/OpenBot) | MIT, © 2026 CopilotKit | `src/lib/agent/vendor/copilotkit/`, `src/lib/mcp/` | Untrusted-content envelope, routine firing frame, MCP client limits |
 | [Synara](https://github.com/Emanuele-web04/synara) (via OpenBOT) | MIT, © 2026 T3 Tools Inc., © 2026 Emanuele | `electron/features/50-cli-agents.cjs` | Parts of the CLI-agent process supervision |
 | [QR Code generator library](https://www.nayuki.io/page/qr-code-generator-library) | MIT, © Project Nayuki | `server/qr.mjs` | QR encoding algorithm and tables (rewritten, reduced) |
+| [IBM Plex](https://github.com/IBM/plex) | SIL OFL 1.1, © 2017 IBM Corp. | `public/fonts/` (`OFL-IBMPlex.txt`) | Brand typeface (IBM Plex Sans, IBM Plex Mono) |
+| [Space Grotesk](https://github.com/floriankarsten/space-grotesk) | SIL OFL 1.1, © 2020 The Space Grotesk Project Authors | `public/fonts/` (`OFL-SpaceGrotesk.txt`) | Brand display typeface |
 | [Rakazo](https://github.com/elie222/rakazo) | Apache-2.0 | Design tokens, model catalog | |
 
 No code from nightly-labs/openbot (PolyForm Noncommercial) is included; only ideas (for example the

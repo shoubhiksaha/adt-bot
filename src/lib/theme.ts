@@ -1,7 +1,8 @@
 import type { ThemeConfig } from "./types";
 
 export const THEME_PRESETS: { id: string; name: string; accent: string; background: string }[] = [
-  { id: "adt", name: "ADT Blue", accent: "#3b82f6", background: "" },
+  { id: "adt", name: "ADT Signal", accent: "#01F9C9", background: "#0A0A0A" },
+  { id: "blue", name: "Blue", accent: "#3b82f6", background: "" },
   { id: "violet", name: "Violet", accent: "#8b5cf6", background: "" },
   { id: "emerald", name: "Emerald", accent: "#10b981", background: "" },
   { id: "sunset", name: "Sunset", accent: "#f97316", background: "" },
@@ -15,7 +16,14 @@ export const THEME_PRESETS: { id: string; name: string; accent: string; backgrou
   { id: "paper", name: "Paper", accent: "#be123c", background: "#fbfaf7" },
 ];
 
-export const FONTS: Record<string, { label: string; stack: string }> = {
+export const FONTS: Record<string, { label: string; stack: string; display?: string; mono?: string }> = {
+  // ADT brand type, bundled in public/fonts (SIL Open Font License 1.1).
+  adt: {
+    label: "ADT (IBM Plex Sans + Space Grotesk)",
+    stack: '"IBM Plex Sans", "Helvetica Neue", Arial, sans-serif',
+    display: '"Space Grotesk", "Helvetica Neue", Arial, sans-serif',
+    mono: '"IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace',
+  },
   system: { label: "System", stack: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif' },
   humanist: { label: "Humanist", stack: '"Avenir Next", Avenir, "Segoe UI", "Trebuchet MS", Ubuntu, sans-serif' },
   rounded: { label: "Rounded", stack: 'ui-rounded, "SF Pro Rounded", "Nunito", "Varela Round", system-ui, sans-serif' },
@@ -145,7 +153,8 @@ export function themeCss(theme: ThemeConfig): string {
   --orb-b: ${accent};
   --orb-c: ${toHex(hslToRgb((rgbToHsl(parseColor(accent)!)[0] + 40) % 360, Math.max(0.5, rgbToHsl(parseColor(accent)!)[1]), 0.45))};`;
   };
-  const font = FONTS[theme.font]?.stack ?? (theme.font ? `"${theme.font.replace(/"/g, "")}", ${FONTS.system.stack}` : FONTS.system.stack);
+  const preset = FONTS[theme.font];
+  const font = preset?.stack ?? (theme.font ? `"${theme.font.replace(/"/g, "")}", ${FONTS.system.stack}` : FONTS.system.stack);
   return `:root, [data-theme="dark"] {${block("dark")}
 }
 [data-theme="light"] {${block("light")}
@@ -153,5 +162,7 @@ export function themeCss(theme: ThemeConfig): string {
 :root {
   --radius: ${Math.max(0, Math.min(24, theme.radius))}px;
   --font: ${font};
+  --font-display: ${preset?.display ?? font};
+  --font-mono: ${preset?.mono ?? 'ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace'};
 }`;
 }

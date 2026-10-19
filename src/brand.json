@@ -4,9 +4,9 @@
   "logoAsAvatar": false,
   "theme": {
     "preset": "adt",
-    "accent": "#3b82f6",
-    "background": "",
-    "font": "system",
-    "radius": 12
+    "accent": "#01F9C9",
+    "background": "#0A0A0A",
+    "font": "adt",
+    "radius": 8
   }
 }

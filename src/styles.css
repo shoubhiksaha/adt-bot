@@ -555,7 +555,7 @@ a {
 }
 .md code,
 .md pre {
-  font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace);
 }
 .table-wrap {
   overflow-x: auto;
@@ -2167,4 +2167,17 @@ input[type="color"] {
 }
 .outcome-done {
   color: var(--success);
+}
+
+/* ADT brand type (SIL OFL 1.1, see public/fonts/OFL-*.txt). Only downloaded when the theme uses it. */
+@font-face { font-family: "IBM Plex Sans"; src: url("/fonts/IBMPlexSans-400.ttf") format("truetype"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "IBM Plex Sans"; src: url("/fonts/IBMPlexSans-600.ttf") format("truetype"); font-weight: 500 700; font-style: normal; font-display: swap; }
+@font-face { font-family: "Space Grotesk"; src: url("/fonts/SpaceGrotesk-500.ttf") format("truetype"); font-weight: 400 500; font-style: normal; font-display: swap; }
+@font-face { font-family: "Space Grotesk"; src: url("/fonts/SpaceGrotesk-700.ttf") format("truetype"); font-weight: 600 800; font-style: normal; font-display: swap; }
+@font-face { font-family: "IBM Plex Mono"; src: url("/fonts/IBMPlexMono-400.ttf") format("truetype"); font-weight: 400 700; font-style: normal; font-display: swap; }
+
+h1,
+h2,
+.sidebar-head strong {
+  font-family: var(--font-display, inherit);
 }
