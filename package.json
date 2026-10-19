@@ -103,5 +103,5 @@
     "vitest": "^5.0.5",
     "zustand": "^5.0.15"
   },
-  "homepage": "https://github.com/shoubhiksaha"
+  "homepage": "https://github.com/shoubhiksaha/adt-bot"
 }
