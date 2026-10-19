@@ -328,6 +328,7 @@ describe("tool arguments", () => {
   it("parses days and schedules", () => {
     expect(parseDays("weekdays")).toEqual([1, 2, 3, 4, 5]);
     expect(parseDays(["Mon", "wednesday", 0])).toEqual([0, 1, 3]);
+    expect(parseDays("[\"mon\",\"tue\"]")).toEqual([1, 2]);
     expect(parseDays(["funday"])).toBeNull();
     expect(scheduleFromArgs({ schedule_type: "weekly", time: "08:00" })).toMatchObject({ error: expect.stringContaining("days") });
     expect(scheduleFromArgs({ schedule_type: "hourly" })).toMatchObject({ error: expect.stringContaining("schedule_type") });
@@ -339,7 +340,10 @@ describe("tool arguments", () => {
     expect(create.risk).toBe("write");
     await expect(create.run({ name: "Fast", instruction: "x", schedule_type: "interval", every_minutes: 5 }, ctx())).rejects.toThrow(/15 minutes/);
     await expect(create.run({ name: "Bad", instruction: "x", schedule_type: "cron", cron: "0 8 * *" }, ctx())).rejects.toThrow(/five fields/);
-    await expect(create.run({ name: "", instruction: "x", schedule_type: "daily", time: "08:00" }, ctx())).rejects.toThrow(/name/);
+    await expect(create.run({ name: "", instruction: "", schedule_type: "daily", time: "08:00" }, ctx())).rejects.toThrow(/name|instruction/);
+    // Small models leave out the name or call the bot "you": take the instruction's first words and the caller.
+    expect(String(await create.run({ instruction: "Check the server status now", schedule_type: "daily", time: "08:00", bot: "you" }, ctx()))).toContain("Check the server status now");
+    await useRoutines.getState().routines.reduce((p, r) => p.then(() => getTool("delete_routine")!.run({ routine: r.id }, ctx())), Promise.resolve<unknown>(undefined));
     const out = await create.run(
       { name: "Morning news", instruction: "Summarise AI news and save it to a file", schedule_type: "weekly", days: "weekdays", time: "08:00", timezone: NY, bot: "Scout" },
       ctx(),

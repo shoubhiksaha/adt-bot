@@ -30,7 +30,8 @@ export function parseDays(value: unknown): number[] | null {
     if (v === "weekdays" || v === "weekday") return [1, 2, 3, 4, 5];
     if (v === "weekends" || v === "weekend") return [0, 6];
     if (v === "every day" || v === "daily" || v === "all") return [0, 1, 2, 3, 4, 5, 6];
-    return parseDays(v.split(/[\s,]+/).filter(Boolean));
+    // Small models send lists as JSON strings: "[\"mon\",\"tue\"]".
+    return parseDays(v.replace(/[[\]"']/g, " ").split(/[\s,]+/).filter(Boolean));
   }
   if (!Array.isArray(value)) return null;
   const out: number[] = [];
@@ -129,9 +130,12 @@ function needRoutine(args: Record<string, unknown>): Routine {
   return routine;
 }
 
+/** Ways a model refers to the bot it is ("you", "me", "self"…). */
+const SELF = /^(you|me|myself|yourself|self|this bot|current( bot)?|i)$/i;
+
 function targetBot(args: Record<string, unknown>, ctx: ToolContext): Bot {
-  const ref = str(args, "bot");
-  if (!ref) return ctx.bot;
+  const ref = str(args, "bot").trim();
+  if (!ref || SELF.test(ref)) return ctx.bot;
   const found = resolveBot(useStore.getState().bots, ref);
   if ("error" in found) throw new Error(found.error);
   return found;
@@ -183,7 +187,8 @@ const routineTools: AgentTool[] = [
       const schedule = scheduleFromArgs(args);
       if ("error" in schedule) throw new Error(schedule.error);
       const input: RoutineInput = {
-        name: str(args, "name"),
+        // A missing name is a small-model slip, not worth failing over: derive one from the instruction.
+        name: str(args, "name").trim() || str(args, "instruction").trim().split(/\s+/).slice(0, 5).join(" "),
         instruction: str(args, "instruction"),
         botId: targetBot(args, ctx).id,
         schedule,
