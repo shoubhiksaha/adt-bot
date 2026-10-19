@@ -170,14 +170,25 @@ async function listenNative(options: ListenOptions): Promise<ListenSession> {
   const result = new Promise<string>((resolve) => {
     finish = () => resolve(cancelled ? "" : text.trim());
   });
+  // Android reports silence and errors by rejecting the call, not with a "stopped" event, so a
+  // watchdog ends the turn: after 10 s with nothing heard, or 2.5 s after the last words.
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
+  const arm = (ms: number) => {
+    clearTimeout(watchdog);
+    watchdog = setTimeout(() => void SpeechRecognition.stop().catch(() => undefined).finally(finish), ms);
+  };
+  arm(10_000);
   const partial = await SpeechRecognition.addListener("partialResults", (data: { matches?: string[] }) => {
     text = data.matches?.[0] ?? text;
     options.onPartial?.(text);
+    arm(2_500);
   });
   const state = await SpeechRecognition.addListener("listeningState", (data: { status: string }) => {
-    if (data.status === "stopped") finish();
+    // The final words can arrive just after "stopped".
+    if (data.status === "stopped") setTimeout(finish, 500);
   });
   void result.then(() => {
+    clearTimeout(watchdog);
     void partial.remove();
     void state.remove();
   });
