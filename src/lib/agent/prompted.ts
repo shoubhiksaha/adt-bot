@@ -30,9 +30,18 @@ export function parsePromptedCall(text: string, tools: ToolSchema[]): { text: st
   const raw = text.slice(start + OPEN.length, endAt < 0 ? undefined : endAt).trim();
   const record = parseObjectLoose(raw);
   if (!record) return { text };
+  const call = callFromRecord(record, tools);
+  if (!call) return { text };
+  const before = text.slice(0, start).trim();
+  const after = endAt < 0 ? "" : text.slice(endAt + CLOSE.length).trim();
+  return { text: [before, after].filter(Boolean).join("\n"), call };
+}
+
+/** {"name": "...", "arguments"|"args"|"parameters": {...}} → a call, if it names one of the tools. */
+function callFromRecord(record: Record<string, unknown>, tools: ToolSchema[]): ToolCall | undefined {
   const name = typeof record.name === "string" ? record.name : typeof record.tool === "string" ? record.tool : "";
   const schema = tools.find((t) => t.name === name);
-  if (!schema) return { text };
+  if (!schema) return undefined;
   const nested = record.arguments ?? record.args ?? record.parameters;
   const candidate =
     nested && typeof nested === "object" && !Array.isArray(nested)
@@ -43,9 +52,51 @@ export function parsePromptedCall(text: string, tools: ToolSchema[]): { text: st
   // Small models invent keys; only pass what the tool's schema advertises.
   const allowed = schema.parameters.properties ?? {};
   const args = Object.fromEntries(Object.entries(candidate).filter(([k]) => Object.prototype.hasOwnProperty.call(allowed, k)));
-  const before = text.slice(0, start).trim();
-  const after = endAt < 0 ? "" : text.slice(endAt + CLOSE.length).trim();
-  return { text: [before, after].filter(Boolean).join("\n"), call: { id: `prompted_${crypto.randomUUID().slice(0, 12)}`, name, args } };
+  return { id: `prompted_${crypto.randomUUID().slice(0, 12)}`, name, args };
+}
+
+/** Where a bare JSON call starts: `{"name":` (Llama 3.x writes calls this way when native parsing misses). */
+const BARE_START = /(?:```(?:json)?\s*)?\{\s*"name"\s*:/;
+
+/**
+ * Some local models (notably Llama 3.x behind Ollama) sometimes print a tool call as plain JSON
+ * instead of using the native tool_calls field. This holds back text from `{"name":` on, and at the
+ * end turns it into a real call when it names one of the tools; otherwise the text is released.
+ */
+export class BareCallFilter {
+  private full = "";
+  private emitted = 0;
+  private start = -1;
+
+  push(text: string): string {
+    this.full += text;
+    if (this.start >= 0) return "";
+    const rest = this.full.slice(this.emitted);
+    const match = BARE_START.exec(rest);
+    if (match) {
+      this.start = this.emitted + match.index;
+      const out = this.full.slice(this.emitted, this.start);
+      this.emitted = this.start;
+      return out;
+    }
+    // Hold back a tail that could still grow into `{"name":` (or an opening ``` fence).
+    const tail = rest.search(/(?:`{1,3}(?:j(?:s(?:o(?:n)?)?)?)?\s*)?(?:\{\s*(?:"(?:n(?:a(?:m(?:e(?:"\s*)?)?)?)?)?)?)?$/);
+    const hold = tail >= 0 && tail < rest.length ? rest.length - tail : 0;
+    const out = rest.slice(0, rest.length - hold);
+    this.emitted += out.length;
+    return out;
+  }
+
+  /** The call (if the held text is one), plus any held text that should be shown after all. */
+  finish(tools: ToolSchema[]): { tail: string; call?: ToolCall; before: string } {
+    const held = this.full.slice(this.emitted);
+    if (this.start >= 0) {
+      const record = parseObjectLoose(held.replace(/^```(?:json)?/, "").replace(/```\s*$/, ""));
+      const call = record ? callFromRecord(record, tools) : undefined;
+      if (call) return { tail: "", call, before: this.full.slice(0, this.start).trim() };
+    }
+    return { tail: held, before: this.full };
+  }
 }
 
 /**

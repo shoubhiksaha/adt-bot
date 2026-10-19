@@ -349,3 +349,13 @@ describe("run with bot", () => {
     expect(prompt).toContain(`Task id: ${card.id.slice(0, 8)}`);
   });
 });
+
+describe("labels from small models", () => {
+  it("accepts JSON-string lists and drops empty ones", async () => {
+    const { normaliseLabels } = await import("./model");
+    expect(normaliseLabels("[]")).toEqual([]);
+    expect(normaliseLabels('["urgent", "web"]')).toEqual(["urgent", "web"]);
+    expect(normaliseLabels("[urgent, web")).toEqual(["urgent", "web"]);
+    expect(normaliseLabels("a, b")).toEqual(["a", "b"]);
+  });
+});

@@ -1,4 +1,4 @@
-import { OPEN as PROMPTED_OPEN, PromptedFilter, promptedProtocol, promptedResult } from "./agent/prompted";
+import { BareCallFilter, OPEN as PROMPTED_OPEN, PromptedFilter, promptedProtocol, promptedResult } from "./agent/prompted";
 import { ToolCallAccumulator, parseToolArgs } from "./agent/vendor/openbot/toolCallAccumulator";
 import { cliModels, streamCliChat } from "./cli-agents/provider";
 import type { ToolCall, ToolSchema } from "./agent/vendor/openbot/types";
@@ -94,11 +94,20 @@ export async function* streamChat(req: ChatRequest): AsyncGenerator<StreamEvent>
 
   const parser = createParser(req.provider, req);
   const prompted = req.toolMode === "prompted" && req.tools?.length ? new PromptedFilter() : null;
+  // OpenAI-compatible servers (Ollama, LM Studio…) sometimes hand back a call as plain JSON text.
+  const bare = !prompted && req.tools?.length && req.provider.kind === "openai" ? new BareCallFilter() : null;
+  let nativeCalls = false;
   const route = function* (event: StreamEvent): Generator<StreamEvent> {
     if (prompted && event.type === "text") {
       const visible = prompted.push(event.text);
       if (visible) yield { type: "text", text: visible };
-    } else yield event;
+    } else if (bare && event.type === "text") {
+      const visible = bare.push(event.text);
+      if (visible) yield { type: "text", text: visible };
+    } else {
+      if (event.type === "tool_calls") nativeCalls = true;
+      yield event;
+    }
   };
   for await (const data of sseData(res)) {
     if (data === "[DONE]") break;
@@ -116,6 +125,11 @@ export async function* streamChat(req: ChatRequest): AsyncGenerator<StreamEvent>
     const { tail, call, text } = prompted.finish(req.tools);
     if (tail) yield { type: "text", text: tail };
     if (call) yield { type: "tool_calls", calls: [call], raw: text, text: text.slice(0, text.indexOf(PROMPTED_OPEN)).trim() };
+  }
+  if (bare && req.tools) {
+    const { tail, call, before } = bare.finish(req.tools);
+    if (call && !nativeCalls) yield { type: "tool_calls", calls: [call], raw: {}, text: before };
+    else if (tail) yield { type: "text", text: tail };
   }
 }
 

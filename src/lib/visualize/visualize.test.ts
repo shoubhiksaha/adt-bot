@@ -222,3 +222,15 @@ describe("visualize tool", () => {
     expect(typeof result === "object" && result.display?.kind).toBe("visualization");
   });
 });
+
+describe("fence aliases small models use", () => {
+  it("draws ```bar and ```json chart specs, but leaves other JSON alone", async () => {
+    const { parseRichBlock } = await import("./fences");
+    const bars = '{"title":"Sales","bars":[{"label":"Jan","value":10},{"label":"Feb","value":20}]}';
+    expect(parseRichBlock("bar", bars)?.kind).toBe("visualization");
+    expect(parseRichBlock("json", bars)).toBeNull();
+    expect(parseRichBlock("json", `{"kind":"bar",${bars.slice(1)}`)?.kind).toBe("visualization");
+    expect(parseRichBlock("json", '{"name":"Bob"}')).toBeNull();
+    expect(parseRichBlock("bar", "not json")).toBeNull();
+  });
+});

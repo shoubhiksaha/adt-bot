@@ -7,7 +7,7 @@ import type { Bot, ProviderConfig, ToolCallRecord } from "../types";
 import { decide } from "./approvals";
 import { calculate } from "./builtin";
 import { runToolLoop } from "./loop";
-import { parsePromptedCall, PromptedFilter } from "./prompted";
+import { BareCallFilter, parsePromptedCall, PromptedFilter } from "./prompted";
 import { type AgentTool, registerTool } from "./tools";
 
 vi.mock("../transport", () => ({ providerFetch: (url: string, init: RequestInit) => fetch(url, init), detectEnv: async () => ({ platform: "web", proxy: false }) }));
@@ -257,5 +257,39 @@ describe("tool discovery", () => {
 
   it("gives a local model the core tools plus find_tools", async () => {
     expect(await exposedNames(provider("openai", base, "ollama"))).toEqual(["find_tools"]);
+  });
+});
+
+describe("bare JSON calls (Llama 3.x via Ollama)", () => {
+  it("runs a call the model printed as text, and hides the JSON", async () => {
+    bodies.length = 0;
+    ran.length = 0;
+    script = (_b, n) =>
+      n === 1
+        ? sse([{ choices: [{ delta: { content: "Let me look. {\"name\": \"lookup_" } }] }, { choices: [{ delta: { content: 'order", "parameters": {"id": "42"}}' } }] }, "[DONE]"])
+        : sse([{ choices: [{ delta: { content: "Shipped Monday." } }] }, "[DONE]"]);
+    const { text, calls } = await run(provider("openai", base, "ollama"), [echo], "native");
+    expect(ran).toEqual([{ id: "42" }]);
+    expect(calls[0]).toMatchObject({ name: "lookup_order", status: "done" });
+    expect(text).not.toContain('"name"');
+    expect(text).toContain("Let me look.");
+    expect(text).toContain("Shipped Monday.");
+    expect(bodies[1].messages.at(-2)).toMatchObject({ role: "assistant", tool_calls: [{ function: { name: "lookup_order" } }] });
+  });
+
+  it("releases JSON that isn't a tool call", () => {
+    const filter = new BareCallFilter();
+    const shown = filter.push('Here: {"name": "Bob", "age": 3}') + filter.push(" done");
+    const end = filter.finish([echo]);
+    expect(end.call).toBeUndefined();
+    expect(shown + end.tail).toBe('Here: {"name": "Bob", "age": 3} done');
+  });
+
+  it("holds back only what could start a call", () => {
+    const filter = new BareCallFilter();
+    expect(filter.push("Total {")).toBe("Total ");
+    expect(filter.push("x}")).toBe("{x}");
+    expect(filter.push(" ```js")).toBe(" ");
+    expect(filter.push("\nlet a")).toBe("```js\nlet a");
   });
 });

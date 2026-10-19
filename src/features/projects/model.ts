@@ -100,6 +100,15 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 export function normaliseLabels(value: unknown): string[] {
+  // Small models send labels as a JSON string ("[]", "[\"urgent\"]") as often as a real list.
+  if (typeof value === "string" && value.trim().startsWith("[")) {
+    const text = value;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      value = text.replace(/[[\]"']/g, "");
+    }
+  }
   const list = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
   const out: string[] = [];
   for (const item of list) {

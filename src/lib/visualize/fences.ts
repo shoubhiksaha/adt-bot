@@ -6,6 +6,8 @@ import { parseVisualization, type VisualizationSpec } from "./normalise";
  * unprompted (and what OpenBOT-trained prompts produce).
  */
 export const CHART_LANGS = new Set(["chart", "visualization", "visualisation", "viz", "openbot-widget", "openbot-viz"]);
+/** Small models often tag the block with the chart kind (```bar) or plain ```json. */
+const KIND_LANGS = new Set(["bar", "stats", "timeline", "flow"]);
 export const CARD_LANGS = new Set(["card", "openbot-card", "grokbot-card"]);
 
 export type RichBlock = { kind: "visualization"; spec: VisualizationSpec } | { kind: "card"; spec: RichCardSpec };
@@ -23,6 +25,21 @@ export function parseRichBlock(lang: string, body: string): RichBlock | null {
   const tag = fenceLang(lang);
   if (CHART_LANGS.has(tag)) {
     const spec = parseVisualization(body);
+    return spec ? { kind: "visualization", spec } : null;
+  }
+  if (KIND_LANGS.has(tag) || tag === "json") {
+    let data: unknown;
+    try {
+      data = JSON.parse(body);
+    } catch {
+      return null;
+    }
+    if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+    const record = data as Record<string, unknown>;
+    // ```json only becomes a chart when it plainly is one; ```bar etc. may leave out "kind".
+    const hasData = ["bars", "metrics", "events", "nodes"].some((k) => Array.isArray(record[k]) && (record[k] as unknown[]).length > 0);
+    if (!hasData || (tag === "json" && !KIND_LANGS.has(String(record.kind)))) return null;
+    const spec = parseVisualization(JSON.stringify(KIND_LANGS.has(tag) && !record.kind ? { ...record, kind: tag } : record));
     return spec ? { kind: "visualization", spec } : null;
   }
   if (CARD_LANGS.has(tag)) {
