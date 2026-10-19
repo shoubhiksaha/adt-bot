@@ -6,3 +6,4 @@ import "./builtin";
 import "../visualize/tool";
 import "../mcp";
 import "../../features/automation/tools";
+import "../../features/computers/tools";

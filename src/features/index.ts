@@ -2,3 +2,4 @@
 import "./connectors";
 export {};
 import "./automation";
+import "./computers";
