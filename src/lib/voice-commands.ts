@@ -133,7 +133,7 @@ export function isEcho(heard: string, spoken: string): boolean {
  * "Love you.", "[Music]"). These are dropped instead of being treated as the user speaking.
  */
 const HALLUCINATIONS =
-  /^(?:thank you(?: (?:so much|very much|for watching|for listening))?|thanks(?: for watching| for listening)?|love you(?: \w+)?|bye(?: bye)?|you|oh|ah|uh|um|hmm|mm|so|the|i|amen|music|applause|laughter|silence|subtitles.*|please subscribe.*|see you(?: next time| later)?)$/;
+  /^(?:thank you(?: (?:so much|very much|for watching|for listening))?|thanks(?: for watching| for listening)?|love you(?: \w+)?|bye|you|oh|ah|uh|um|hmm|mm|so|the|i|amen|music|applause|laughter|silence|subtitles.*|please subscribe.*|see you(?: next time| later)?)$/;
 
 export function isLikelyHallucination(text: string): boolean {
   if (/^\s*[[(*♪].*[\])*♪]\s*$/.test(text)) return true; // [Music], (silence), ♪ ♪

@@ -33,10 +33,36 @@ registerTool({
   },
 });
 
+/**
+ * Reading an ordinary public page needs no approval. Ask first when the URL could reach a private
+ * network (router, local servers, cloud metadata) or could smuggle data out in a long URL.
+ */
+export function urlNeedsApproval(raw: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return true;
+  }
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const privateHost =
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host.endsWith(".local") ||
+    host.endsWith(".internal") ||
+    !host.includes(".") ||
+    /^(127\.|10\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(host) ||
+    /^[\d.]+$/.test(host) ||
+    host.includes(":");
+  return privateHost || Boolean(url.username || url.password) || raw.length > 300 || url.search.length > 120;
+}
+
 registerTool({
   name: "read_url",
   group: "web",
   risk: "read",
+  kind: "fetch",
+  riskFor: (args): ToolRisk => (urlNeedsApproval(String(args.url ?? "")) ? "write" : "read"),
   description: "Read the text of a web page.",
   parameters: { type: "object", properties: { url: { type: "string", description: "Full http(s) URL" } }, required: ["url"] },
   async run(args, ctx) {
@@ -122,7 +148,9 @@ registerTool({
 
 // This computer (desktop app) ----------------------------------------------------------
 
-const DANGEROUS = /\b(rm\s+-[a-z]*[rf]|sudo|mkfs|dd\s+if=|shutdown|reboot|chmod\s+-R|chown\s+-R|kill(all)?\b|launchctl|diskutil\s+erase|curl[^|]*\|\s*(ba|z)?sh|>\s*\/dev\/)/i;
+const DANGEROUS = /\b(rm\s+(-\S+\s+)*-[a-z]*[rf]|sudo|mkfs|dd\s+if=|shutdown|reboot|chmod\s+-R|chown\s+-R|kill(all)?\b|launchctl|diskutil\s+erase|(curl|wget)[^|]*\|\s*(ba|z)?sh|>\s*\/dev\/|eval\b|base64\s+(-d|--decode))/i;
+/** Quotes and backslashes are stripped first, so `r''m -rf` or `\\rm` can't hide a command. */
+const isDangerous = (command: string) => DANGEROUS.test(command.replace(/['"\\]/g, ""));
 
 registerTool({
   name: "run_command",
@@ -137,7 +165,7 @@ registerTool({
     properties: { command: { type: "string" }, cwd: { type: "string", description: "Working folder (relative to the workspace, or absolute)" } },
     required: ["command"],
   },
-  riskFor: (args): ToolRisk => (DANGEROUS.test(String(args.command ?? "")) ? "destructive" : "write"),
+  riskFor: (args): ToolRisk => (isDangerous(String(args.command ?? "")) ? "destructive" : "write"),
   timeoutMs: 300_000,
   async run(args) {
     const result = await desktopInvoke<{ code: number; output: string }>("adt:system:exec", { command: str(args, "command"), cwd: str(args, "cwd") || undefined });
@@ -146,7 +174,9 @@ registerTool({
   },
 });
 
-const insideWorkspace = (p: string) => !p || (!p.startsWith("/") && !p.startsWith("~") && !/^[a-zA-Z]:\\/.test(p) && !p.includes(".."));
+/** Relative and inside the workspace. Anything absolute (Unix, Windows drive, UNC or root-relative) or climbing out asks first. */
+export const insideWorkspace = (p: string) =>
+  !p || (!/^[/\\~]/.test(p) && !/^[a-zA-Z]:/.test(p) && !p.split(/[/\\]/).includes("..") && !p.includes("\0"));
 
 registerTool({
   name: "read_file",

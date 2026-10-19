@@ -4,7 +4,13 @@
 import { env, pipeline } from "@huggingface/transformers";
 import { createStore, get, set } from "idb-keyval";
 import * as ort from "onnxruntime-web/webgpu";
+import ortMjs from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.mjs?url";
+import ortWasm from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url";
 import { FRAME, Segmenter, type SegmentEvent } from "./segmenter";
+
+// transformers.js points ONNX Runtime at a CDN by default; use the copies bundled with the app so
+// speech recognition works offline and nothing is fetched from third parties.
+if (env.backends.onnx.wasm) env.backends.onnx.wasm.wasmPaths = { mjs: ortMjs, wasm: ortWasm };
 
 const files = createStore("adtbot-models", "files");
 
@@ -82,9 +88,11 @@ let vadState: ort.Tensor = new ort.Tensor("float32", new Float32Array(256), [2, 
 const vadRate = new ort.Tensor("int64", BigInt64Array.from([16000n]), []);
 let context = new Float32Array(64);
 
+const VAD_URL = "https://huggingface.co/onnx-community/silero-vad/resolve/main/onnx/model.onnx";
+
 async function loadVad() {
   if (vad) return;
-  const url = "https://huggingface.co/onnx-community/silero-vad/resolve/main/onnx/model.onnx";
+  const url = VAD_URL;
   let bytes = (await get<{ body: ArrayBuffer }>(url, files))?.body;
   if (!bytes) {
     const res = await fetch(url);
@@ -116,6 +124,7 @@ let partialBusy = false;
 let levelTick = 0;
 const frames: Float32Array[] = [];
 let pumping = false;
+let port: MessagePort | null = null;
 
 async function pump() {
   if (pumping || !vad) return;
@@ -137,7 +146,7 @@ async function pump() {
 }
 
 function handle(event: SegmentEvent) {
-  if (event.type === "start") post({ type: "start" });
+  if (event.type === "start" || event.type === "speech" || event.type === "discard") post({ type: event.type });
   else if (event.type === "pause" && mode === "local") {
     // Start transcribing as soon as the speaker pauses; if they carry on, this is discarded.
     speculative = { version: event.version, text: transcribe(event.audio) };
@@ -181,13 +190,17 @@ self.onmessage = async (event: MessageEvent) => {
       size = data.size ?? size;
       language = data.language ?? language;
       partials = Boolean(data.partials);
-      segmenter.configure({ endSilenceMs: data.endSilenceMs ?? 700 });
+      segmenter.configure({ endSilenceMs: data.endSilenceMs ?? 700, startThreshold: 0.6 });
       segmenter.reset();
+      // Only the newest microphone feeds the detector; two interleaved streams would garble both.
+      port?.close();
+      const current = data.port as MessagePort;
+      port = current;
       await loadVad();
       if (mode === "local") await loadWhisper(size);
-      const port = data.port as MessagePort;
-      port.onmessage = (e: MessageEvent<Float32Array>) => {
-        if (muted) return;
+      if (port !== current) return;
+      current.onmessage = (e: MessageEvent<Float32Array>) => {
+        if (muted || port !== current) return;
         frames.push(e.data);
         // If transcription is busy, don't let a backlog build up beyond ~3 s.
         if (frames.length > 100) frames.splice(0, frames.length - 100);
@@ -210,7 +223,7 @@ self.onmessage = async (event: MessageEvent) => {
       for (const e of segmenter.flush()) handle(e);
     } else if (data.type === "load") {
       size = data.size;
-      await loadWhisper(size);
+      await Promise.all([loadVad(), loadWhisper(size)]);
       post({ id: data.id, type: "done", text: "" });
     } else if (data.type === "transcribe") {
       size = data.size ?? size;

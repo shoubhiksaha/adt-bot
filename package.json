@@ -1,7 +1,7 @@
 {
   "name": "adt-bot",
   "productName": "ADT Bot",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Bring-your-own-key AI chat bots for web, desktop and mobile. Derived from Rakazo (Apache-2.0).",
   "license": "Apache-2.0",
   "author": "ADT Bot",
@@ -52,7 +52,10 @@
       "extendInfo": {
         "NSMicrophoneUsageDescription": "ADT Bot uses the microphone for voice input.",
         "NSAppleEventsUsageDescription": "ADT Bot sends keystrokes and reads window titles through System Events when you let a bot control this Mac."
-      }
+      },
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
     },
     "win": {
       "target": [
@@ -69,6 +72,11 @@
       "category": "Utility",
       "icon": "build/icon.png",
       "maintainer": "ADT Bot"
+    },
+    "electronFuses": {
+      "runAsNode": false,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false
     }
   },
   "devDependencies": {

@@ -49,7 +49,12 @@ export default defineConfig({
       },
     }),
   ],
-  build: { target: "es2022", chunkSizeWarningLimit: 1500 },
+  build: {
+    target: "es2022",
+    chunkSizeWarningLimit: 1500,
+    // Scripts (the microphone worklet) stay real files: the desktop CSP doesn't run data: URLs.
+    assetsInlineLimit: (file) => (/\.m?js$/.test(file) ? false : undefined),
+  },
   // The Whisper worker imports code-split modules, which needs ES-module workers.
   worker: { format: "es" },
 });

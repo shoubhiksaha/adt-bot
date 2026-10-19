@@ -30,6 +30,20 @@ export type VoiceState = {
 
 const IDLE_TO_STANDBY_MS = 60_000;
 
+/** Resolves once no reply is streaming (sendMessage ignores new messages until then). */
+function streamStopped(timeoutMs = 5000): Promise<void> {
+  if (!useStore.getState().streamingId) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      unsubscribe();
+      resolve();
+    };
+    const timer = setTimeout(done, timeoutMs);
+    const unsubscribe = useStore.subscribe((s) => !s.streamingId && done());
+  });
+}
+
 /**
  * A hands-free voice conversation: listens continuously, detects turns, handles spoken commands
  * and the wake word, streams answers sentence by sentence into speech, and lets the user cut in.
@@ -47,6 +61,10 @@ export class VoiceSession {
   private endOfSpeechAt = 0;
   private sttMs = 0;
   private offProgress: (() => void) | null = null;
+  /** The current speech segment began while the bot was talking, so it may be the bot's own voice. */
+  private segmentDuringSpeech = false;
+  /** What the bot said last, to recognise its echo arriving just after it stops. */
+  private lastSpoken = "";
 
   constructor(private hooks: { onState: (state: VoiceState) => void; onClose: () => void; initialRequest?: string }) {
     const { settings, providers } = useStore.getState();
@@ -96,17 +114,27 @@ export class VoiceSession {
 
   async start() {
     setVoiceModeActive(true);
+    // Retrying after an error: release the previous microphone first.
+    this.listener?.close();
+    this.listener = null;
+    this.offProgress?.();
     this.offProgress = onWhisperProgress((p) => this.set({ download: p ? Math.round(p.progress) : null }));
     try {
       if (this.usesVad) {
         const { voice } = this.context();
-        this.listener = await Listener.open({
+        const listener = await Listener.open({
           mode: this.engine === "whisper-cloud" ? "cloud" : "local",
           size: voice.localModel,
           endSilenceMs: END_SILENCE_MS[voice.endSilence],
           partials: true,
           onEvent: (event) => void this.onListenerEvent(event),
         });
+        // Closed while getting ready: don't leave the microphone on.
+        if (this.closed) {
+          listener.close();
+          return;
+        }
+        this.listener = listener;
       }
     } catch (error) {
       this.fail((error as Error).message);
@@ -118,7 +146,8 @@ export class VoiceSession {
     else this.enterListening();
   }
 
-  close() {
+  /** Ends the session. `notify: false` when the UI is already going away (unmount). */
+  close(notify = true) {
     if (this.closed) return;
     this.closed = true;
     this.clearIdle();
@@ -127,7 +156,7 @@ export class VoiceSession {
     this.device?.cancel();
     this.speaker?.stop();
     setVoiceModeActive(false);
-    this.hooks.onClose();
+    if (notify) this.hooks.onClose();
   }
 
   /** The big button: finish talking, interrupt, or wake up, depending on the moment. */
@@ -202,12 +231,26 @@ export class VoiceSession {
     }
     if (event.type === "start") {
       this.clearIdle();
+      this.segmentDuringSpeech = phase === "speaking" || phase === "thinking";
+      if (phase === "listening") this.set({ phase: "hearing", partial: "" });
+      return;
+    }
+    if (event.type === "speech") {
+      // A quarter second of clear speech (not a cough or click): cut in right away on echo-free audio.
       if (phase === "speaking" && this.bargeMode() === "instant") {
         this.interrupt();
-        this.set({ phase: "hearing", partial: "" });
-      } else if (phase === "listening") {
+        this.segmentDuringSpeech = false;
         this.set({ phase: "hearing", partial: "" });
       }
+      return;
+    }
+    if (event.type === "discard") {
+      // Too short to be speech: back to listening rather than showing "Listening…" forever.
+      if (phase === "hearing") this.enterListening();
+      return;
+    }
+    if (event.type === "silent") {
+      this.fail(event.message);
       return;
     }
     if (event.type === "partial") {
@@ -284,7 +327,14 @@ export class VoiceSession {
 
   private async onUtterance(text: string) {
     const { phase } = this.state;
+    const duringSpeech = this.segmentDuringSpeech;
+    this.segmentDuringSpeech = false;
     if (!text || isLikelyHallucination(text)) {
+      if (phase === "hearing") this.enterListening();
+      return;
+    }
+    // Started while the bot was talking but finished after it stopped: drop it if it's the bot's own voice.
+    if (duringSpeech && (phase === "listening" || phase === "hearing") && isEcho(text, this.lastSpoken)) {
       if (phase === "hearing") this.enterListening();
       return;
     }
@@ -392,11 +442,12 @@ export class VoiceSession {
   /** Speaks a short line (acknowledgements, commands). */
   private async say(text: string) {
     this.clearIdle();
-    const speaker = createSpeaker(this.context());
+    const speaker = createSpeaker(this.context(), { onError: (message) => this.set({ error: message }) });
     this.speaker = speaker;
     this.set({ phase: "speaking", sentence: text });
     speaker.say(text);
     await speaker.idle();
+    this.lastSpoken = speaker.spoken;
   }
 
   private async ask(text: string, options: { search?: boolean; imagine?: boolean } = {}) {
@@ -456,6 +507,9 @@ export class VoiceSession {
       }
     };
 
+    // After a barge-in the previous reply may still be winding down; wait so this question isn't dropped.
+    await streamStopped();
+    if (turn !== this.turn || this.closed) return;
     const unsubscribe = useStore.subscribe(() => feed(false));
     const modes = useStore.getState().settings.modes;
     try {
@@ -472,6 +526,7 @@ export class VoiceSession {
       chime("error");
     }
     await speaker.idle();
+    this.lastSpoken = speaker.spoken;
     if (turn !== this.turn || this.closed) return;
     this.lastReply = this.state.reply;
     this.enterListening();
@@ -479,14 +534,22 @@ export class VoiceSession {
 
   private interrupt() {
     this.turn++;
+    if (this.speaker) this.lastSpoken = this.speaker.spoken;
     this.speaker?.stop();
     this.speaker = null;
     if (useStore.getState().streamingId) stopStreaming();
   }
 
   private fail(message: string) {
+    if (this.closed) return;
     chime("error");
-    this.set({ phase: "error", error: message });
+    // Stop listening while the error shows; tapping starts again.
+    this.interrupt();
+    this.clearIdle();
+    this.listener?.close();
+    this.listener = null;
+    this.device?.cancel();
+    this.set({ phase: "error", error: message, level: 0 });
   }
 }
 
@@ -505,7 +568,7 @@ export class WakeWatcher {
     const { settings, providers } = useStore.getState();
     const engine = resolveEngine(settings.voice, providers);
     if (engine === "whisper-local" || engine === "whisper-cloud") {
-      this.listener = await Listener.open({
+      const listener = await Listener.open({
         mode: "local",
         size: settings.voice.localModel,
         endSilenceMs: 600,
@@ -514,6 +577,9 @@ export class WakeWatcher {
           if (event.type === "utterance" && event.text) this.check(event.text);
         },
       });
+      // Stopped while the microphone was opening.
+      if (this.stopped) listener.close();
+      else this.listener = listener;
       return;
     }
     while (!this.stopped) {

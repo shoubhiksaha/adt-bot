@@ -49,8 +49,22 @@ export function targetForCall(call: ToolCall): string {
     const value = args[key]
     if (typeof value === 'string' && value.trim()) return value.trim()
   }
-  const first = Object.values(args).find((v) => typeof v === 'string' && v.trim())
-  return typeof first === 'string' ? first.trim() : ''
+  // No obvious subject (e.g. a CLI-agent task: agent + task + folder). Use every argument, so
+  // approving one call never approves a different task that happens to share its first string.
+  const strings = Object.values(args).filter((v) => typeof v === 'string' && v.trim())
+  if (strings.length <= 1) return typeof strings[0] === 'string' ? strings[0].trim() : ''
+  return argsKey(call)
+}
+
+/** Every argument, in a stable order: what "already approved in this session" remembers. */
+export function argsKey(call: ToolCall): string {
+  const sort = (value: unknown): unknown =>
+    Array.isArray(value)
+      ? value.map(sort)
+      : value && typeof value === 'object'
+        ? Object.fromEntries(Object.keys(value as object).sort().map((k) => [k, sort((value as Record<string, unknown>)[k])]))
+        : value
+  return JSON.stringify(sort(call.args ?? {}))
 }
 
 /** Values a rule may match: the target itself, and a tool-scoped key. */
@@ -137,7 +151,9 @@ export function evaluate(
   toolName: string,
   target: string,
   remembered: ReadonlySet<string>,
-  force = false
+  force = false,
+  /** What "already approved" is keyed on; defaults to the target. Pass every argument (`argsKey`). */
+  rememberAs = target
 ): PolicyVerdict {
   const values = matchableValues(toolName, target)
 
@@ -156,7 +172,15 @@ export function evaluate(
     return { outcome: 'allow', reason: 'auto-run policy' }
   }
 
-  const allowed = matchesAny(settings.allowlist ?? [], values)
+  /*
+   * A rule like `git status *` must not wave through `git status && curl … | sh`: once the
+   * target chains, pipes or substitutes commands, only a rule for that exact text (or one
+   * that allows the whole tool) counts.
+   */
+  const chained = hasShellMetacharacters(target)
+  const allowed = (settings.allowlist ?? []).find((rule) =>
+    matchesAny([rule], [`tool:${toolName}`]) ? true : matchesAny([rule], [target]) && (!chained || rule.trim() === target)
+  )
   if (allowed) {
     return { outcome: 'allow', reason: `allowlist rule "${allowed}"` }
   }
@@ -167,7 +191,7 @@ export function evaluate(
    * whole tool rather than one action: approving a single call of it once silently
    * allowed every later call of it, whatever the arguments. Ask each time instead.
    */
-  if (policy === 'ask-first-time' && target && remembered.has(rememberKey(toolName, target))) {
+  if (policy === 'ask-first-time' && target && remembered.has(rememberKey(toolName, rememberAs))) {
     return { outcome: 'allow', reason: 'already approved in this session' }
   }
 

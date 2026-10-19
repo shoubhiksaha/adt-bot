@@ -392,11 +392,17 @@ export function exportData(includeKeys: boolean): string {
 export function importData(json: string) {
   const data = JSON.parse(json);
   if (data?.app !== "adt-bot" && data?.app !== "grokbot") throw new Error("This file is not an ADT Bot backup.");
+  // A backup file may come from someone else: it can't loosen what bots may do without asking.
+  const { agent } = getState().settings;
+  const imported = { ...defaultSettings, ...data.settings };
   setState({
     providers: data.providers ?? [],
     bots: data.bots ?? [],
     conversations: data.conversations ?? {},
-    settings: { ...defaultSettings, ...data.settings },
+    settings: {
+      ...imported,
+      agent: { ...defaultSettings.agent, ...imported.agent, approvalPolicy: agent.approvalPolicy, allowlist: agent.allowlist, denylist: agent.denylist },
+    },
     activeBotId: data.bots?.[0]?.id ?? null,
     activeConversationId: null,
   });

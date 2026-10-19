@@ -1,6 +1,7 @@
 import { updateSettings, useStore } from "../store";
 import type { AgentTool } from "./tools";
 import {
+  argsKey,
   deniedRuleForCall,
   denyRefusal,
   derivePattern,
@@ -34,7 +35,7 @@ export function gate(tool: AgentTool, call: ToolCall): GateResult {
   const risk = tool.riskFor?.(call.args) ?? tool.risk;
   if (risk === "read") return { outcome: "allow", reason: "read-only" };
   const target = targetForCall(call);
-  const verdict = evaluate(policySettings, call.name, target, remembered, risk === "destructive");
+  const verdict = evaluate(policySettings, call.name, target, remembered, risk === "destructive", argsKey(call));
   if (verdict.outcome === "allow") return { outcome: "allow", reason: verdict.reason };
   if (verdict.outcome === "deny") return { outcome: "deny", reason: verdict.reason, refusal: denyRefusal(call.name, verdict.reason) };
   const kind = tool.kind ?? kindForTool(call.name);
@@ -75,7 +76,9 @@ export function onApprovalsChanged(listener: () => void): () => void {
 export function decide(tool: AgentTool | undefined, call: ToolCall, decision: Decision) {
   if (decision !== "deny") {
     const target = targetForCall(call);
-    remembered.add(rememberKey(call.name, target));
+    // Remember this exact call (every argument), not just its target: a different folder, file
+    // content or task is asked about again.
+    remembered.add(rememberKey(call.name, argsKey(call)));
     if (decision === "always" && tool) {
       const pattern = derivePattern(tool.kind ?? kindForTool(call.name), call.name, target);
       const { agent } = useStore.getState().settings;

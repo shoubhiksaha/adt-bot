@@ -71,8 +71,12 @@ export function transcriptFor(transcript: RoomMessage[], botId: string, limit = 
     if (m.kind === "system" || m.pending || !m.text.trim()) continue;
     const own = m.kind === "bot" && m.authorId === botId;
     const role = own ? "assistant" : "user";
-    const tag = m.kind === "host" ? " (host)" : m.kind === "bot" ? " (bot)" : "";
-    const content = own ? m.text : `${m.author}${tag}: ${m.text}`;
+    const tag = m.kind === "host" ? " (host)" : m.kind === "bot" ? " (bot)" : " (guest)";
+    // Guests choose their own names and text: they can't borrow the "(host)" tag, or start a new
+    // line that looks like someone else speaking.
+    const name = m.author.replace(/[\r\n:]/g, " ").replace(/\((host|bot|guest)\)/gi, "").trim().slice(0, 40) || "Someone";
+    const text = m.kind === "guest" ? m.text.replace(/\r?\n/g, "\n    ") : m.text;
+    const content = own ? m.text : `${name}${tag}: ${text}`;
     const last = out[out.length - 1];
     if (last && last.role === role) last.content += `\n\n${content}`;
     else out.push({ id: m.id, role, content, createdAt: m.ts });

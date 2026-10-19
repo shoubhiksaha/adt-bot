@@ -33,12 +33,13 @@ const DESTRUCTIVE = [
 ];
 
 /** Shell features that can write or run something else even after a read-only verb. */
-const SIDE_EFFECTS = /[><`]|\$\(|\b(sed|perl)\s+-i|\s-exec\b|\s-delete\b|\s-fprint|\bxargs\b|\btee\b/;
+const SIDE_EFFECTS =
+  /[><`]|\$\(|\b(sed|perl)\s+-i|\s-(exec|execdir|ok|okdir|delete|fprint\w*|fls)\b|\bxargs\b|\btee\b|--pre\b|--compress-program|--to-command|--checkpoint-action|--use-compress-program/;
 
-/** Splits on ; && || | and newlines (good enough to judge each step; not a full shell parser). */
+/** Splits on ; & && || | and newlines (good enough to judge each step; not a full shell parser). */
 function segments(command: string): string[] {
   return command
-    .split(/\|\||&&|[;|\n]/)
+    .split(/\|\||&&|[;|&\n]/)
     .map((s) => s.trim())
     .filter(Boolean);
 }

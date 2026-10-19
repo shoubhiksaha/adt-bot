@@ -68,7 +68,9 @@ export function preloadWhisper(size: WhisperSize): Promise<void> {
 export async function whisperDownloaded(size: WhisperSize): Promise<boolean> {
   try {
     const stored = (await keys(createStore("adtbot-models", "files"))) as string[];
-    return stored.some((k) => k.includes(`whisper-${size}/`) && k.includes("decoder"));
+    const has = (...parts: string[]) => stored.some((k) => parts.every((p) => k.includes(p)));
+    // Everything voice mode needs offline: both halves of Whisper and the voice detector.
+    return has(`whisper-${size}/`, "encoder") && has(`whisper-${size}/`, "decoder") && has("silero-vad");
   } catch {
     return false;
   }
@@ -102,10 +104,30 @@ export type ListenerEvent =
   | { type: "ready" }
   | { type: "level"; level: number; probability: number }
   | { type: "start" }
+  /** Clear speech for a quarter second (not a cough or click). */
+  | { type: "speech" }
+  /** The sound that started a turn was too short to be speech. */
+  | { type: "discard" }
   | { type: "partial"; text: string }
   | { type: "transcribing" }
   | { type: "utterance"; text?: string; audio?: Float32Array; ms?: number }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  /** The microphone delivers pure digital silence: blocked by the OS, muted, or the wrong input. */
+  | { type: "silent"; message: string };
+
+/** About 3 s of level reports (one per 64 ms) at exactly zero, right after the microphone opened. */
+const SILENT_REPORTS = 48;
+
+async function silentMicMessage(): Promise<string> {
+  const desktop = (window as { adtbotDesktop?: { platform: string; invoke(channel: string): Promise<unknown> } }).adtbotDesktop;
+  const status = await desktop?.invoke("adt:mic:status").catch(() => "unknown");
+  if (status === "denied" || status === "restricted") {
+    return desktop?.platform === "darwin"
+      ? "ADT Bot isn't allowed to use the microphone. Turn it on in System Settings → Privacy & Security → Microphone, then reopen voice mode."
+      : "ADT Bot isn't allowed to use the microphone. Allow it in your system's privacy settings, then reopen voice mode.";
+  }
+  return "Your microphone is sending silence. Check that the right input is selected and not muted in your sound settings, then tap to try again.";
+}
 
 export type ListenerOptions = {
   mode: "local" | "cloud";
@@ -134,6 +156,16 @@ export class Listener {
 
   private async start(options: ListenerOptions) {
     try {
+      await this.connect(options);
+    } catch (error) {
+      // Don't leave the microphone or the worker running after a failed start.
+      this.close();
+      throw error;
+    }
+  }
+
+  private async connect(options: ListenerOptions) {
+    try {
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
       });
@@ -153,11 +185,21 @@ export class Listener {
     const channel = new MessageChannel();
     this.node.port.postMessage({ port: channel.port1 }, [channel.port1]);
 
+    let silentReports = 0;
     const ready = new Promise<void>((resolve, reject) => {
       this.onMessage = (message) => {
         if (this.closed) return;
         if (message.type === "ready") resolve();
         if (message.type === "error" && message.id === undefined) reject(new Error(message.message));
+        if (message.type === "level" && silentReports >= 0) {
+          // A blocked microphone delivers exact zeros from the start. Once any sound has come
+          // through, stop checking: some mics gate quiet rooms to zero.
+          silentReports = message.level === 0 ? silentReports + 1 : -1;
+          if (silentReports === SILENT_REPORTS) {
+            // Still nothing by the time the explanation is ready? Then report it.
+            void silentMicMessage().then((text) => !this.closed && silentReports > 0 && options.onEvent({ type: "silent", message: text }));
+          }
+        }
         options.onEvent(message);
       };
     });

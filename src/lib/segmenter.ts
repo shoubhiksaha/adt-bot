@@ -18,6 +18,10 @@ export type SegmenterOptions = {
 
 export type SegmentEvent =
   | { type: "start" }
+  /** The utterance has passed `minSpeechMs` of speech, so it isn't a cough or click. Once per utterance. */
+  | { type: "speech" }
+  /** The utterance ended too short to count as speech and was dropped. */
+  | { type: "discard" }
   /** Silence just began: a good moment to start transcribing speculatively. */
   | { type: "pause"; audio: Float32Array; version: number }
   /** Speech continued, so any speculative transcription for `version` is stale. */
@@ -111,6 +115,7 @@ export class Segmenter {
       if (this.state === "speech") {
         this.speechFrames++;
         this.silence = 0;
+        if (this.speechFrames === frames(o.minSpeechMs)) events.push({ type: "speech" });
       }
     }
     if (probability < o.endThreshold) {
@@ -140,7 +145,7 @@ export class Segmenter {
       const audio = concat(this.frames.slice(0, keep));
       const version = this.version;
       this.reset();
-      if (long) events.push({ type: "end", audio, version });
+      events.push(long ? { type: "end", audio, version } : { type: "discard" });
     }
     return events;
   }

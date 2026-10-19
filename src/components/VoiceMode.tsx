@@ -30,7 +30,8 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
     session.current = s;
     setState(s.state);
     void s.start();
-    return () => s.close();
+    // Unmounting already removes the UI, so don't call onClose again (StrictMode mounts twice in dev).
+    return () => s.close(false);
     // One session per opening.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

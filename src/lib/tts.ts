@@ -64,6 +64,9 @@ export async function bestVoice(preferred: string): Promise<DeviceVoice | undefi
 
 // Playback ------------------------------------------------------------------------
 
+/** Device speech in Chromium sometimes never reports "end"; keep a reference so it isn't garbage-collected. */
+let activeUtterance: SpeechSynthesisUtterance | null = null;
+
 let output: AudioContext | null = null;
 function audioOutput(): AudioContext {
   if (!output || output.state === "closed") output = new AudioContext();
@@ -155,16 +158,28 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
     });
   };
 
-  const playBuffer = (buffer: AudioBuffer) =>
-    new Promise<void>((resolve) => {
-      const ctx = audioOutput();
+  const playBuffer = async (buffer: AudioBuffer) => {
+    const ctx = audioOutput();
+    // A suspended context never plays, so "ended" would never come.
+    if (ctx.state === "suspended") await ctx.resume().catch(() => undefined);
+    if (ctx.state !== "running") {
+      hooks.onError?.("Audio playback is blocked. Tap the screen once, then try again.");
+      return;
+    }
+    await new Promise<void>((resolve) => {
       const source = ctx.createBufferSource();
       source.buffer = buffer;
       source.connect(ctx.destination);
-      source.onended = () => resolve();
+      // Safety net in case "ended" is lost (device change, sleep).
+      const watchdog = setTimeout(resolve, (buffer.duration + 3) * 1000);
+      source.onended = () => {
+        clearTimeout(watchdog);
+        resolve();
+      };
       current = source;
       source.start();
     });
+  };
 
   const speakDevice = async (text: string) => {
     const chosen = await bestVoice(voice.voiceName);
@@ -173,19 +188,33 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
       const voices = await listVoices();
       const index = chosen ? voices.findIndex((v) => v.name === chosen.name) : -1;
       await TextToSpeech.speak({ text, lang: chosen?.lang ?? navigator.language, rate: voice.rate, ...(index >= 0 ? { voice: index } : {}) }).catch(
-        () => undefined,
+        (error: Error) => hooks.onError?.(`The device voice failed: ${error.message ?? error}`),
       );
       return;
     }
-    if (!("speechSynthesis" in window)) return;
+    if (!("speechSynthesis" in window)) {
+      hooks.onError?.("This device has no built-in voice. Choose a natural voice in Settings → Voice.");
+      return;
+    }
     await new Promise<void>((resolve) => {
       const utterance = new SpeechSynthesisUtterance(text);
+      activeUtterance = utterance;
       const match = chosen ? speechSynthesis.getVoices().find((v) => v.name === chosen.name) : undefined;
       if (match) utterance.voice = match;
       utterance.lang = match?.lang ?? navigator.language;
       utterance.rate = voice.rate;
-      utterance.onend = () => resolve();
-      utterance.onerror = () => resolve();
+      // About 12 characters a second at normal speed, plus slack; covers a lost "end" event.
+      const watchdog = setTimeout(() => finish(), (4000 + (text.length / 12 / Math.max(0.5, voice.rate)) * 1000 * 1.5));
+      const finish = () => {
+        clearTimeout(watchdog);
+        if (activeUtterance === utterance) activeUtterance = null;
+        resolve();
+      };
+      utterance.onend = finish;
+      utterance.onerror = (event) => {
+        if (event.error !== "interrupted" && event.error !== "canceled") hooks.onError?.(`The device voice failed (${event.error}).`);
+        finish();
+      };
       speechSynthesis.speak(utterance);
     });
   };

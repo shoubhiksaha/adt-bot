@@ -169,13 +169,31 @@ export function createProxyHandler(options = {}) {
     res.on("close", () => controller.abort());
 
     try {
-      const upstream = await fetch(target, {
-        method: req.method,
+      let method = req.method;
+      let url = target;
+      let upstream = await fetch(url, {
+        method,
         headers,
-        body: req.method === "GET" || req.method === "HEAD" ? undefined : Readable.toWeb(req),
+        body: method === "GET" || method === "HEAD" ? undefined : Readable.toWeb(req),
         duplex: "half",
+        redirect: "manual",
         signal: controller.signal,
       });
+      // Follow redirects by hand so every hop is checked against the allowlist: an open redirect on
+      // an allowed host must not lead the relay into the private network.
+      for (let hop = 0; hop < 5 && [301, 302, 303, 307, 308].includes(upstream.status); hop++) {
+        const location = upstream.headers.get("location");
+        // A streamed request body can't be sent twice, so only bodiless requests follow 307/308.
+        const asGet = upstream.status === 303 || ((upstream.status === 301 || upstream.status === 302) && method === "POST");
+        if (!location || (!asGet && method !== "GET" && method !== "HEAD")) break;
+        const next = new URL(location, url);
+        if (!/^https?:$/.test(next.protocol) || !(await hostAllowed(next))) {
+          return fail(res, 403, `The relay won't follow a redirect to ${next.hostname}.`);
+        }
+        if (asGet) method = "GET";
+        url = next;
+        upstream = await fetch(url, { method, headers, redirect: "manual", signal: controller.signal });
+      }
       const responseHeaders = { "cache-control": "no-cache" };
       const type = upstream.headers.get("content-type");
       if (type) responseHeaders["content-type"] = type;

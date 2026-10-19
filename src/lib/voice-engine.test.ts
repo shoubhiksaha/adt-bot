@@ -15,9 +15,9 @@ const voice = (n: number) => Array(n).fill(0.95);
 describe("turn detection", () => {
   it("emits start, a speculative pause, then the end of the turn after the silence window", () => {
     const events = run([...quiet(20), ...voice(30), ...quiet(30)]);
-    expect(events.map((e) => e.type)).toEqual(["start", "pause", "end"]);
-    const pause = events[1] as Extract<SegmentEvent, { type: "pause" }>;
-    const end = events[2] as Extract<SegmentEvent, { type: "end" }>;
+    expect(events.map((e) => e.type)).toEqual(["start", "speech", "pause", "end"]);
+    const pause = events[2] as Extract<SegmentEvent, { type: "pause" }>;
+    const end = events[3] as Extract<SegmentEvent, { type: "end" }>;
     expect(end.version).toBe(pause.version);
     // Includes the pre-roll before speech and trims most trailing silence.
     expect(end.audio.length / FRAME).toBeGreaterThan(30);
@@ -26,14 +26,21 @@ describe("turn detection", () => {
 
   it("invalidates the speculative result when the speaker keeps going", () => {
     const events = run([...voice(20), ...quiet(8), ...voice(20), ...quiet(30)]);
-    expect(events.map((e) => e.type)).toEqual(["start", "pause", "resume", "pause", "end"]);
-    const firstPause = events[1] as Extract<SegmentEvent, { type: "pause" }>;
+    expect(events.map((e) => e.type)).toEqual(["start", "speech", "pause", "resume", "pause", "end"]);
+    const firstPause = events[2] as Extract<SegmentEvent, { type: "pause" }>;
     const end = events.at(-1) as Extract<SegmentEvent, { type: "end" }>;
     expect(end.version).not.toBe(firstPause.version);
   });
 
   it("ignores clicks and short blips", () => {
     expect(run([...quiet(10), 0.9, ...quiet(10), ...voice(4), ...quiet(40)]).filter((e) => e.type === "end")).toEqual([]);
+  });
+
+  it("only confirms speech after a quarter second, and reports dropped blips", () => {
+    // A cough: starts a segment but never counts as speech, so it must not cut the bot off.
+    expect(run([...quiet(5), ...voice(4), ...quiet(40)]).map((e) => e.type)).toEqual(["start", "discard"]);
+    const speech = run([...quiet(5), ...voice(7), ...voice(10)]).map((e) => e.type);
+    expect(speech).toEqual(["start", "speech"]);
   });
 
   it("reports progress during long speech for live captions", () => {

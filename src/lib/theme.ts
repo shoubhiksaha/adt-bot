@@ -154,13 +154,16 @@ export function themeCss(theme: ThemeConfig): string {
   --orb-c: ${toHex(hslToRgb((rgbToHsl(parseColor(accent)!)[0] + 40) % 360, Math.max(0.5, rgbToHsl(parseColor(accent)!)[1]), 0.45))};`;
   };
   const preset = FONTS[theme.font];
-  const font = preset?.stack ?? (theme.font ? `"${theme.font.replace(/"/g, "")}", ${FONTS.system.stack}` : FONTS.system.stack);
+  // Font names come from imported brand kits: keep only characters a family name needs, so the
+  // value can't close the rule and inject CSS.
+  const custom = typeof theme.font === "string" ? theme.font.replace(/[^\p{L}\p{N} _-]/gu, "").trim().slice(0, 60) : "";
+  const font = preset?.stack ?? (custom ? `"${custom}", ${FONTS.system.stack}` : FONTS.system.stack);
   return `:root, [data-theme="dark"] {${block("dark")}
 }
 [data-theme="light"] {${block("light")}
 }
 :root {
-  --radius: ${Math.max(0, Math.min(24, theme.radius))}px;
+  --radius: ${Math.max(0, Math.min(24, Number(theme.radius) || 0))}px;
   --font: ${font};
   --font-display: ${preset?.display ?? font};
   --font-mono: ${preset?.mono ?? 'ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace'};
