@@ -54,7 +54,15 @@ export function scheduleFromArgs(args: Record<string, unknown>, fallback?: Sched
   const type = str(args, "schedule_type", fallback?.type ?? "").toLowerCase();
   const timezone = str(args, "timezone") || fallback?.timezone || localTimezone();
   const prev = (fallback ?? {}) as Partial<Record<string, unknown>>;
-  const time = str(args, "time", typeof prev.time === "string" ? prev.time : "");
+  let time = str(args, "time", typeof prev.time === "string" ? prev.time : "");
+  // Small models often give a cron line where a clock time belongs ("daily" + "0 9 * * *").
+  const cronArg = str(args, "cron").trim();
+  const simple = /^(\d{1,2}) (\d{1,2}) \* \* \*$/.exec(cronArg);
+  if (!time && simple && (type === "daily" || type === "weekly" || type === "once")) {
+    time = `${simple[2].padStart(2, "0")}:${simple[1].padStart(2, "0")}`;
+  } else if (!time && cronArg && (type === "daily" || type === "weekly")) {
+    return scheduleFromArgs({ ...args, schedule_type: "cron" }, fallback);
+  }
   switch (type) {
     case "once": {
       const date = str(args, "date", typeof prev.date === "string" ? prev.date : "");

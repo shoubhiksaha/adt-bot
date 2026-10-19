@@ -330,6 +330,8 @@ describe("tool arguments", () => {
     expect(parseDays(["Mon", "wednesday", 0])).toEqual([0, 1, 3]);
     expect(parseDays("[\"mon\",\"tue\"]")).toEqual([1, 2]);
     expect(parseDays(["funday"])).toBeNull();
+    expect(scheduleFromArgs({ schedule_type: "daily", cron: "0 9 * * *" })).toMatchObject({ type: "daily", time: "09:00" });
+    expect(scheduleFromArgs({ schedule_type: "daily", cron: "30 8 * * 1-5" })).toMatchObject({ type: "cron", cron: "30 8 * * 1-5" });
     expect(scheduleFromArgs({ schedule_type: "weekly", time: "08:00" })).toMatchObject({ error: expect.stringContaining("days") });
     expect(scheduleFromArgs({ schedule_type: "hourly" })).toMatchObject({ error: expect.stringContaining("schedule_type") });
     expect(scheduleFromArgs({ schedule_type: "daily", time: "07:15", timezone: NY })).toEqual({ type: "daily", time: "07:15", timezone: NY });
