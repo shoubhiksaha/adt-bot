@@ -4,10 +4,12 @@ ADT Bot includes code adapted from these projects. Their licenses are kept next 
 
 | Project | License | Where | What |
 | --- | --- | --- | --- |
-| [OpenBOT](https://github.com/ashhart/OpenBot) | MIT, © 2026 OpenBOT contributors | `src/lib/agent/vendor/openbot/` and files marked "Adapted from OpenBOT" | Tool-call parsing, text tool protocol, approval policy, memory filter, cron, visualisation spec |
-| [CopilotKit OpenBot](https://github.com/CopilotKit/OpenBot) | MIT, © 2026 CopilotKit | `src/lib/agent/vendor/copilotkit/` | Untrusted-content envelope, routine firing frame |
+| [OpenBOT](https://github.com/ashhart/OpenBot) | MIT, © 2026 OpenBOT contributors | `src/lib/agent/vendor/openbot/` and files marked "Adapted from OpenBOT" | Tool-call parsing, text tool protocol, approval policy, memory filter, cron, charts and rich cards, kanban model, coding-agent supervision, macOS control |
+| [CopilotKit OpenBot](https://github.com/CopilotKit/OpenBot) | MIT, © 2026 CopilotKit | `src/lib/agent/vendor/copilotkit/`, `src/lib/mcp/` | Untrusted-content envelope, routine firing frame, MCP client limits |
+| [Synara](https://github.com/Emanuele-web04/synara) (via OpenBOT) | MIT, © 2026 T3 Tools Inc., © 2026 Emanuele | `electron/features/50-cli-agents.cjs` | Parts of the CLI-agent process supervision |
 | [QR Code generator library](https://www.nayuki.io/page/qr-code-generator-library) | MIT, © Project Nayuki | `server/qr.mjs` | QR encoding algorithm and tables (rewritten, reduced) |
 | [Rakazo](https://github.com/elie222/rakazo) | Apache-2.0 | Design tokens, model catalog | |
 
-Code marked **PolyForm Noncommercial** (from nightly-labs/openbot) is kept under `src/vendor-nc/` and
-`electron/features/nc-*`. It may only be used non-commercially; remove it before any commercial use.
+No code from nightly-labs/openbot (PolyForm Noncommercial) is included; only ideas (for example the
+Status / Result / Evidence / Unblock report format) were re-implemented. If any is added later it must go under
+`src/vendor-nc/` or `electron/features/nc-*` and be removed before commercial use.

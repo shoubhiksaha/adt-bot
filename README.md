@@ -48,6 +48,45 @@ database or server stack to run.
   regenerate, retry, stop (Esc), response time and speed, a jump-to-latest button, and dark and light themes.
 - Backup and restore everything as a JSON file (with or without keys).
 
+## Bots that act: tools, computers and teams
+
+Bots can do things as well as talk. Turn it on or off, and choose what needs your approval, in
+**Settings → Tools & safety**. Each bot can be limited to certain tool groups in its own settings.
+
+- **Tool use with every model**: native tool calling for OpenAI-style, Claude and Gemini models. For local
+  models without it, a text protocol is used, and calls a model prints as plain JSON (common with Llama 3.x)
+  are caught too. Cloud models see the full tool list; local models see the everyday tools plus a
+  "find tools" search, so long catalogs don't confuse them.
+- **Approvals**: reading never asks; changes ask the first time (or always, or never, as you choose), with
+  **Allow once / Always allow / Deny** in the chat; destructive actions always ask. A deny list blocks commands
+  such as `rm -rf /` and `sudo`. Content from the web, files and connectors is marked untrusted so a page can't
+  give the bot orders. Every action is in the activity log.
+- **Charts and cards**: bar charts, stat tiles, timelines and flow diagrams inline in the chat, plus email,
+  message and link cards with Copy / Open in Mail.
+- **Projects (kanban boards)**: Backlog → To do → In progress → Review → Done, with labels, due dates,
+  checklists and comments. Assign a card to a bot and press **Run**: it works in the background in the card's
+  own chat and moves the card to Review. Bots can also create and update tasks from any chat.
+- **Routines**: "every weekday at 8:00, summarise the AI news". Once, daily, weekly, every N minutes or cron,
+  in any time zone, with run history, catch-up rules and notifications. Runs that find nothing new stay quiet.
+  On desktop, the app can keep running in the menu bar for them.
+- **Bots working together**: a bot can hand a task to another bot (`ask_bot`) and gets back a short report.
+  Loop guards stop bots passing work back and forth.
+- **Connectors (MCP)**: add any MCP server (remote URL with a token, or a local command on desktop) in
+  **Settings → Connectors**; its tools become bot tools.
+- **Coding agents** (desktop): bots can hand work to Claude Code, Codex, Gemini CLI, OpenCode or Aider in a
+  folder you choose, and you can watch the live transcript. Claude Code (and the others) can also be picked
+  as a bot's model.
+- **Control your Mac** (desktop, macOS, off by default): screenshots the bot can see, clicking, typing, keys,
+  scrolling, opening apps and AppleScript, with a "Stop" banner while it works. Needs Accessibility and Screen
+  Recording permission (**Settings → Computer control** links to the right System Settings pages).
+- **Each bot's own computer** (desktop): a Docker container per bot with a persistent `/workspace`,
+  resource limits, and an optional "no network" switch. See **Computers** in the sidebar.
+- **Rooms** (desktop): people on your network chat with each other and your bots from any browser by
+  opening a link or scanning a QR code and entering a PIN. Nothing to install. Guests can't use tools that
+  need approval unless you allow it.
+- **Desktop tools**: run commands, read and write files (in `~/ADT Bot Workspace` by default), open
+  files and links.
+
 ## Voice (hands-free, like Grok's voice mode)
 
 Click the **sound-wave button** next to the mic for a hands-free conversation:
@@ -267,6 +306,13 @@ src/lib/providers.ts   Provider presets (cloud, local, private)
 src/lib/catalog.json   Bundled model list, generated from Rakazo's model catalog (npm run catalog)
 src/lib/transport.ts   Chooses relay, direct or native HTTP per platform
 src/lib/store.ts       App state, persisted to IndexedDB (throttled writes; private chats never saved)
+src/lib/agent/         Tool registry, tool loop (native and text protocol), approvals, activity log, built-in tools
+src/lib/visualize/     Charts and cards (visualize tool, ```chart / ```card blocks)
+src/lib/mcp/           MCP client (Streamable HTTP, SSE, stdio via desktop)
+src/lib/cli-agents/    Coding-agent tool and "local CLI" provider
+src/features/          Projects, routines + delegation, rooms, connectors, coding agents, Mac control, computers
+electron/features/     Desktop side of those features (IPC "adt:<feature>:*")
+server/rooms.mjs       LAN room server and guest page
 src/components/        React UI
 server/                Static server and provider relay (web, Docker, dev)
 electron/              Desktop shell (macOS, Windows, Linux)
