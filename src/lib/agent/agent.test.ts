@@ -277,6 +277,12 @@ describe("bare JSON calls (Llama 3.x via Ollama)", () => {
     expect(bodies[1].messages.at(-2)).toMatchObject({ role: "assistant", tool_calls: [{ function: { name: "lookup_order" } }] });
   });
 
+  it("repairs a quoted list inside the call", () => {
+    const filter = new BareCallFilter();
+    filter.push('{"name": "lookup_order", "parameters": {"id": "["42"]"}}');
+    expect(filter.finish([echo]).call?.args).toEqual({ id: ["42"] });
+  });
+
   it("releases JSON that isn't a tool call", () => {
     const filter = new BareCallFilter();
     const shown = filter.push('Here: {"name": "Bob", "age": 3}') + filter.push(" done");

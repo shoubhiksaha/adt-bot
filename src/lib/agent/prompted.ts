@@ -28,13 +28,18 @@ export function parsePromptedCall(text: string, tools: ToolSchema[]): { text: st
   if (start < 0) return { text };
   const endAt = text.indexOf(CLOSE, start + OPEN.length);
   const raw = text.slice(start + OPEN.length, endAt < 0 ? undefined : endAt).trim();
-  const record = parseObjectLoose(raw);
+  const record = parseCallJson(raw);
   if (!record) return { text };
   const call = callFromRecord(record, tools);
   if (!call) return { text };
   const before = text.slice(0, start).trim();
   const after = endAt < 0 ? "" : text.slice(endAt + CLOSE.length).trim();
   return { text: [before, after].filter(Boolean).join("\n"), call };
+}
+
+/** Lenient parse, plus a repair for a slip small models make: a list wrapped in quotes ("days": "["mon"]"). */
+function parseCallJson(text: string): Record<string, unknown> | null {
+  return parseObjectLoose(text) ?? parseObjectLoose(text.replace(/"\[([^[\]]*)\]"/g, "[$1]"));
 }
 
 /** {"name": "...", "arguments"|"args"|"parameters": {...}} → a call, if it names one of the tools. */
@@ -91,7 +96,7 @@ export class BareCallFilter {
   finish(tools: ToolSchema[]): { tail: string; call?: ToolCall; before: string } {
     const held = this.full.slice(this.emitted);
     if (this.start >= 0) {
-      const record = parseObjectLoose(held.replace(/^```(?:json)?/, "").replace(/```\s*$/, ""));
+      const record = parseCallJson(held.replace(/^```(?:json)?/, "").replace(/```\s*$/, ""));
       const call = record ? callFromRecord(record, tools) : undefined;
       if (call) return { tail: "", call, before: this.full.slice(0, this.start).trim() };
     }
