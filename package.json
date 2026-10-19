@@ -38,6 +38,8 @@
       "dist/**/*",
       "electron/**/*",
       "server/**/*",
+      "!**/*.test.mjs",
+      "!**/*.test.cjs",
       "package.json"
     ],
     "mac": {
