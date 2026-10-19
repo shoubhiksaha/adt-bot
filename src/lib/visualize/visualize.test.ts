@@ -232,5 +232,7 @@ describe("fence aliases small models use", () => {
     expect(parseRichBlock("json", `{"kind":"bar",${bars.slice(1)}`)?.kind).toBe("visualization");
     expect(parseRichBlock("json", '{"name":"Bob"}')).toBeNull();
     expect(parseRichBlock("bar", "not json")).toBeNull();
+    expect(parseRichBlock("text", `{"kind":"bar",${bars.slice(1)}`)?.kind).toBe("visualization");
+    expect(parseRichBlock("", '{"kind":"bar"}')).toBeNull();
   });
 });
