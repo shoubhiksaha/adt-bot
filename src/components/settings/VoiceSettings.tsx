@@ -17,6 +17,7 @@ import {
   SUPERTONIC3_MB,
 } from "../../lib/local-tts";
 import { isMoonshine } from "../../lib/speech-models";
+import { CAPTION_MB } from "../../lib/moonshine-streaming";
 import { localSpeechModel, onSpeechNotice, onWhisperProgress, preloadWhisper, SPEECH_MODELS, type SpeechModel, whisperDownloaded } from "../../lib/whisper";
 import { ModelInput, Section, Toggle } from "./controls";
 
@@ -282,6 +283,11 @@ export function VoiceSettings() {
               </span>
             )}
             {speechNotice && isMoonshine(voice.localModel) && <span className="small muted">{speechNotice}</span>}
+            {systemLanguage.toLowerCase().startsWith("en") && (
+              <span className="small muted">
+                Live captions while you talk use Moonshine streaming ({CAPTION_MB} MB more, downloaded the first time voice mode opens; MIT licence).
+              </span>
+            )}
             <div className="btn-row" style={{ marginTop: 6 }}>
               {downloaded ? (
                 <span className="status ok" style={{ marginTop: 0 }}>

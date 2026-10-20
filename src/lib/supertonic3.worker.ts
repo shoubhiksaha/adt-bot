@@ -2,11 +2,11 @@
 // on ONNX Runtime (transformers.js doesn't know this version). The steps follow Supertone's
 // MIT-licensed web/helper.js: duration → text encoder → a few denoising steps → vocoder. Model files
 // are cached in IndexedDB like the other on-device models, so after the first download it works offline.
-import { createStore, get, keys, set } from "idb-keyval";
 import * as ort from "onnxruntime-web/webgpu";
 import ortMjs from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.mjs?url";
 import ortWasm from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url";
 import { splitLongText } from "./local-tts-voices";
+import { cachedUrls, fetchCached } from "./model-cache";
 import { supertonicIds, supertonicLanguage, supertonicText } from "./supertonic-text";
 
 // Use the copies of ONNX Runtime bundled with the app, so nothing is fetched from a CDN.
@@ -24,40 +24,8 @@ const SIZES: Record<(typeof GRAPHS)[number], number> = {
 };
 const VOICES = ["F1", "F2", "F3", "F4", "F5", "M1", "M2", "M3", "M4", "M5"];
 
-const files = createStore("adtbot-models", "files");
 const post = (message: Record<string, unknown>, transfer: Transferable[] = []) =>
   (self as unknown as { postMessage(m: unknown, t: Transferable[]): void }).postMessage(message, transfer);
-
-/** A file from the cache, or downloaded (with progress) and cached. */
-async function fetchCached(url: string, onBytes?: (n: number) => void): Promise<ArrayBuffer> {
-  const hit = await get<{ body: ArrayBuffer }>(url, files);
-  if (hit) {
-    onBytes?.(hit.body.byteLength);
-    return hit.body;
-  }
-  const res = await fetch(url);
-  if (!res.ok || !res.body) throw new Error(`Couldn't download the voice (${res.status})`);
-  // Straight into one buffer of the announced size (no second copy of a 256 MB file).
-  const expected = Number(res.headers.get("content-length")) || 0;
-  let body = new Uint8Array(expected || 1 << 20);
-  let size = 0;
-  const reader = res.body.getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (size + value.length > body.length) {
-      const grown = new Uint8Array(Math.max(body.length * 2, size + value.length));
-      grown.set(body.subarray(0, size));
-      body = grown;
-    }
-    body.set(value, size);
-    size += value.length;
-    onBytes?.(value.length);
-  }
-  const bytes = size === body.length ? body.buffer : body.slice(0, size).buffer;
-  await set(url, { body: bytes, type: "application/octet-stream" }, files);
-  return bytes;
-}
 
 type Config = { ae: { sample_rate: number; base_chunk_size: number }; ttl: { chunk_compress_factor: number; latent_dim: number } };
 type Model = {
@@ -95,7 +63,7 @@ function load(): Promise<Model> {
     ]);
     // Download what's missing first, then read each file back only to open it: on a small Mac the
     // 400 MB of graphs never sit in memory together.
-    const cached = new Set((await keys(files)) as string[]);
+    const cached = await cachedUrls();
     const graph = (name: (typeof GRAPHS)[number]) => `${BASE}/onnx/${name}.onnx`;
     for (const name of GRAPHS) {
       if (cached.has(graph(name))) progress(SIZES[name]);

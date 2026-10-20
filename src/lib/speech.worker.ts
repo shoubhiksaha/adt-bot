@@ -163,6 +163,37 @@ const PARTIAL_GAP_MS = 700;
  */
 const PARTIAL_MIN_SAMPLES = 32000;
 const PARTIAL_NEW_SAMPLES = 8000;
+
+// Live captions in English come from Moonshine streaming (caption.worker.ts) once it's ready: it
+// reads only the new audio, on its own thread, so captions start within a second, even for short
+// questions, without delaying the real transcription. Until then (or if it can't load), the
+// Whisper/Moonshine captions above.
+let captioner: Worker | null = null;
+let captionsReady = false;
+let captionsFailed = false;
+/** The utterance being captioned, and how much of its audio the caption worker has had. */
+let utterance = 0;
+let captionSent = 0;
+
+function startCaptions() {
+  if (captioner || captionsFailed || mode !== "local" || language !== "en" || !partials) return;
+  const worker = new Worker(new URL("./caption.worker.ts", import.meta.url), { type: "module" });
+  const fail = () => {
+    worker.terminate();
+    captioner = null;
+    captionsReady = false;
+    captionsFailed = true;
+  };
+  worker.onmessage = (event: MessageEvent) => {
+    const data = event.data;
+    if (data.type === "ready") captionsReady = true;
+    else if (data.type === "failed") fail();
+    else if (data.type === "caption" && data.utterance === utterance && partials && segmenter.speaking && data.text) live({ type: "partial", text: data.text });
+  };
+  worker.onerror = fail;
+  worker.postMessage({ type: "load" });
+  captioner = worker;
+}
 /**
  * Early replies: when the turn has probably ended but isn't certain yet, the transcript is offered
  * to voice mode ("tentative"), which may start the answer without speaking it (see startsEarly).
@@ -207,7 +238,12 @@ async function pump() {
 
 function handle(event: SegmentEvent) {
   if (event.type === "start" || event.type === "speech" || event.type === "discard") {
-    if (event.type === "start") partialSamples = 0;
+    if (event.type === "start") {
+      partialSamples = 0;
+      utterance++;
+      captionSent = 0;
+    }
+    if (event.type === "discard") captioner?.postMessage({ type: "reset" });
     live({ type: event.type });
   } else if (event.type === "pause" && mode === "local") {
     // Start transcribing as soon as the speaker pauses; if they carry on, this is discarded.
@@ -230,6 +266,11 @@ function handle(event: SegmentEvent) {
     }
     // The speaker carried on: an early reply to what they'd said so far is now wrong.
     if (offered === event.version) live({ type: "resume" });
+  } else if (event.type === "progress" && partials && mode === "local" && captionsReady && captioner) {
+    // Just the audio since the last caption; the caption worker keeps the rest.
+    const samples = event.audio.slice(captionSent);
+    captionSent = event.audio.length;
+    captioner.postMessage({ type: "audio", utterance, samples }, [samples.buffer]);
   } else if (
     event.type === "progress" &&
     partials &&
@@ -251,6 +292,7 @@ function handle(event: SegmentEvent) {
         partialAt = performance.now();
       });
   } else if (event.type === "end") {
+    captioner?.postMessage({ type: "reset" });
     void finish(event);
   }
 }
@@ -316,6 +358,8 @@ self.onmessage = async (event: MessageEvent) => {
       await loadVad();
       loadTurnModel();
       if (mode === "local") await loadWhisper(size);
+      // After the speech model, so the two don't load at once on a small Mac.
+      startCaptions();
       if (port !== current) return;
       current.onmessage = (e: MessageEvent<Float32Array>) => {
         if (muted || port !== current) return;
@@ -332,7 +376,10 @@ self.onmessage = async (event: MessageEvent) => {
       if (data.endSilenceMs !== undefined) {
         segmenter.configure({ endSilenceMs: data.endSilenceMs, patientEndMs: patientFor(data.endSilenceMs), lullMs: lullFor(data.endSilenceMs) });
       }
-      if (data.partials !== undefined) partials = data.partials;
+      if (data.partials !== undefined) {
+        partials = data.partials;
+        startCaptions();
+      }
       if (data.early !== undefined) early = data.early;
       if (data.muted !== undefined) {
         muted = data.muted;
