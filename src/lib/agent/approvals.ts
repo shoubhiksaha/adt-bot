@@ -42,8 +42,13 @@ export type GateResult =
  * has read outside content, these ask even with Full access (screen actions still run, so Full
  * access stays usable for "send this message"-type tasks).
  */
-export function taintSensitive(tool: AgentTool, risk: AgentTool["risk"]): boolean {
+export function taintSensitive(tool: AgentTool, risk: AgentTool["risk"], args: Record<string, unknown> = {}): boolean {
   if (risk === "read") return false;
+  // Opening a link can carry what the turn has seen to a site the content chose (in the URL).
+  if (tool.name === "mac_open_app" && typeof args.url === "string" && args.url.trim()) return true;
+  if (tool.name === "mac_browser" && (args.action === "open" || args.action === "go")) return true;
+  // Saving a recipe keeps steps (and a description bots read later) for future chats.
+  if (tool.name === "mac_recipes" && args.action === "save") return true;
   // Routines run again later with the same tools: an injected instruction must not schedule itself.
   if (tool.group === "routines") return true;
   // Connector tools can send what the turn has seen to someone else.
@@ -84,7 +89,7 @@ export function gate(
   const checkTaint = (allowed: GateResult): GateResult => {
     if (allowed.outcome !== "allow") return allowed;
     if (forceAsk) return ask(forceAsk, false);
-    if (tainted && taintSensitive(tool, risk)) return ask(`this conversation just read outside content (${tainted}), so changes to your computer ask first`, false);
+    if (tainted && taintSensitive(tool, risk, call.args ?? {})) return ask(`this conversation just read outside content (${tainted}), so changes to your computer ask first`, false);
     return allowed;
   };
   const access = accessVerdict(tool, call.args ?? {}, risk, agent, context);

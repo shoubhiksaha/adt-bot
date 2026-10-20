@@ -128,5 +128,6 @@ export function markRun(name: string) {
 
 /** One line per recipe, for the model. */
 export function recipeLine(r: Recipe): string {
-  return `- "${r.name}"${r.params.length ? ` (${r.params.join(", ")})` : ""}: ${r.description || `${r.steps.length} steps`}`;
+  const description = (r.description || `${r.steps.length} steps`).replace(/[\r\n]+/g, " ").slice(0, 160);
+  return `- "${r.name}"${r.params.length ? ` (${r.params.join(", ")})` : ""}: ${JSON.stringify(description)}`;
 }

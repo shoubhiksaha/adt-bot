@@ -469,7 +469,8 @@ async function quitApp({ name } = {}) {
   const value = appName(name);
   const apps = await listApps().catch(() => []);
   const want = value.toLowerCase();
-  const match = apps.filter((a) => a.name?.toLowerCase() === want || a.name?.toLowerCase().startsWith(want));
+  // Only the app named exactly: "c" must not quit every app starting with c.
+  const match = apps.filter((a) => a.name?.toLowerCase() === want);
   if (!match.length) throw new Error(`"${name}" isn't running.`);
   // taskkill without /F asks the window to close, like quitting: the app can still ask to save.
   for (const a of match) {

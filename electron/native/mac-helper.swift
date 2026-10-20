@@ -27,7 +27,9 @@ struct Failure: Error {
 // Elements from the last two snapshots, by id, so "press 12" works after the model looks again.
 var current: [Int: AXUIElement] = [:]
 var previous: [Int: AXUIElement] = [:]
-var nextId = 1
+// Ids start somewhere random for each run of the helper: an id from before a restart (Stop all, a
+// timeout) can't land on a different element in this run.
+var nextId = Int.random(in: 1...900) * 1000
 var exposed = Set<pid_t>()
 
 let CHROMIUM: Set<String> = [
@@ -132,9 +134,29 @@ func appInfo(_ pid: pid_t) -> [String: Any] {
   return ["name": clip(app?.localizedName ?? "pid \(pid)", 80), "bundleId": app?.bundleIdentifier ?? "", "pid": Int(pid)]
 }
 
+/**
+ * ADT Bot itself (the app that started this helper; tests set ADT_SELF_PID). Bots may not read or
+ * operate its window: its settings and approval buttons are the user's.
+ */
+let selfPid: pid_t = pid_t(ProcessInfo.processInfo.environment["ADT_SELF_PID"] ?? "") ?? getppid()
+let selfBundle = NSRunningApplication(processIdentifier: selfPid)?.bundleIdentifier
+func isSelf(_ pid: pid_t) -> Bool {
+  if pid == selfPid || pid == getpid() { return true }
+  guard let mine = selfBundle, let theirs = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier else { return false }
+  return theirs == mine || theirs.hasPrefix(mine + ".")
+}
+let SELF_REFUSAL = "That's ADT Bot itself: bots can't operate its window (its settings and approval buttons are the user's). Name another app."
+
+/** Refuses input aimed at whatever is in front when that's ADT Bot (the user is talking to it). */
+func requireOtherAppInFront(_ what: String) throws {
+  if let front = NSWorkspace.shared.frontmostApplication, isSelf(front.processIdentifier) {
+    throw Failure(message: "\(what) would go to ADT Bot, which is in front. Name the app to send it to (app: \"WhatsApp\"), or open it first.", code: "self")
+  }
+}
+
 /** The app in front, skipping ADT Bot itself (it's in front while the user talks to it). */
 func frontApp() -> pid_t? {
-  let me = getppid()
+  let me = selfPid
   if let focused = attr(systemWide, "AXFocusedApplication") {
     let pid = pidOf(focused as! AXUIElement)
     if pid != me && pid != getpid() && pid > 0 { return pid }
@@ -162,6 +184,7 @@ func findApp(_ name: String?) throws -> pid_t {
     ?? apps.first { nameOf($0).hasPrefix(want) }
     ?? apps.first { nameOf($0).contains(want) }
   guard let app = match else { throw Failure(message: "\"\(name)\" isn't running. Open it first (mac_open_app).", code: "not-running") }
+  if isSelf(app.processIdentifier) { throw Failure(message: SELF_REFUSAL, code: "self") }
   return app.processIdentifier
 }
 
@@ -539,8 +562,16 @@ func postChar(_ ch: String, flags: CGEventFlags, to pid: pid_t?) {
 }
 
 /** Types any text (accents, emoji, other scripts) as keyboard events, one character at a time. */
-func typeText(_ text: String, to pid: pid_t? = nil) {
-  for ch in text {
+/**
+ * Types character by character. Into the app in front (no pid), it stops if another app comes to
+ * the front partway (the user switched): the rest would land somewhere else.
+ */
+func typeText(_ text: String, to pid: pid_t? = nil) throws {
+  let front = pid == nil ? NSWorkspace.shared.frontmostApplication?.processIdentifier : nil
+  for (i, ch) in text.enumerated() {
+    if let front, i % 40 == 39, NSWorkspace.shared.frontmostApplication?.processIdentifier != front {
+      throw Failure(message: "Stopped typing after \(i) characters: another app came to the front. Check what was typed, then continue.", code: "moved")
+    }
     if ch == "\n" || ch == "\r\n" {
       postKey(36, to: pid)
     } else if ch == "\t" {
@@ -572,7 +603,9 @@ func loosely(_ s: String) -> String {
 func holds(_ el: AXUIElement, _ expected: String) -> Bool {
   let now = valueOf(el)
   if loosely(now) == loosely(expected) { return true }
-  // Apps show emoji and some symbols as placeholders in AXValue: a matching length is good evidence.
+  // Apps show emoji and some symbols as placeholders in AXValue (or no value at all): then a matching
+  // length is good evidence. Readable text that differs is a different text, whatever its length.
+  guard now.isEmpty || now.contains("\u{FFFC}") else { return false }
   if let n = charCount(el), n == (expected as NSString).length || n == expected.count { return true }
   return false
 }
@@ -618,7 +651,7 @@ func setTextInBackground(_ el: AXUIElement, text: String, replace: Bool, old: St
   if valueOf(el) != old && !valueOf(el).isEmpty { return nil }
   // 3. Key events to that app only.
   if place() {
-    typeText(text, to: pid)
+    try? typeText(text, to: pid)
     usleep(150_000)
     if holds(el, expected) { return "keys" }
   }
@@ -626,14 +659,22 @@ func setTextInBackground(_ el: AXUIElement, text: String, replace: Bool, old: St
 }
 
 /** A button called Send (or similar) in the field's window, for apps whose Return key can't be sent from behind. */
+/**
+ * The Send button that belongs to this field: looked for in the field's own container first, then
+ * one level out at a time, so a Send button of another thread or form in the window isn't pressed.
+ */
 func sendButton(near el: AXUIElement) -> AXUIElement? {
-  guard let win = attr(el, "AXWindow") else { return nil }
-  let w = Walk(maxNodes: 600, query: nil, seconds: 2)
-  walk(win as! AXUIElement, depth: 0, visible: frameOf(win as! AXUIElement) ?? .null, inWeb: false, labelOwner: nil, w)
   let names: Set<String> = ["send", "send message", "submit", "post", "reply"]
-  for (id, cand) in w.elements {
-    guard let node = w.nodes.first(where: { ($0["id"] as? Int) == id }), node["role"] as? String == "button", node["disabled"] == nil else { continue }
-    if names.contains(loosely((node["label"] as? String) ?? "")) { return cand }
+  var container = el
+  for _ in 0..<8 {
+    guard let up = attr(container, "AXParent"), string(attr(up as! AXUIElement, "AXRole")) != "AXApplication" else { break }
+    container = up as! AXUIElement
+    let w = Walk(maxNodes: 300, query: nil, seconds: 1)
+    walk(container, depth: 0, visible: frameOf(container) ?? .null, inWeb: false, labelOwner: nil, w)
+    for (id, cand) in w.elements {
+      guard let node = w.nodes.first(where: { ($0["id"] as? Int) == id }), node["role"] as? String == "button", node["disabled"] == nil else { continue }
+      if names.contains(loosely((node["label"] as? String) ?? "")) { return cand }
+    }
   }
   return nil
 }
@@ -643,6 +684,20 @@ func sendButton(near el: AXUIElement) -> AXUIElement? {
  * can't tell whether anything happened (the text is still there).
  */
 func submitInBackground(_ el: AXUIElement, pid: pid_t, expected: String) -> String? {
+  // Return goes to whatever has focus in that app: only press it when that's this field, still
+  // holding our text, and the app is still behind (if the user brought it forward, they may be typing).
+  if isFrontmost(pid) || !holds(el, expected) { return nil }
+  if !isFocused(el) {
+    AXUIElementSetAttributeValue(el, "AXFocused" as CFString, kCFBooleanTrue)
+    usleep(60_000)
+  }
+  if !isFocused(el) {
+    if let button = sendButton(near: el), AXUIElementPerformAction(button, "AXPress" as CFString) == .success {
+      usleep(300_000)
+      return holds(el, expected) ? nil : "send-button"
+    }
+    return nil
+  }
   postKey(36, to: pid)
   usleep(300_000)
   // A sent message empties the box; a search keeps its text, so "still there" isn't proof of failure.
@@ -711,7 +766,7 @@ func setText(_ req: [String: Any]) throws -> [String: Any] {
   } else if !replace {
     postKey(119, flags: [])  // End: append after what's there.
   }
-  typeText(text)
+  try typeText(text)
   usleep(150_000)
   if submit {
     // The same field, with our text, in the app that's still in front: otherwise Return could send
@@ -738,6 +793,11 @@ func setText(_ req: [String: Any]) throws -> [String: Any] {
 
 func click(_ req: [String: Any]) throws -> [String: Any] {
   guard let x = (req["x"] as? NSNumber)?.doubleValue, let y = (req["y"] as? NSNumber)?.doubleValue else { throw Failure(message: "x and y are required.") }
+  // A click on ADT Bot's own window (an Allow button, a setting) is refused.
+  var hit: AXUIElement?
+  if AXUIElementCopyElementAtPosition(systemWide, Float(x), Float(y), &hit) == .success, let hit, isSelf(pidOf(hit)) {
+    throw Failure(message: SELF_REFUSAL, code: "self")
+  }
   try requireUserPause("Clicking")
   let b = req["button"] as? String
   postClick(CGPoint(x: x, y: y), button: b == "right" ? .right : b == "middle" ? .center : .left, clicks: req["clicks"] as? Int ?? 1)
@@ -755,11 +815,12 @@ func backgroundTarget(_ req: [String: Any]) throws -> pid_t? {
 func typeCommand(_ req: [String: Any]) throws -> [String: Any] {
   let text = req["text"] as? String ?? ""
   if let pid = try backgroundTarget(req) {
-    typeText(text, to: pid)
+    try typeText(text, to: pid)
     return ["typed": text.count, "to": "app"]
   }
+  try requireOtherAppInFront("Typing")
   try requireUserPause("Typing")
-  typeText(text)
+  try typeText(text)
   return ["typed": text.count, "to": "front"]
 }
 
@@ -773,7 +834,10 @@ func keyCommand(_ req: [String: Any]) throws -> [String: Any] {
     flags.insert(f)
   }
   let pid = try backgroundTarget(req)
-  if pid == nil { try requireUserPause("Pressing the key") }
+  if pid == nil {
+    try requireOtherAppInFront("The key")
+    try requireUserPause("Pressing the key")
+  }
   if let code = req["code"] as? Int {
     postKey(CGKeyCode(code), flags: flags, to: pid)
   } else if let ch = req["char"] as? String, !ch.isEmpty {

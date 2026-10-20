@@ -32,7 +32,9 @@ if ($env:ADT_PARENT_PID) { try { $appPid = [int]$env:ADT_PARENT_PID } catch {} }
 # Elements from the last two snapshots, by id, so "press 12" works after the model looks again.
 $script:current = @{}
 $script:previous = @{}
-$script:nextId = 1
+# Ids keep counting across snapshots, from a random start per run: an old id fails as stale instead
+# of landing on whatever has that number in a newer list (or after a restart).
+$script:nextId = (Get-Random -Minimum 1 -Maximum 900) * 1000
 $script:lastPosted = [AdtNative]::Tick()
 $script:lastUser = [AdtNative]::LastInputTick()
 
@@ -120,17 +122,33 @@ function IsAppWindow($w) {
   return ((Clip $w.Current.Name 200) -ne "")
 }
 
+$SELF_REFUSAL = "That's ADT Bot itself: bots can't operate its window (its settings and approval buttons are the user's). Name another app."
+
+# ADT Bot's own process (it started this helper).
+function IsSelf([int]$procId) { return ($procId -eq $PID -or ($appPid -ne 0 -and $procId -eq $appPid)) }
+
 # The top-level window to read: by title, by app (process name or title), else the app in front.
+# ADT Bot's own windows are never picked: asking for them by name or title is refused.
 function FindTargetWindow([string]$app, [string]$window) {
   $windows = TopWindows
+  $selfHit = $false
   if ($window -and $window.Trim() -ne "") {
     $want = (Clip $window 200).ToLower()
-    foreach ($w in $windows) { if ((Clip $w.Current.Name 200).ToLower().Contains($want)) { return $w } }
+    foreach ($w in $windows) {
+      if (-not (Clip $w.Current.Name 200).ToLower().Contains($want)) { continue }
+      if (IsSelf (ElPid $w)) { $selfHit = $true; continue }
+      if (IsAppWindow $w) { return $w }
+    }
   }
   if ($app -and $app.Trim() -ne "") {
     $want = (Clip $app 200).ToLower()
     $byName = $null; $byPrefix = $null; $byTitle = $null
     foreach ($w in $windows) {
+      if (IsSelf (ElPid $w)) {
+        $sname = (ProcName (ElPid $w)).ToLower()
+        if ($sname.StartsWith($want) -or (Clip $w.Current.Name 200).ToLower().Contains($want)) { $selfHit = $true }
+        continue
+      }
       if (-not (IsAppWindow $w)) { continue }
       $pname = (ProcName (ElPid $w)).ToLower()
       $title = (Clip $w.Current.Name 200).ToLower()
@@ -141,8 +159,10 @@ function FindTargetWindow([string]$app, [string]$window) {
     if ($byName) { return $byName }
     if ($byPrefix) { return $byPrefix }
     if ($byTitle) { return $byTitle }
+    if ($selfHit) { Fail $SELF_REFUSAL "self" }
     Fail ('"' + $app + '" isn''t running. Open it first (mac_open_app).') "not-running"
   }
+  if ($selfHit) { Fail $SELF_REFUSAL "self" }
   $fg = ForegroundPid
   foreach ($w in $windows) { if ((IsAppWindow $w) -and (ElPid $w) -eq $fg) { return $w } }
   foreach ($w in $windows) { if (IsAppWindow $w) { return $w } }
@@ -264,7 +284,6 @@ function Snapshot($req) {
 
   $script:previous = $script:current
   $script:current = @{}
-  $script:nextId = 1
 
   $titles = @(); foreach ($w in (TopWindows)) { $t = Clip $w.Current.Name 120; if ($t -ne "") { $titles += $t } }
   $procId = 0; $windowTitle = ""; $windowFrame = $null
@@ -412,7 +431,9 @@ function SetTextCmd($req) {
   return $out
 }
 
-# The app named in a request, running and not in front: input is aimed at it by bringing it forward.
+# The app named in a request: Windows has no way to type into a window from behind, so it's brought
+# forward (once the user pauses) and checked to really be in front before any key is sent. Windows
+# often refuses to switch from a background process: then nothing is typed.
 function BackgroundTargetPid($req) {
   $app = [string]$req.app
   if (-not $app) { return 0 }
@@ -420,14 +441,22 @@ function BackgroundTargetPid($req) {
   if ($null -eq $w) { return 0 }
   $procId = ElPid $w
   if ($procId -eq (ForegroundPid)) { return 0 }
-  try { [void][AdtNative]::SetForegroundWindow([IntPtr]([int64]$w.Current.NativeWindowHandle)); Start-Sleep -Milliseconds 200 } catch {}
+  RequireUserPause ("Switching to " + $app)
+  try { [void][AdtNative]::SetForegroundWindow([IntPtr]([int64]$w.Current.NativeWindowHandle)) } catch {}
+  for ($i = 0; $i -lt 20; $i++) { if ($procId -eq (ForegroundPid)) { break }; Start-Sleep -Milliseconds 50 }
+  if ($procId -ne (ForegroundPid)) { Fail ($app + " didn't come to the front (Windows may have blocked the switch). Nothing was typed: open it with mac_open_app, then try again.") "not-front" }
   return $procId
+}
+
+# Typing or keys with no app named go to the window in front: never to ADT Bot itself.
+function RequireOtherAppInFront([string]$what) {
+  if (IsSelf (ForegroundPid)) { Fail ($what + " would go to ADT Bot, which is in front. Name the app to send it to (app: ""Notepad""), or open it first.") "self" }
 }
 
 function TypeCmd($req) {
   $text = [string]$req.text
   $procId = BackgroundTargetPid $req
-  if ($procId -eq 0) { RequireUserPause "Typing" }
+  if ($procId -eq 0) { RequireOtherAppInFront "Typing"; RequireUserPause "Typing" }
   MarkPosted
   [AdtNative]::TypeUnicode($text)
   if ($procId -eq 0) { return @{ typed = $text.Length; to = "front" } } else { return @{ typed = $text.Length; to = "app" } }
@@ -439,7 +468,7 @@ function KeyCmd($req) {
   $mods = New-Object System.Collections.ArrayList
   if ($req.modifiers) { foreach ($m in $req.modifiers) { $vk = $MODVK[[string]$m]; if ($null -eq $vk) { Fail "Unknown modifier $m." "" }; [void]$mods.Add([uint16]$vk) } }
   $procId = BackgroundTargetPid $req
-  if ($procId -eq 0) { RequireUserPause "Pressing the key" }
+  if ($procId -eq 0) { RequireOtherAppInFront "The key"; RequireUserPause "Pressing the key" }
   MarkPosted
   $modArr = [uint16[]]$mods.ToArray([uint16])
   if ($null -ne $req.code) { [AdtNative]::KeyCombo($modArr, [uint16][int]$req.code) }
@@ -449,6 +478,13 @@ function KeyCmd($req) {
 }
 
 function ClickCmd($req) {
+  # A click on ADT Bot's own window (an Allow button, a setting) is refused.
+  $hitPid = 0
+  try {
+    $hit = [System.Windows.Automation.AutomationElement]::FromPoint((New-Object System.Windows.Point ([double]$req.x), ([double]$req.y)))
+    if ($null -ne $hit) { $hitPid = ElPid $hit }
+  } catch {}
+  if ($hitPid -ne 0 -and (IsSelf $hitPid)) { Fail $SELF_REFUSAL "self" }
   RequireUserPause "Clicking"
   $b = 0; if ($req.button -eq "right") { $b = 1 } elseif ($req.button -eq "middle") { $b = 2 }
   $clicks = 1; if ($req.clicks) { $clicks = [int]$req.clicks }

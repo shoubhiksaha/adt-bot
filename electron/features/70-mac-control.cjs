@@ -734,14 +734,27 @@ async function move({ x, y, space } = {}) {
   return { ok: true, screen: p };
 }
 
+/**
+ * Input through System Events lands on whatever is in front. When that's ADT Bot itself (the user
+ * is talking to it), refuse: its settings and approval buttons are the user's. The helper checks
+ * this itself; this covers the paths without it.
+ */
+async function refuseSelfInFront(what) {
+  const front = await frontmost().catch(() => null);
+  if (front && (front.pid === process.pid || front.bundleId === "app.adtbot.desktop")) {
+    throw new Error(`${what} would go to ADT Bot, which is in front. Name the app (app: "WhatsApp"), or open it first with mac_open_app.`);
+  }
+}
+
 async function click({ x, y, button = "left", clicks = 1, space } = {}) {
   ensureMac();
   await requireAccessibility("Clicking");
   await ensureUnlocked("Clicking");
   const p = await pointFor(x, y, space);
   const args = clickArgs(p, button, clicks);
-  if (hasHelper()) await helperCall("click", { x: p.x, y: p.y, button, clicks: Number(args[3]) }, { what: "Clicking" }).catch((error) => (helperBroken ? jxa(CLICK_JXA, args, "Clicking") : Promise.reject(error)));
-  else await jxa(CLICK_JXA, args, "Clicking");
+  const viaScript = () => refuseSelfInFront("The click").then(() => jxa(CLICK_JXA, args, "Clicking"));
+  if (hasHelper()) await helperCall("click", { x: p.x, y: p.y, button, clicks: Number(args[3]) }, { what: "Clicking" }).catch((error) => (helperBroken ? viaScript() : Promise.reject(error)));
+  else await viaScript();
   return { ok: true, screen: p };
 }
 
@@ -751,6 +764,7 @@ async function drag({ x, y, toX, toY, space } = {}) {
   await ensureUnlocked("Dragging");
   const a = await pointFor(x, y, space);
   const b = await pointFor(toX, toY, space);
+  await refuseSelfInFront("The drag");
   await requireUserPause("Dragging");
   await jxa(DRAG_JXA, [a.x, a.y, b.x, b.y], "Dragging", 30_000);
   return { ok: true, from: a, to: b };
@@ -763,6 +777,7 @@ async function scroll({ x, y, dx = 0, dy = 0, space } = {}) {
   const p = x === undefined || y === undefined ? (await cursor()).screen : await pointFor(x, y, space);
   const sx = Math.max(-5000, Math.min(5000, Math.round(Number(dx) || 0)));
   const sy = Math.max(-5000, Math.min(5000, Math.round(Number(dy) || 0)));
+  await refuseSelfInFront("Scrolling");
   await requireUserPause("Scrolling");
   await jxa(SCROLL_JXA, [p.x, p.y, sx, sy], "Scrolling");
   return { ok: true, screen: p };
@@ -780,10 +795,11 @@ async function typeText({ text, app: appName } = {}) {
   // behind when it isn't in front, and waits for the user to pause before typing into the front app.
   if (hasHelper()) {
     const done = await helperCall("type", { text: value, app: appName ? String(appName).slice(0, 200) : undefined }, { what: "Typing", timeoutMs }).catch((error) =>
-      helperBroken ? jxa(TYPE_JXA, [value], "Typing", timeoutMs).then(() => ({ to: "front" })) : Promise.reject(error),
+      helperBroken ? refuseSelfInFront("Typing").then(() => jxa(TYPE_JXA, [value], "Typing", timeoutMs)).then(() => ({ to: "front" })) : Promise.reject(error),
     );
     return { ok: true, typed: value.length, to: done?.to ?? "front" };
   }
+  await refuseSelfInFront("Typing");
   await jxa(TYPE_JXA, [value], "Typing", timeoutMs);
   return { ok: true, typed: value.length, to: "front" };
 }
@@ -798,9 +814,12 @@ async function key({ combo, app: appName } = {}) {
     const payload = { modifiers: parsed.modifiers, app: appName ? String(appName).slice(0, 200) : undefined };
     if (parsed.keyCode !== undefined) payload.code = parsed.keyCode;
     else payload.char = parsed.character;
-    const done = await helperCall("key", payload, { what }).catch((error) => (helperBroken ? jxa(KEY_JXA, keyArgs(parsed), what).then(() => ({ to: "front" })) : Promise.reject(error)));
+    const done = await helperCall("key", payload, { what }).catch((error) =>
+      helperBroken ? refuseSelfInFront(what).then(() => jxa(KEY_JXA, keyArgs(parsed), what)).then(() => ({ to: "front" })) : Promise.reject(error),
+    );
     return { ok: true, label: parsed.label, to: done?.to ?? "front" };
   }
+  await refuseSelfInFront(what);
   await jxa(KEY_JXA, keyArgs(parsed), what);
   return { ok: true, label: parsed.label, to: "front" };
 }
@@ -818,6 +837,8 @@ async function frontmost() {
 function appName(name) {
   const value = String(name ?? "").trim();
   if (!value || value.length > 200 || /[\0\n]/.test(value)) throw new Error("Give the app's name, e.g. \"Safari\".");
+  // A name, not a path: "open -a /Users/x/Downloads/evil.app" would launch anything on disk.
+  if (/[/~]/.test(value) || value.startsWith(".")) throw new Error("Give the app's name (e.g. \"Safari\"), not a path.");
   return value;
 }
 
@@ -839,7 +860,7 @@ async function quitApp({ name } = {}) {
 }
 
 /** Links that open in an app: web, mail, calls and messages, and apps' own links (e.g. whatsapp://send?phone=…&text=…). */
-const APP_LINK = /^(https?:\/\/|mailto:|tel:|sms:|facetime:|facetime-audio:|imessage:|whatsapp:|tg:|slack:|msteams:|zoommtg:|zoomus:|spotify:|music:|maps:|x-apple\.systempreferences:|notion:|obsidian:|vscode:|discord:)/i;
+const APP_LINK = /^(https?:\/\/|mailto:|tel:|sms:|facetime:|facetime-audio:|imessage:|whatsapp:|tg:|slack:|msteams:|zoommtg:|zoomus:|spotify:|music:|maps:|x-apple\.systempreferences:|notion:|discord:)/i;
 
 async function openUrl(shell, { url } = {}) {
   const value = String(url ?? "").trim();
@@ -1085,6 +1106,8 @@ const PAGE_FN = `function (req) {
   }
   try {
     var r;
+    // An id from a read of another page (the user switched tabs, the page navigated) is refused.
+    if (req.expect && (req.op === 'click' || req.op === 'type') && location.href.split('#')[0] !== String(req.expect).split('#')[0]) throw new Error('ADT_MOVED');
     if (req.op === 'read') r = snapshot();
     else if (req.op === 'click') r = click(find(req.id));
     else if (req.op === 'type') r = type(find(req.id));
@@ -1156,15 +1179,19 @@ async function page(name, req) {
   }
   if (parsed.error === "ADT_STALE") throw Object.assign(new Error("That element is gone (the page changed). Read the page again (action read)."), { code: "stale" });
   if (parsed.error === "ADT_NOT_EDITABLE") throw new Error("That element isn't a text field. Read the page again and pick a field.");
+  if (parsed.error === "ADT_MOVED") throw Object.assign(new Error("The page in front isn't the one that was read (another tab, or it moved on). Nothing was done: read the page again (action read)."), { code: "stale" });
   if (parsed.error) throw new Error(`The page refused: ${parsed.error}`);
   return parsed.result;
 }
+
+/** The address of the page an element id was read from (checked again before acting on it). */
+const pageAddress = (value) => (typeof value === "string" && value.length <= 4000 ? value : undefined);
 
 /** Web addresses only: a file:// page would let the browser read this Mac's files to the bot. */
 const URL_OK = /^https?:\/\/[^\s]/i;
 
 /** One browser action; every call says which browser it used. */
-async function browser({ browser: wanted, action = "read", id, text, submit, append, query, content, offset, url, tab, dy, max } = {}) {
+async function browser({ browser: wanted, action = "read", id, text, submit, append, query, content, offset, url, tab, dy, max, expect } = {}) {
   ensureMac();
   const address = String(url ?? "").trim();
   if ((action === "open" || action === "go") && (!URL_OK.test(address) || address.length > 4000 || /[\0\r\n]/.test(address))) {
@@ -1176,11 +1203,11 @@ async function browser({ browser: wanted, action = "read", id, text, submit, app
     case "read":
       return { ...base, ...(await page(name, { op: "read", query: query ? String(query).slice(0, 200) : undefined, content: content === true, offset: Number(offset) || 0, max: Number(max) || undefined })) };
     case "click":
-      return { ...base, ...(await page(name, { op: "click", id: Number(id) })) };
+      return { ...base, ...(await page(name, { op: "click", id: Number(id), expect: pageAddress(expect) })) };
     case "type": {
       const value = String(text ?? "");
       if (value.length > MAX_TEXT) throw new Error(`Text is too long (max ${MAX_TEXT} characters).`);
-      return { ...base, ...(await page(name, { op: "type", id: Number(id), text: value, submit: submit === true, append: append === true })) };
+      return { ...base, ...(await page(name, { op: "type", id: Number(id), text: value, submit: submit === true, append: append === true, expect: pageAddress(expect) })) };
     }
     case "scroll":
       return { ...base, ...(await page(name, { op: "scroll", id: id === undefined ? undefined : Number(id), dy: Number(dy) || undefined })) };

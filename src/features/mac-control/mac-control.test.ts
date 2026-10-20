@@ -359,7 +359,7 @@ describe("recipes", () => {
     const recipes = macTools.find((t) => t.name === "mac_recipes")!;
     const run = macTools.find((t) => t.name === "mac_recipe_run")!;
     await recipes.run({ action: "save", name: "Send WhatsApp", description: "message someone", params: ["contact", "message"], steps }, {} as never);
-    expect(recipes.description).toContain('"Send WhatsApp" (contact, message): message someone');
+    expect(recipes.description).toContain('"Send WhatsApp" (contact, message): "message someone"');
     expect(run.riskFor?.({ name: "send whatsapp", values: { contact: "Ma", message: "hi" } })).toBe("write");
 
     const calls: string[] = [];
@@ -389,6 +389,9 @@ describe("recipes", () => {
     const failed = (await run.run({ name: "send whatsapp", values: { contact: "Nobody", message: "hi" } }, ctx)) as { content: string };
     expect(failed.content).toMatch(/stopped at step 2 of 3[\s\S]*Nothing called "Nobody"/);
     await expect(run.run({ name: "send whatsapp", values: { contact: "Ma" } }, ctx)).rejects.toThrow(/needs: message/);
+    // A step the deny list blocks stops the recipe there, as the call on its own would be refused.
+    const denied = (await run.run({ name: "send whatsapp", values: { contact: "Ma", message: "hi" } }, { ...ctx, settings: { agent: { denylist: ["WhatsApp"] } } } as never)) as { content: string };
+    expect(denied.content).toMatch(/stopped at step 1 of 3[\s\S]*deny rule "WhatsApp"/);
     await recipes.run({ action: "delete", name: "Send WhatsApp" }, {} as never);
     expect(recipes.description).toContain("No recipes are saved yet.");
     vi.unstubAllGlobals();
