@@ -18,7 +18,10 @@ import {
   updateSettings,
   useStore,
 } from "../lib/store";
+import { clearKnowledgeDocs } from "../lib/knowledge";
+import { eraseConnectors } from "../lib/mcp/store";
 import { clearVectorIndex } from "../lib/semantic";
+import { eraseRoomPins } from "../features/rooms/rooms";
 import { detectEnv, type Platform } from "../lib/transport";
 import { Dialog } from "./Dialog";
 import { ProviderSetup } from "./ProviderSetup";
@@ -488,7 +491,9 @@ function DataTab() {
         onClick={async () => {
           if (confirm("Delete all bots, chats, memory and keys from this device?")) {
             // The search index holds what memories and files say, in another form: it goes too.
-            await Promise.allSettled([eraseAllData(), clearVectorIndex()]);
+            await Promise.allSettled([eraseAllData(), clearVectorIndex(), clearKnowledgeDocs(), eraseConnectors(), eraseRoomPins()]);
+            // Smaller things kept in this browser profile: recipes, room list, Mac control switch.
+            for (const key of Object.keys(localStorage)) if (/^(adt|adtbot|grokbot)[-_]/.test(key)) localStorage.removeItem(key);
             location.reload();
           }
         }}

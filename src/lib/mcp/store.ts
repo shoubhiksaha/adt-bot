@@ -64,6 +64,13 @@ export const connectorManager = new ConnectorManager({
 const keeper = new SecretKeeper("connectors", connectorSecretsCodec);
 keeper.onFallback = () => save();
 
+/** Erase all data: every connector, its saved tools and its keys. */
+export async function eraseConnectors() {
+  await connectorManager.disconnectAll().catch(() => undefined);
+  useConnectors.setState({ servers: [], status: {} });
+  await Promise.allSettled([set(STORAGE_KEY, []), set(TRUST_KEY, 0), keeper.clear()]);
+}
+
 /** The user reviewed changed or new tools and accepts them as they are now (all of them without names). */
 export function approveToolChanges(id: string, names?: string[]) {
   const server = getServer(id);

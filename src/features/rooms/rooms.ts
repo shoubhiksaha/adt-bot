@@ -55,6 +55,9 @@ type RoomsState = {
 
 /** Room PINs: in the OS keychain on desktop (src/lib/secrets.ts); the rest stays in localStorage. */
 const pins = new SecretKeeper<RoomsState>("rooms", roomSecretsCodec<RoomsState>());
+
+/** Erase all data: room PINs leave the keychain too. */
+export const eraseRoomPins = () => pins.clear();
 let lastSaved: StorageValue<RoomsState> | null = null;
 
 const roomsStorage: PersistStorage<RoomsState> = {

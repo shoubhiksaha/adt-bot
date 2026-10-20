@@ -1,4 +1,4 @@
-import { createStore, del, get, set } from "idb-keyval";
+import { clear, createStore, del, get, set } from "idb-keyval";
 import { hybridRank } from "./hybrid";
 import type { KnowledgeRef } from "./types";
 import { deleteVectors } from "./vector-index";
@@ -162,4 +162,9 @@ export function rank<T extends { text: string }>(chunks: T[], query: string): T[
     .filter((s) => s.score > 0)
     .sort((a, b2) => b2.score - a.score)
     .map((s) => s.c);
+}
+
+/** Erase all data: the text of every knowledge file goes too. */
+export async function clearKnowledgeDocs() {
+  if (docs) await clear(docs);
 }
