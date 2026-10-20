@@ -31,6 +31,8 @@ export type ToolContext = {
   progress: (text: string) => void;
   /** The chat's id for this call (a connector shows its server's questions under it). */
   callId?: string;
+  /** The assistant reply this turn writes (file changes are kept per turn so they can be undone). */
+  turnId?: string;
   /** Nobody can answer an approval card (voice mode): calls that would ask are refused instead. */
   unattended?: boolean;
   /** The request came from people other than the owner (a chat room): Full access doesn't apply. */
@@ -58,6 +60,8 @@ export type ToolResult =
       untrustedSource?: string;
       /** An image the model should see (e.g. a screenshot), sent with the result to models that can view images. */
       image?: ToolImage;
+      /** A screen action whose result already shows the app afterwards (so the model has seen its effect). */
+      observed?: boolean;
     };
 
 export type AgentTool = ToolSchema & {

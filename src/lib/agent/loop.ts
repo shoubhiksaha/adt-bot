@@ -80,6 +80,32 @@ export const COMPUTER_GUIDANCE = [
   "- Don't describe each step to the user. Ask before sending messages, emails or payments only when the user didn't clearly ask for that exact action.",
 ].join("\n");
 
+/** Screen tools that only look: their result shows the app or screen as it is now. */
+const SCREEN_LOOKS = new Set(["mac_ui", "mac_screenshot", "mac_find_text", "mac_find"]);
+/** mac_ tools that don't act on the screen. */
+const OFF_SCREEN = new Set(["mac_recipes", "mac_list_apps"]);
+
+/**
+ * After a screen tool ran: the action whose result nobody has looked at yet (its name), or null once
+ * a look (or an action that returns the window afterwards) shows the current state. Other tools
+ * leave it as it was.
+ */
+export function unseenAction(current: string | null, tool: Pick<AgentTool, "name" | "group" | "risk" | "riskFor">, args: Record<string, unknown>, observed?: boolean): string | null {
+  if (tool.group !== "mac" || OFF_SCREEN.has(tool.name)) return current;
+  if (SCREEN_LOOKS.has(tool.name) || (tool.riskFor?.(args) ?? tool.risk) === "read") return null;
+  return observed ? null : tool.name;
+}
+
+/** Whether a final answer says the task worked (rather than that it couldn't, or asking something). */
+export function claimsSuccess(text: string): boolean {
+  if (/\b(couldn['’]?t|could not|can['’]?t|cannot|unable|failed|didn['’]?t|did not|wasn['’]?t|weren['’]?t|haven['’]?t|hasn['’]?t|not sure|unclear|not (yet )?(confirm|done|sent))/i.test(text)) return false;
+  return /\b(done|all set|sent|posted|saved|created|opened|closed|added|removed|deleted|moved|renamed|completed|finished|updated|changed|switched|turned (on|off)|enabled|disabled|started|playing|scheduled|booked|submitted|typed|pressed|clicked|success(ful(ly)?)?|should (now )?(be|show|appear))\b/i.test(text);
+}
+
+/** Told to the model (with the last result) when it says a screen task is done without having seen the result. */
+export const verifyNote = (action: string) =>
+  `[ADT Bot: nothing has looked at the screen since your last action (${action}), so the result isn't confirmed. Before telling the user it's done, check it once (mac_ui, mac_find_text or mac_screenshot), then answer with what you saw.]`;
+
 export type LoopCallbacks = {
   onEvent: (event: StreamEvent) => void;
   onCalls: (calls: ToolCallRecord[]) => void;
@@ -122,6 +148,11 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
   // Tasks in apps take more steps than questions do.
   const maxSteps = screen ? Math.max(options.maxSteps, 30) : options.maxSteps;
 
+  // Verify before "done": the latest screen action nobody has looked at since, and whether the
+  // model was already sent back once to check it.
+  let unseen: string | null = null;
+  let nudged = false;
+
   const publish = () => callbacks.onCalls(records.map((r) => ({ ...r })));
   const update = (id: string, patch: Partial<ToolCallRecord>) => {
     const record = records.find((r) => r.id === id);
@@ -137,6 +168,10 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
       ...(discovery ? [findToolsSchema] : []),
     ];
     let asked: Extract<StreamEvent, { type: "tool_calls" }> | null = null;
+    // After an action on screen nobody has looked at, an answer now may be sent back for one look:
+    // hold this step's text until it's clear, so a premature "done" never shows.
+    const hold = unseen !== null && !nudged && !last;
+    const held: StreamEvent[] = [];
     try {
       for await (const event of streamChat({
         ...request,
@@ -147,6 +182,7 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
         toolMode: mode,
       })) {
         if (event.type === "tool_calls") asked = event;
+        else if (hold && (event.type === "text" || event.type === "reasoning")) held.push(event);
         else callbacks.onEvent(event);
       }
     } catch (error) {
@@ -162,7 +198,22 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
       }
       throw error;
     }
-    if (!asked || !asked.calls.length) return;
+    if (!asked || !asked.calls.length) {
+      const answer = held.map((e) => (e.type === "text" ? e.text : "")).join("");
+      if (hold && unseen && turns.length && claimsSuccess(answer)) {
+        // Ask for one look first: the note rides on the last result, and this answer is dropped.
+        nudged = true;
+        const previous = turns[turns.length - 1];
+        const results = previous.results.slice();
+        const end = results.length - 1;
+        results[end] = { ...results[end], content: `${results[end].content}\n\n${verifyNote(unseen)}` };
+        turns[turns.length - 1] = { ...previous, results };
+        continue;
+      }
+      held.forEach(callbacks.onEvent);
+      return;
+    }
+    held.forEach(callbacks.onEvent);
     if (asked.text) callbacks.onEvent({ type: "text", text: "\n\n" });
     if (options.hold) await options.hold;
 
@@ -292,6 +343,7 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
           context.signal,
         ),
       );
+      unseen = unseenAction(unseen, tool, call.args, value.observed);
       let content = value.content ?? "";
       if (content.length > RESULT_LIMIT) content = `${content.slice(0, RESULT_LIMIT)}\n\n[…cut: ${content.length - RESULT_LIMIT} more characters]`;
       if (value.untrustedSource) content = markUntrusted(content, value.untrustedSource);

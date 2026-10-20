@@ -43,12 +43,12 @@ async function readUi(args: { app?: string; window?: string; query?: string; men
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** The window after an action, so the model sees the result without another step. */
-async function after(app: string | undefined, note: string): Promise<string> {
+async function after(app: string | undefined, note: string): Promise<{ content: string; observed: boolean }> {
   await pause(450);
   try {
-    return `${note}\n\nNow:\n${formatUi(await readUi({ app: app || undefined, max: 80 }), 80)}`;
+    return { content: `${note}\n\nNow:\n${formatUi(await readUi({ app: app || undefined, max: 80 }), 80)}`, observed: true };
   } catch {
-    return note;
+    return { content: note, observed: false };
   }
 }
 
@@ -182,7 +182,7 @@ export const macTools: AgentTool[] = [
       const action = str(args, "action", "press");
       const done = await mac<{ method: string }>("press", { element: element.id, action });
       const how = done.method === "click" ? "Clicked" : done.method === "select" ? "Selected" : done.method === "focus" ? "Focused" : "Pressed";
-      return { content: await after(app ?? lastApp, `${how} ${describe(element)}${extra}.`), untrustedSource: "the screen of this Mac" };
+      return { ...(await after(app ?? lastApp, `${how} ${describe(element)}${extra}.`)), untrustedSource: "the screen of this Mac" };
     },
   }),
   macTool({
@@ -233,7 +233,7 @@ export const macTools: AgentTool[] = [
                 ? " and pressed Send"
                 : " and pressed Return";
       return {
-        content: await after(app ?? lastApp, `Typed ${done.typed} characters into ${describe(element)}${extra}${where}${sent}.${check}`),
+        ...(await after(app ?? lastApp, `Typed ${done.typed} characters into ${describe(element)}${extra}${where}${sent}.${check}`)),
         untrustedSource: "the screen of this Mac",
       };
     },
@@ -355,7 +355,7 @@ export const macTools: AgentTool[] = [
       for (let i = 0; i < 8; i++) {
         await pause(i ? 400 : 600);
         const snap = await readUi({ app, max: 120 }).catch(() => null);
-        if (snap?.elements.length) return { content: `Opened ${app}.\n\n${formatUi(snap, 120)}`, untrustedSource: `the ${app} app on this Mac` };
+        if (snap?.elements.length) return { content: `Opened ${app}.\n\n${formatUi(snap, 120)}`, untrustedSource: `the ${app} app on this Mac`, observed: true };
       }
       return `Opened ${app}. Use mac_ui or mac_screenshot to see it.`;
     },
@@ -427,16 +427,16 @@ async function pageTarget(args: Record<string, unknown>, wantInput: boolean): Pr
 }
 
 /** The page after an action: navigation can take a moment. */
-async function pageAfter(args: Record<string, unknown>, note: string): Promise<string> {
+async function pageAfter(args: Record<string, unknown>, note: string): Promise<{ content: string; observed: boolean }> {
   for (const wait of [700, 1200]) {
     await pause(wait);
     try {
-      return `${note}\n\nNow:\n${formatPage(await readPage(args, { max: 80 }))}`;
+      return { content: `${note}\n\nNow:\n${formatPage(await readPage(args, { max: 80 }))}`, observed: true };
     } catch {
       // Still loading.
     }
   }
-  return `${note} (The page is still loading; read it again in a moment.)`;
+  return { content: `${note} (The page is still loading; read it again in a moment.)`, observed: false };
 }
 
 const browserTool = macTool({
@@ -478,7 +478,7 @@ const browserTool = macTool({
     if (action === "click") {
       const t = await pageTarget(args, false);
       const done = await mac<{ browser: string }>("browser", { browser: str(args, "browser") || undefined, action: "click", id: t.id });
-      return { content: await pageAfter(args, `Clicked ${describe(t)}${t.extra} in ${done.browser}.`), ...source };
+      return { ...(await pageAfter(args, `Clicked ${describe(t)}${t.extra} in ${done.browser}.`)), ...source };
     }
     if (action === "type") {
       const t = await pageTarget(args, true);
@@ -493,7 +493,8 @@ const browserTool = macTool({
       });
       const check = done.value !== undefined && text && t.role !== "pop-up menu" && t.role !== "password field" && !normalize(done.value).includes(normalize(text).slice(0, 40)) ? ` The field now shows "${done.value}" — check it.` : "";
       const note = `${t.role === "pop-up menu" ? `Picked "${done.value}" in` : `Typed into`} ${describe(t)}${t.extra}${done.submitted ? " and pressed Enter" : ""}.${check}`;
-      return { content: args.submit === true ? await pageAfter(args, note) : note, ...source };
+      // Without submit, the field's value read back is what shows the result.
+      return args.submit === true ? { ...(await pageAfter(args, note)), ...source } : { content: note, observed: done.value !== undefined, ...source };
     }
     if (action === "tabs") {
       const t = await mac<{ browser: string; active: number; tabs: { title: string; url: string }[] }>("browser", { browser: str(args, "browser") || undefined, action: "tabs" });
@@ -509,7 +510,7 @@ const browserTool = macTool({
     });
     const what =
       action === "scroll" ? `Scrolled ${done.browser}'s page.` : action === "open" ? `Opened ${str(args, "url")} in a new ${done.browser} tab.` : action === "go" ? `Went to ${str(args, "url")}.` : action === "switch" ? `Switched to tab ${num(args, "tab", 0)}.` : `Done (${action}).`;
-    return { content: await pageAfter(args, what), ...source };
+    return { ...(await pageAfter(args, what)), ...source };
   },
 });
 
@@ -618,13 +619,17 @@ const recipeRunTool = macTool({
     if (missing.length) throw new Error(`"${recipe.name}" needs: ${missing.join(", ")}.`);
     const log: string[] = [];
     let last = "";
+    let observed = false;
     for (const [i, step] of recipe.steps.entries()) {
       if (ctx.signal?.aborted) throw new Error("Stopped.");
       const tool = getTool(step.tool);
       if (!tool) throw new Error(`Step ${i + 1} uses ${step.tool}, which isn't available now.`);
       const filled = fill(step.args, values);
       try {
-        last = toResult(await tool.run(filled, ctx)).content;
+        const result = toResult(await tool.run(filled, ctx));
+        last = result.content;
+        // Whether what the last step returned shows the app after the recipe's actions.
+        observed = result.observed === true || (tool.riskFor?.(filled) ?? tool.risk) === "read";
         log.push(`${i + 1}. ${step.tool} ✓`);
       } catch (error) {
         log.push(`${i + 1}. ${step.tool} ${JSON.stringify(filled)} ✗ ${(error as Error).message.split("\n")[0]}`);
@@ -635,7 +640,7 @@ const recipeRunTool = macTool({
       }
     }
     markRun(recipe.name);
-    return { content: `Ran "${recipe.name}" (${recipe.steps.length} steps):\n${log.join("\n")}\n\nAfter the last step:\n${last}`, untrustedSource: "apps on this Mac" };
+    return { content: `Ran "${recipe.name}" (${recipe.steps.length} steps):\n${log.join("\n")}\n\nAfter the last step:\n${last}`, untrustedSource: "apps on this Mac", observed };
   },
 });
 
