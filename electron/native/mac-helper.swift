@@ -466,10 +466,22 @@ func center(_ el: AXUIElement) throws -> CGPoint {
   return CGPoint(x: f.midX, y: f.midY)
 }
 
+/**
+ * Rows scrolled out of a list (a chat further down WhatsApp's list) often ignore a press, and
+ * can't be clicked: scroll them into the window first, the way a person would.
+ */
+func scrollIntoView(_ el: AXUIElement) {
+  guard let f = frameOf(el), let win = attr(el, "AXWindow"), let wf = frameOf(win as! AXUIElement) else { return }
+  if wf.contains(f) || !actions(el).contains("AXScrollToVisible") { return }
+  AXUIElementPerformAction(el, "AXScrollToVisible" as CFString)
+  usleep(200_000)
+}
+
 /** Presses with the accessibility action when there is one (works even behind other windows); clicks otherwise. */
 func press(_ req: [String: Any]) throws -> [String: Any] {
   let el = try element(req)
   let how = req["action"] as? String ?? "press"
+  scrollIntoView(el)
   if how == "press" {
     let available = actions(el)
     for action in ["AXPress", "AXConfirm", "AXPick", "AXOpen"] where available.contains(action) {
