@@ -79,7 +79,17 @@
         "nsis",
         "portable"
       ],
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "extraResources": [
+        {
+          "from": "electron/native/win-helper.ps1",
+          "to": "win-helper.ps1"
+        },
+        {
+          "from": "electron/native/win-helper.native.ps1",
+          "to": "win-helper.native.ps1"
+        }
+      ]
     },
     "nsis": {
       "artifactName": "ADT-Bot-Setup-${version}-windows.${ext}"

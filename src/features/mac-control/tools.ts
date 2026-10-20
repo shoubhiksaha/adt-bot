@@ -1,26 +1,33 @@
 import { type AgentTool, getTool, num, registerTool, registerToolGroup, str, type ToolContext, type ToolRisk, toResult } from "../../lib/agent/tools";
 import { type MacApp, type MacFrontmost, type MacScreenshot, mac } from "./api";
 import { deleteRecipe, fill, findRecipe, highestRisk, markRun, missingParams, recipeLine, saveRecipe, useRecipes, validateRecipe } from "./recipes";
-import { isMacDesktop, useMacControl, whileControlling } from "./store";
+import { isComputerControlDesktop, isMacDesktop, platformComputerNoun, useMacControl, whileControlling } from "./store";
 import { formatPage, formatUi, matchLines, normalize, type PageSnapshot, pickElement, RISKY_LABEL, type UiElement, type UiSnapshot } from "./ui";
 
+/** "Mac" on macOS, "PC" on Windows. The tool names stay mac_* on both for compatibility. */
+const DEVICE = platformComputerNoun();
+
 /**
- * Computer use on the user's Mac. Off until the user switches on "Allow bots to control this Mac"
- * (Settings → Computer control) or gives Full access. Looking is read-only; acting asks per the
- * approval policy (not with Full access); AppleScript and quitting apps are destructive.
+ * Computer use on the user's computer (macOS or Windows). Off until the user switches on "Allow
+ * bots to control this computer" (Settings → Computer control) or gives Full access. Looking is
+ * read-only; acting asks per the approval policy (not with Full access); AppleScript and quitting
+ * apps are destructive.
  */
 registerToolGroup({
   id: "mac",
-  label: "Control this Mac",
-  description: "See the screen, move the pointer, click, type and open apps on this Mac.",
+  label: `Control this ${DEVICE}`,
+  description: `See the screen, move the pointer, click, type and open apps on this ${DEVICE}.`,
   platforms: ["desktop"],
 });
 
-/** On when "Allow bots to control this Mac" is, or with Full access; never in Sandbox mode. */
+/** On when "Allow bots to control this computer" is, or with Full access; never in Sandbox mode. */
 const available = (ctx: Pick<ToolContext, "settings">) => {
   const access = ctx.settings.agent.access ?? "restricted";
-  return isMacDesktop() && access !== "sandbox" && (useMacControl.getState().enabled || access === "full");
+  return isComputerControlDesktop() && access !== "sandbox" && (useMacControl.getState().enabled || access === "full");
 };
+
+/** Tools that only exist on macOS (AppleScript, browser scripting over Apple events, screen OCR). */
+const macOnly = (ctx: Pick<ToolContext, "settings">) => isMacDesktop() && available(ctx);
 
 const COORDS = "Coordinates are pixels in the latest mac_screenshot image (top-left is 0,0), or an element's @(x,y) from mac_ui.";
 
@@ -80,7 +87,8 @@ function pressRisk(args: Record<string, unknown>): AgentTool["risk"] {
   return RISKY_LABEL.test(label) ? "destructive" : "write";
 }
 
-const TERMINALS = /^(terminal|iterm2?|warp|ghostty|alacritty|kitty|wezterm|hyper|tabby)$/i;
+// macOS app names, plus Windows ones (process names such as "WindowsTerminal", "powershell", "cmd").
+const TERMINALS = /^(terminal|iterm2?|warp|ghostty|alacritty|kitty|wezterm|hyper|tabby|windows ?terminal|wt|powershell|pwsh|cmd|command prompt|conhost|wsl|mintty|git bash)$/i;
 const point = { x: { type: "number", description: "X in screenshot pixels" }, y: { type: "number", description: "Y in screenshot pixels" } } as const;
 
 function macTool(tool: Omit<AgentTool, "group" | "kind" | "platforms" | "available">): AgentTool {
@@ -100,7 +108,7 @@ export const macTools: AgentTool[] = [
     risk: "read",
     timeoutMs: 60_000,
     description:
-      "Take a screenshot of this Mac's main display (or a region, or the frontmost window) and look at it. Prefer mac_ui for apps (faster and exact); use screenshots for what it can't describe: images, canvases, games, or to check how something looks. ADT Bot itself may be in front: bring the target app forward with mac_open_app first.",
+      `Take a screenshot of this ${DEVICE}'s main display (or a region, or the frontmost window) and look at it. Prefer mac_ui for apps (faster and exact); use screenshots for what it can't describe: images, canvases, games, or to check how something looks. ADT Bot itself may be in front: bring the target app forward with mac_open_app first.`,
     parameters: {
       type: "object",
       properties: {
@@ -125,7 +133,7 @@ export const macTools: AgentTool[] = [
           .join(" "),
         display: { kind: "image", src, caption: `Screenshot ${shot.width}×${shot.height}` },
         image: { mediaType: shot.mediaType, data: shot.data },
-        untrustedSource: "the screen of this Mac",
+        untrustedSource: `the screen of this ${DEVICE}`,
       };
     },
   }),
@@ -155,7 +163,7 @@ export const macTools: AgentTool[] = [
         menus: args.menus === true,
         max: num(args, "max", 200),
       });
-      return { content: formatUi(snap, num(args, "max", 200)), untrustedSource: `the ${snap.name} app on this Mac` };
+      return { content: formatUi(snap, num(args, "max", 200)), untrustedSource: `the ${snap.name} app on this ${DEVICE}` };
     },
   }),
   macTool({
@@ -182,7 +190,7 @@ export const macTools: AgentTool[] = [
       const action = str(args, "action", "press");
       const done = await mac<{ method: string }>("press", { element: element.id, action });
       const how = done.method === "click" ? "Clicked" : done.method === "select" ? "Selected" : done.method === "focus" ? "Focused" : "Pressed";
-      return { ...(await after(app ?? lastApp, `${how} ${describe(element)}${extra}.`)), untrustedSource: "the screen of this Mac" };
+      return { ...(await after(app ?? lastApp, `${how} ${describe(element)}${extra}.`)), untrustedSource: `the screen of this ${DEVICE}` };
     },
   }),
   macTool({
@@ -234,14 +242,14 @@ export const macTools: AgentTool[] = [
                 : " and pressed Return";
       return {
         ...(await after(app ?? lastApp, `Typed ${done.typed} characters into ${describe(element)}${extra}${where}${sent}.${check}`)),
-        untrustedSource: "the screen of this Mac",
+        untrustedSource: `the screen of this ${DEVICE}`,
       };
     },
   }),
   macTool({
     name: "mac_click",
     risk: "write",
-    description: `Click at a point on this Mac's screen. ${COORDS}`,
+    description: `Click at a point on this ${DEVICE}'s screen. ${COORDS}`,
     parameters: {
       type: "object",
       properties: {
@@ -285,7 +293,7 @@ export const macTools: AgentTool[] = [
   macTool({
     name: "mac_scroll",
     risk: "write",
-    description: `Scroll at a point on this Mac's screen. dy > 0 scrolls down, dx > 0 scrolls right (in pixels, e.g. 400). ${COORDS}`,
+    description: `Scroll at a point on this ${DEVICE}'s screen. dy > 0 scrolls down, dx > 0 scrolls right (in pixels, e.g. 400). ${COORDS}`,
     parameters: {
       type: "object",
       properties: { ...point, dx: { type: "number" }, dy: { type: "number" } },
@@ -299,7 +307,7 @@ export const macTools: AgentTool[] = [
   macTool({
     name: "mac_drag",
     risk: "write",
-    description: `Drag with the left button from one point to another on this Mac's screen. ${COORDS}`,
+    description: `Drag with the left button from one point to another on this ${DEVICE}'s screen. ${COORDS}`,
     parameters: {
       type: "object",
       properties: { ...point, to_x: { type: "number" }, to_y: { type: "number" } },
@@ -313,7 +321,7 @@ export const macTools: AgentTool[] = [
   macTool({
     name: "mac_list_apps",
     risk: "read",
-    description: "List the apps running on this Mac and which app and window are in front.",
+    description: `List the apps running on this ${DEVICE} and which app and window are in front.`,
     parameters: { type: "object", properties: {} },
     async run() {
       const [apps, front] = await Promise.all([mac<MacApp[]>("apps"), mac<MacFrontmost>("frontmost").catch(() => null)]);
@@ -327,7 +335,7 @@ export const macTools: AgentTool[] = [
     risk: "write",
     riskFor: (args) => (args.action === "quit" ? "destructive" : "write"),
     description:
-      'Open or bring forward an app on this Mac by name (e.g. "Safari", "Notes") and list its controls, open a link, or quit an app (action "quit"). ' +
+      'Open or bring forward an app on this ${DEVICE} by name (e.g. "Safari", "Notes") and list its controls, open a link, or quit an app (action "quit"). ' +
       "Links can be web pages or app links: mailto:, sms:, tel:, facetime:, spotify:, maps:, slack:, zoommtg:, whatsapp://send?phone=<digits>&text=<url-encoded>. " +
       "Opening a link brings that app to the front and interrupts the user; for a WhatsApp message prefer the background way: mac_ui (app WhatsApp, query the contact), mac_press the chat, mac_set_text the message with submit:true.",
     parameters: {
@@ -355,7 +363,7 @@ export const macTools: AgentTool[] = [
       for (let i = 0; i < 8; i++) {
         await pause(i ? 400 : 600);
         const snap = await readUi({ app, max: 120 }).catch(() => null);
-        if (snap?.elements.length) return { content: `Opened ${app}.\n\n${formatUi(snap, 120)}`, untrustedSource: `the ${app} app on this Mac`, observed: true };
+        if (snap?.elements.length) return { content: `Opened ${app}.\n\n${formatUi(snap, 120)}`, untrustedSource: `the ${app} app on this ${DEVICE}`, observed: true };
       }
       return `Opened ${app}. Use mac_ui or mac_screenshot to see it.`;
     },
@@ -533,7 +541,7 @@ const findTextTool = macTool({
     const lines = matchLines(found.lines, str(args, "query"));
     const shown = lines.slice(0, 200).map((l) => `${JSON.stringify(l.text)} @(${l.at.x},${l.at.y})${l.confidence < 0.5 ? " (unsure)" : ""}`);
     const head = str(args, "query") ? `${lines.length} of ${found.lines.length} lines on screen match "${str(args, "query")}"` : `${found.lines.length} lines of text on screen`;
-    return { content: [`${head} (coordinates are for mac_click):`, ...shown, lines.length > 200 ? `… ${lines.length - 200} more: pass a query.` : ""].filter(Boolean).join("\n"), untrustedSource: "the screen of this Mac" };
+    return { content: [`${head} (coordinates are for mac_click):`, ...shown, lines.length > 200 ? `… ${lines.length - 200} more: pass a query.` : ""].filter(Boolean).join("\n"), untrustedSource: `the screen of this ${DEVICE}` };
   },
 });
 
@@ -635,15 +643,19 @@ const recipeRunTool = macTool({
         log.push(`${i + 1}. ${step.tool} ${JSON.stringify(filled)} ✗ ${(error as Error).message.split("\n")[0]}`);
         return {
           content: `The recipe "${recipe.name}" stopped at step ${i + 1} of ${recipe.steps.length}:\n${log.join("\n")}\n\n${(error as Error).message}\n\nFinish the task by hand from here; if the app changed, save the recipe again with steps that work.`,
-          untrustedSource: "apps on this Mac",
+          untrustedSource: `apps on this ${DEVICE}`,
         };
       }
     }
     markRun(recipe.name);
-    return { content: `Ran "${recipe.name}" (${recipe.steps.length} steps):\n${log.join("\n")}\n\nAfter the last step:\n${last}`, untrustedSource: "apps on this Mac", observed };
+    return { content: `Ran "${recipe.name}" (${recipe.steps.length} steps):\n${log.join("\n")}\n\nAfter the last step:\n${last}`, untrustedSource: `apps on this ${DEVICE}`, observed };
   },
 });
 
 macTools.push(browserTool, findTextTool, recipesTool, recipeRunTool);
+
+// AppleScript, browser scripting and screen OCR are macOS-only; hide them on Windows.
+const MAC_ONLY = new Set(["mac_applescript", "mac_browser", "mac_find_text"]);
+for (const tool of macTools) if (MAC_ONLY.has(tool.name)) tool.available = macOnly;
 
 for (const tool of macTools) registerTool(tool);

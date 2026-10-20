@@ -1230,6 +1230,8 @@ async function findText({ fast } = {}) {
 }
 
 exports.register = ({ app, ipcMain, shell, access, onStopAll }) => {
+  // On Windows, electron/features/75-win-control.cjs registers the adt:mac:* channels instead.
+  if (!SUPPORTED) return;
   // "Stop all bots": a typing or pressing helper stops at once.
   onStopAll?.(stopHelper);
   const handle = (name, fn) => ipcMain.handle(`adt:mac:${name}`, (_e, payload) => fn(payload ?? {}));

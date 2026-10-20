@@ -3,7 +3,7 @@ import { Section, Toggle } from "../../components/settings/controls";
 import { useStore } from "../../lib/store";
 import { type MacPermissions, type MacScreenshot, mac } from "./api";
 import { deleteRecipe, useRecipes } from "./recipes";
-import { isMacDesktop, setMacControlEnabled, useMacControl } from "./store";
+import { isComputerControlDesktop, isMacDesktop, platformComputerNoun, setMacControlEnabled, useMacControl } from "./store";
 import { macTools } from "./tools";
 
 const RISK_LABEL = { read: "never asks", write: "asks per your policy", external: "asks per your policy", destructive: "always asks (unless turned off under Full access)" } as const;
@@ -49,6 +49,7 @@ export function MacControlSettings() {
   const [preview, setPreview] = useState<{ src: string; note?: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const device = platformComputerNoun();
   const refresh = useCallback(() => {
     void mac<MacPermissions>("permissions").then(
       (p) => {
@@ -61,7 +62,7 @@ export function MacControlSettings() {
   // Stay current while this page is open: re-check every few seconds and when the user comes back
   // from System Settings, so a switch flipped there shows up here without pressing anything.
   useEffect(() => {
-    if (!isMacDesktop()) return;
+    if (!isComputerControlDesktop()) return;
     refresh();
     const timer = setInterval(() => document.visibilityState === "visible" && refresh(), 2500);
     const onFocus = () => refresh();
@@ -76,8 +77,8 @@ export function MacControlSettings() {
 
   const run = (work: Promise<unknown>) => void work.catch((e: Error) => setError(e.message)).finally(refresh);
 
-  if (!isMacDesktop()) {
-    return <p className="muted">Controlling the computer is available in the ADT Bot desktop app on macOS.</p>;
+  if (!isComputerControlDesktop()) {
+    return <p className="muted">Controlling the computer is available in the ADT Bot desktop app on macOS and Windows.</p>;
   }
 
   const testShot = async () => {
@@ -101,13 +102,16 @@ export function MacControlSettings() {
       <Toggle
         checked={enabled}
         onChange={setMacControlEnabled}
-        title="Allow bots to control this Mac"
-        hint="Bots can take screenshots, move the pointer, click, type and open apps. Clicking and typing ask according to your approval policy (not with Full access); AppleScript and quitting apps always ask unless you turned that off. A banner with a Stop button shows while a bot is in control."
+        title={`Allow bots to control this ${device}`}
+        hint={`Bots can take screenshots, move the pointer, click, type and open apps. Clicking and typing ask according to your approval policy (not with Full access); ${device === "Mac" ? "AppleScript and quitting apps" : "quitting apps"} always ask unless you turned that off. A banner with a Stop button shows while a bot is in control.`}
       />
       {enabled && !toolsOn && <p className="small mac-control-warn">"Let bots use tools" is off in Tools &amp; safety, so bots can't use this yet.</p>}
       {access === "sandbox" && <p className="small mac-control-warn">Computer access is set to Sandbox in Tools &amp; safety, so screen control is off.</p>}
-      {access === "full" && !enabled && <p className="small muted">Computer access is set to Full access in Tools &amp; safety, so bots can control this Mac even with this off.</p>}
+      {access === "full" && !enabled && <p className="small muted">Computer access is set to Full access in Tools &amp; safety, so bots can control this {device} even with this off.</p>}
 
+      {!isMacDesktop() ? (
+        <WindowsPermissions busy={busy} error={error} preview={preview} onTest={() => void testShot()} />
+      ) : (
       <Section title="macOS permissions" hint={`Switch on ${perms?.app ?? "ADT Bot"} in each list in System Settings. This page updates on its own when you come back.`}>
         <PermissionRow
           ok={perms ? perms.accessibility === true : null}
@@ -163,8 +167,9 @@ export function MacControlSettings() {
           </figure>
         )}
       </Section>
+      )}
 
-      <Section title="Tools" hint='Turn the "Control this Mac" group on or off per bot in its settings.'>
+      <Section title="Tools" hint={`Turn the "Control this ${device}" group on or off per bot in its settings.`}>
         <ul className="mac-control-tools small">
           {macTools.map((t) => (
             <li key={t.name}>
@@ -176,6 +181,29 @@ export function MacControlSettings() {
 
       <Recipes />
     </div>
+  );
+}
+
+/** Windows needs no permission for UI Automation; apps run as administrator are the one limit. */
+function WindowsPermissions({ busy, error, preview, onTest }: { busy: boolean; error: string; preview: { src: string; note?: string } | null; onTest: () => void }) {
+  return (
+    <Section title="Windows" hint="Windows needs no extra permission: bots read apps through UI Automation, which is built into Windows.">
+      <p className="small muted">
+        Apps running as administrator can't be read or controlled unless ADT Bot runs as administrator too. Some apps only show their controls after a moment, or not at all; bots then fall back to screenshots.
+      </p>
+      <div className="btn-row">
+        <button type="button" className="btn" disabled={busy} onClick={onTest}>
+          {busy ? "Capturing…" : "Test screenshot"}
+        </button>
+      </div>
+      {error && <p className="small mac-control-warn">{error}</p>}
+      {preview && (
+        <figure className="mac-control-preview">
+          <img src={preview.src} alt="Test screenshot of this PC" />
+          {preview.note && <figcaption className="small muted">{preview.note}</figcaption>}
+        </figure>
+      )}
+    </Section>
   );
 }
 

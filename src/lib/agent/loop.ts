@@ -381,7 +381,7 @@ export function taints(tool: AgentTool, call: ToolCall): boolean {
   return true;
 }
 
-const TERMINALS = /\b(terminal|iterm2?|warp|alacritty|kitty|wezterm|ghostty|hyper|tabby|termius|console)\b/i;
+const TERMINALS = /\b(terminal|iterm2?|warp|alacritty|kitty|wezterm|ghostty|hyper|tabby|termius|console|windowsterminal|powershell|pwsh|cmd|conhost|wsl|mintty)\b/i;
 const TYPING = new Set(["mac_type", "mac_key", "mac_set_text", "mac_press"]);
 
 /** After outside content, typing or pressing keys into a terminal is as good as running a command: ask. */
