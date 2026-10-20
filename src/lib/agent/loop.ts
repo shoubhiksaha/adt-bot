@@ -81,7 +81,7 @@ export const COMPUTER_GUIDANCE = [
 ].join("\n");
 
 /** Screen tools that only look: their result shows the app or screen as it is now. */
-const SCREEN_LOOKS = new Set(["mac_ui", "mac_screenshot", "mac_find_text", "mac_find"]);
+const SCREEN_LOOKS = new Set(["mac_ui", "mac_screenshot", "mac_find_text"]);
 /** mac_ tools that don't act on the screen. */
 const OFF_SCREEN = new Set(["mac_recipes", "mac_list_apps"]);
 
