@@ -34,10 +34,12 @@ These aren't bundled with the app; they download on first use and are cached on 
 | Model | License | Used for |
 | --- | --- | --- |
 | [Supertonic TTS](https://huggingface.co/onnx-community/Supertonic-TTS-ONNX) by Supertone ([source](https://github.com/supertone-inc/supertonic)) | OpenRAIL-M (model; use-based restrictions apply), MIT (sample code) | "Natural, on this device" reply voice (`src/lib/local-tts.worker.ts`) |
-| [Smart Turn v3](https://huggingface.co/pipecat-ai/smart-turn-v3) by Pipecat | BSD-2-Clause | End-of-turn detection in voice mode |
+| [Smart Turn v3.2](https://huggingface.co/pipecat-ai/smart-turn-v3) by Pipecat (8-bit CPU model, and the full-precision model on the GPU) | BSD-2-Clause | End-of-turn detection in voice mode |
 | [Silero VAD](https://github.com/snakers4/silero-vad) | MIT | Voice activity detection |
 | [Whisper](https://github.com/openai/whisper) (ONNX by onnx-community) | MIT | On-device speech recognition |
 | [Moonshine](https://github.com/moonshine-ai/moonshine) by Useful Sensors ([ONNX](https://huggingface.co/onnx-community/moonshine-base-ONNX) by onnx-community) | MIT | On-device speech recognition for English (optional, Settings → Voice) |
+| [Moonshine streaming tiny](https://huggingface.co/moonshine-ai/moonshine-streaming-tiny) by Moonshine AI (Useful Sensors) ([ONNX](https://huggingface.co/Masterx/moonshine-streaming-tiny-ONNX) by Masterx) | MIT | Live captions while you talk, English (`src/lib/caption.worker.ts`) |
+| [Supertonic 3](https://huggingface.co/Supertone/supertonic-3) by Supertone ([source](https://github.com/supertone-inc/supertonic), archived) | OpenRAIL-M (model; its use-based restrictions apply and are passed on to users, including no impersonation without consent and no passing off speech as human), MIT (sample code the worker follows) | "Supertonic 3" on-device reply voice in 31 languages (`src/lib/supertonic3.worker.ts`) |
 | [Granite Embedding 97M Multilingual R2](https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2) by IBM ([ONNX](https://huggingface.co/onnx-community/granite-embedding-97m-multilingual-r2-ONNX) by onnx-community) | Apache-2.0 | "Smarter memory search" (optional, Settings → Workspace; `src/lib/embed.worker.ts`) |
 | [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) by hexgrad ([ONNX](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX) by onnx-community) | Apache-2.0 | "Kokoro" on-device reply voice (`src/lib/kokoro-tts.worker.ts`) |
 

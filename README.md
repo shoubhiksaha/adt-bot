@@ -144,6 +144,15 @@ Click the **sound-wave button** next to the mic for a hands-free conversation:
   moment you pause, so your words are understood in about 0.1–1 s.
 - **Answers start speaking right away**, sentence by sentence as the AI writes, in short spoken-style replies.
   Claude and other reasoning models use lighter thinking in voice mode.
+- **It starts on the answer during a pause that probably ends your turn**, so replies come sooner. Nothing is
+  shown, said or done until you've really finished; if you keep talking, that early start is dropped (it can cost a
+  few extra tokens). Turn this off in Settings → Voice → Conversation. The end-of-turn model runs on the GPU when
+  there is one, so it decides in tens of milliseconds.
+- **Live captions** while you talk: in English they come from Moonshine streaming on your device (78 MB, downloaded
+  the first time).
+- **Supertonic 3** adds a free, private, offline natural reply voice in 31 languages (398 MB download, faster with a
+  GPU). Its model license is [OpenRAIL-M](https://huggingface.co/Supertone/supertonic-3/blob/main/LICENSE): no
+  impersonating people without consent, and don't pass its speech off as a human's.
 - **Interrupt any time** by talking (instantly with natural voices; device voices check it isn't hearing itself), by
   tapping the orb, or by pressing Space.
 - **Voice commands:** “stop”, “new chat”, “switch to Coder”, “search for …”, “draw …”, “repeat that”,
