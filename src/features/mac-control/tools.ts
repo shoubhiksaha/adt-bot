@@ -208,7 +208,7 @@ export const macTools: AgentTool[] = [
     async run(args) {
       const { element, app, extra } = await target(args, "field");
       const text = str(args, "text");
-      const done = await mac<{ typed: number; value?: string; background?: string; partial?: boolean; submitted?: string }>("setText", {
+      const done = await mac<{ typed: number; value?: string; background?: string; partial?: boolean; submitted?: string; reason?: string }>("setText", {
         element: element.id,
         text,
         replace: args.append !== true,
@@ -220,7 +220,18 @@ export const macTools: AgentTool[] = [
           ? ` The field now shows "${done.value}" — check it.`
           : "";
       const where = done.background ? " (in the background; the user's window stayed in front)" : "";
-      const sent = args.submit === true ? (done.submitted === "unconfirmed" ? " and pressed Return, but the text is still there: check whether it was sent" : " and pressed Return") : "";
+      const sent =
+        args.submit !== true
+          ? ""
+          : done.submitted === "skipped"
+            ? done.reason === "busy"
+              ? ". Return was NOT pressed: the user started using the keyboard or mouse. Wait, look again, and only then send"
+              : ". Return was NOT pressed: the field or app changed meanwhile (the user may have switched chats or apps). Look again before sending anything"
+            : done.submitted === "unconfirmed"
+              ? ", then tried to send, but the text is still in the field: press the app's Send button with mac_press (check that the right chat is open first)"
+              : done.submitted === "send-button"
+                ? " and pressed Send"
+                : " and pressed Return";
       return {
         content: await after(app ?? lastApp, `Typed ${done.typed} characters into ${describe(element)}${extra}${where}${sent}.${check}`),
         untrustedSource: "the screen of this Mac",
@@ -251,21 +262,24 @@ export const macTools: AgentTool[] = [
     name: "mac_type",
     risk: "write",
     timeoutMs: 180_000,
-    description: "Type text into the focused field of the frontmost app on this Mac (newlines press Return). Click the field first.",
-    parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+    description:
+      "Type text into the focused field of an app (newlines press Return). Prefer mac_set_text, which picks the field and checks the result. With app named, the keys go to that app alone when it's in the background; otherwise to the app in front, after the user pauses.",
+    parameters: { type: "object", properties: { text: { type: "string" }, app: { type: "string", description: "The app to type into (default: the app in front)" } }, required: ["text"] },
     async run(args) {
-      const { typed } = await mac<{ typed: number }>("type", { text: str(args, "text") });
-      return `Typed ${typed} characters.`;
+      const { typed, to } = await mac<{ typed: number; to?: string }>("type", { text: str(args, "text"), app: str(args, "app") || undefined });
+      return `Typed ${typed} characters${to === "app" ? ` into ${str(args, "app")} in the background` : ""}. Check the result with mac_ui.`;
     },
   }),
   macTool({
     name: "mac_key",
     risk: "write",
-    description: 'Press a key or shortcut on this Mac, e.g. "enter", "esc", "tab", "down", "cmd+c", "cmd+shift+t", "ctrl+alt+left".',
-    parameters: { type: "object", properties: { combo: { type: "string" } }, required: ["combo"] },
+    description:
+      'Press a key or shortcut, e.g. "enter", "esc", "tab", "down", "cmd+c", "cmd+shift+t". With app named, it goes to that app alone when it\'s in the background; otherwise to the app in front, after the user pauses. ' +
+      "Never use enter to send a message or form: mac_set_text with submit:true checks the field first.",
+    parameters: { type: "object", properties: { combo: { type: "string" }, app: { type: "string", description: "The app to send it to (default: the app in front)" } }, required: ["combo"] },
     async run(args) {
-      const { label } = await mac<{ label: string }>("key", { combo: str(args, "combo") });
-      return `Pressed ${label}.`;
+      const { label, to } = await mac<{ label: string; to?: string }>("key", { combo: str(args, "combo"), app: str(args, "app") || undefined });
+      return `Pressed ${label}${to === "app" ? ` in ${str(args, "app")} (in the background)` : ""}.`;
     },
   }),
   macTool({
@@ -314,8 +328,8 @@ export const macTools: AgentTool[] = [
     riskFor: (args) => (args.action === "quit" ? "destructive" : "write"),
     description:
       'Open or bring forward an app on this Mac by name (e.g. "Safari", "Notes") and list its controls, open a link, or quit an app (action "quit"). ' +
-      "Links can be web pages or app links, which are often the fastest way: whatsapp://send?phone=<country code + number, digits only>&text=<url-encoded message> opens that WhatsApp chat with the message typed (then press Send), " +
-      "mailto:, sms:, tel:, facetime:, spotify:, maps:, slack:, zoommtg:.",
+      "Links can be web pages or app links: mailto:, sms:, tel:, facetime:, spotify:, maps:, slack:, zoommtg:, whatsapp://send?phone=<digits>&text=<url-encoded>. " +
+      "Opening a link brings that app to the front and interrupts the user; for a WhatsApp message prefer the background way: mac_ui (app WhatsApp, query the contact), mac_press the chat, mac_set_text the message with submit:true.",
     parameters: {
       type: "object",
       properties: {

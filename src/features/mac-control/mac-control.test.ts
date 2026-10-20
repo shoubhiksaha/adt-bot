@@ -228,6 +228,35 @@ describe("accessibility elements", () => {
     vi.unstubAllGlobals();
   });
 
+  it("never claims a send that was skipped, and says why", async () => {
+    const invoke = vi.fn();
+    vi.stubGlobal("window", { adtbotDesktop: { platform: "darwin", proxyToken: "", version: "44", invoke } });
+    const { macTools } = await import("./tools");
+    const setText = macTools.find((t) => t.name === "mac_set_text")!;
+    const key = macTools.find((t) => t.name === "mac_key")!;
+    const results: Record<string, unknown>[] = [
+      { typed: 5, background: "value", submitted: "send-button" },
+      { typed: 5, submitted: "skipped", value: "dao" },
+      { typed: 5, submitted: "skipped", reason: "busy", value: "hello" },
+      { typed: 5, background: "value", submitted: "unconfirmed", value: "hello" },
+    ];
+    invoke.mockImplementation(async (channel: string, payload: Record<string, unknown>) => {
+      if (channel === "adt:mac:setText") return results.shift();
+      if (channel === "adt:mac:ui") return { name: "WhatsApp", bundleId: "", pid: 1, window: "WhatsApp", windows: [], elements: [], matched: 0, truncated: false, frontmost: false };
+      if (channel === "adt:mac:key") return { label: "enter", to: payload.app ? "app" : "front" };
+      throw new Error("unexpected " + channel);
+    });
+    const run = async () => ((await setText.run({ id: 8, text: "hello", submit: true }, {} as never)) as { content: string }).content.split("\n")[0];
+    expect(await run()).toMatch(/in the background.*and pressed Send\.$/);
+    expect(await run()).toMatch(/Return was NOT pressed: the field or app changed/);
+    expect(await run()).toMatch(/Return was NOT pressed: the user started using/);
+    expect(await run()).toMatch(/still in the field: press the app's Send button/);
+    expect(await key.run({ combo: "enter", app: "Notes" }, {} as never)).toBe("Pressed enter in Notes (in the background).");
+    expect(await key.run({ combo: "enter" }, {} as never)).toBe("Pressed enter.");
+    expect(mac.busyError("Clicking", 0.4).message).toMatch(/using this Mac right now \(keyboard or mouse used 0\.4 s ago\)/);
+    vi.unstubAllGlobals();
+  });
+
   it("opens app links (WhatsApp, mail, Maps…) but nothing that runs code or files", () => {
     for (const ok of ["whatsapp://send?phone=919800000000&text=hi", "mailto:a@b.c", "tel:+1555", "spotify:track:1", "https://x.org", "x-apple.systempreferences:com.apple.preference.security"]) expect(mac.APP_LINK.test(ok)).toBe(true);
     for (const bad of ["file:///etc/passwd", "javascript:alert(1)", "vnc://host", "smb://host/share", "/Applications/Terminal.app", "ssh://host"]) expect(mac.APP_LINK.test(bad)).toBe(false);

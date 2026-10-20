@@ -153,12 +153,14 @@ func findApp(_ name: String?) throws -> pid_t {
     if let pid = frontApp() { return pid }
     throw Failure(message: "No app is in front. Say which app, e.g. \"WhatsApp\".")
   }
-  let want = name.lowercased().trimmingCharacters(in: .whitespaces)
+  let want = clip(name, 200).lowercased()
   let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy != .prohibited }
+  // Some apps put invisible marks in their names (WhatsApp): compare without them.
+  let nameOf = { (a: NSRunningApplication) in clip(a.localizedName ?? "", 200).lowercased() }
   let match =
-    apps.first { ($0.localizedName ?? "").lowercased() == want || ($0.bundleIdentifier ?? "").lowercased() == want }
-    ?? apps.first { ($0.localizedName ?? "").lowercased().hasPrefix(want) }
-    ?? apps.first { ($0.localizedName ?? "").lowercased().contains(want) }
+    apps.first { nameOf($0) == want || ($0.bundleIdentifier ?? "").lowercased() == want }
+    ?? apps.first { nameOf($0).hasPrefix(want) }
+    ?? apps.first { nameOf($0).contains(want) }
   guard let app = match else { throw Failure(message: "\"\(name)\" isn't running. Open it first (mac_open_app).", code: "not-running") }
   return app.processIdentifier
 }
@@ -313,7 +315,7 @@ func snapshot(_ req: [String: Any]) throws -> [String: Any] {
   if target == nil { target = windows.first }
 
   let maxNodes = max(20, min(600, req["max"] as? Int ?? 200))
-  let w = Walk(maxNodes: maxNodes, query: req["query"] as? String, seconds: 4)
+  let w = Walk(maxNodes: maxNodes, query: req["query"] as? String, seconds: req["menus"] as? Bool == true ? 8 : 4)
   previous = current
   current = [:]
   var windowTitle: String? = nil
@@ -324,7 +326,15 @@ func snapshot(_ req: [String: Any]) throws -> [String: Any] {
     walk(win, depth: 0, visible: windowFrame ?? .null, inWeb: false, labelOwner: nil, w)
   }
   if req["menus"] as? Bool == true, let bar = attr(appEl, "AXMenuBar") {
-    walk(bar as! AXUIElement, depth: 0, visible: .null, inWeb: false, labelOwner: nil, w)
+    // Each top-level menu gets its own budget: History or Bookmarks (thousands of entries) must
+    // not starve the menus after them.
+    for menu in children(attr(bar as! AXUIElement, "AXChildren")) {
+      w.visited = 0
+      w.truncated = false
+      walk(menu, depth: 1, visible: .null, inWeb: false, labelOwner: nil, w)
+      if w.visited >= 6000 || Date() > w.deadline { break }
+    }
+    w.truncated = false
   }
   // Pop-up menus that are open right now (they're outside the window).
   if target != nil, req["menus"] as? Bool != true, let focused = attr(appEl, "AXFocusedUIElement"), string(attr(focused as! AXUIElement, "AXRole")) == "AXMenuItem" {
@@ -357,6 +367,35 @@ func snapshot(_ req: [String: Any]) throws -> [String: Any] {
   return out
 }
 
+// MARK: User activity
+
+/** When this helper last posted an input event itself (those count as activity to macOS too). */
+var lastPosted = Date.distantPast
+var lastUser = Date.distantPast
+let ANY_INPUT = CGEventType(rawValue: ~0)!
+
+/** Seconds since the user last touched the keyboard or mouse, not counting what this helper sent. */
+func userIdleSeconds() -> Double {
+  let now = Date()
+  let lastEvent = now.addingTimeInterval(-CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: ANY_INPUT))
+  if lastEvent > lastPosted.addingTimeInterval(0.3) { lastUser = max(lastUser, lastEvent) }
+  return now.timeIntervalSince(lastUser)
+}
+
+/**
+ * Anything that goes to the app in front (bringing it forward, global keys, clicks) collides with
+ * what the user is doing. Wait for a pause; if there's none, refuse.
+ */
+func requireUserPause(_ what: String) throws {
+  let deadline = Date().addingTimeInterval(4)
+  while userIdleSeconds() < 1.2 {
+    if Date() > deadline {
+      throw Failure(message: "\(what): the user is using this Mac right now (keyboard or mouse used \(String(format: "%.1f", userIdleSeconds())) s ago). Wait for them to pause and try again, or work in the background (mac_ui, mac_press, mac_set_text with the app named).", code: "busy")
+    }
+    Thread.sleep(forTimeInterval: 0.25)
+  }
+}
+
 // MARK: Actions
 
 func element(_ req: [String: Any]) throws -> AXUIElement {
@@ -367,27 +406,32 @@ func element(_ req: [String: Any]) throws -> AXUIElement {
   return el
 }
 
-/** Brings the element's app and window to the front, so clicks and typing land there. */
-func bringForward(_ el: AXUIElement) {
+func isFrontmost(_ pid: pid_t) -> Bool { bool(attr(AXUIElementCreateApplication(pid), "AXFrontmost")) == true }
+
+/** Brings the element's app and window to the front, so clicks and typing land there. Throws if it didn't. */
+func bringForward(_ el: AXUIElement, what: String) throws {
   let pid = pidOf(el)
   let appEl = AXUIElementCreateApplication(pid)
   if let win = attr(el, "AXWindow") {
     AXUIElementPerformAction(win as! AXUIElement, "AXRaise" as CFString)
     AXUIElementSetAttributeValue(appEl, "AXFocusedWindow" as CFString, win)
   }
-  if bool(attr(appEl, "AXFrontmost")) != true {
+  if !isFrontmost(pid) {
+    try requireUserPause(what)
     AXUIElementSetAttributeValue(appEl, "AXFrontmost" as CFString, kCFBooleanTrue)
     NSRunningApplication(processIdentifier: pid)?.activate()
     for _ in 0..<20 {
-      if bool(attr(appEl, "AXFrontmost")) == true { break }
+      if isFrontmost(pid) { break }
       Thread.sleep(forTimeInterval: 0.05)
     }
+    if !isFrontmost(pid) { throw Failure(message: "\(what): the app didn't come to the front (the user may have switched apps). Nothing was done.", code: "not-front") }
   }
 }
 
 func postClick(_ p: CGPoint, button: CGMouseButton = .left, clicks: Int = 1) {
   let (down, up): (CGEventType, CGEventType) =
     button == .right ? (.rightMouseDown, .rightMouseUp) : button == .center ? (.otherMouseDown, .otherMouseUp) : (.leftMouseDown, .leftMouseUp)
+  lastPosted = Date()
   CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: button)?.post(tap: .cghidEventTap)
   usleep(30_000)
   for i in 1...max(1, min(3, clicks)) {
@@ -400,6 +444,7 @@ func postClick(_ p: CGPoint, button: CGMouseButton = .left, clicks: Int = 1) {
     u?.post(tap: .cghidEventTap)
     if i < clicks { usleep(60_000) }
   }
+  lastPosted = Date()
 }
 
 /** Where the pointer is now (top-left origin, like every other coordinate here). */
@@ -413,6 +458,7 @@ func clickAndReturn(_ p: CGPoint, button: CGMouseButton = .left, clicks: Int = 1
   CGWarpMouseCursorPosition(was)
   // Warping briefly decouples the mouse from the pointer; reconnect so the user's next move isn't ignored.
   CGAssociateMouseAndMouseCursorPosition(1)
+  lastPosted = Date()
 }
 
 func center(_ el: AXUIElement) throws -> CGPoint {
@@ -439,12 +485,13 @@ func press(_ req: [String: Any]) throws -> [String: Any] {
     }
   }
   if how == "focus" {
-    bringForward(el)
+    try bringForward(el, what: "Focusing")
     let r = AXUIElementSetAttributeValue(el, "AXFocused" as CFString, kCFBooleanTrue)
     return ["method": "focus", "ok": r == .success]
   }
   let p = try center(el)
-  bringForward(el)
+  try bringForward(el, what: "Clicking")
+  try requireUserPause("Clicking")
   usleep(80_000)
   clickAndReturn(p, button: how == "right_click" ? .right : .left, clicks: how == "double_click" ? 2 : 1)
   return ["method": "click", "x": Int(p.x), "y": Int(p.y)]
@@ -455,6 +502,7 @@ func press(_ req: [String: Any]) throws -> [String: Any] {
 /** To the app in front (like a real keyboard), or straight to one app's queue when `pid` is given. */
 func send(_ e: CGEvent?, to pid: pid_t?) {
   guard let e else { return }
+  lastPosted = Date()
   if let pid { e.postToPid(pid) } else { e.post(tap: .cghidEventTap) }
 }
 
@@ -467,6 +515,17 @@ func postKey(_ code: CGKeyCode, flags: CGEventFlags = [], to pid: pid_t? = nil) 
   send(u, to: pid)
 }
 
+/** A character key with modifiers (cmd+c): the character goes as the key's unicode string. */
+func postChar(_ ch: String, flags: CGEventFlags, to pid: pid_t?) {
+  let units = Array(ch.utf16)
+  for down in [true, false] {
+    let e = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down)
+    e?.flags = flags
+    units.withUnsafeBufferPointer { e?.keyboardSetUnicodeString(stringLength: units.count, unicodeString: $0.baseAddress) }
+    send(e, to: pid)
+  }
+}
+
 /** Types any text (accents, emoji, other scripts) as keyboard events, one character at a time. */
 func typeText(_ text: String, to pid: pid_t? = nil) {
   for ch in text {
@@ -475,13 +534,7 @@ func typeText(_ text: String, to pid: pid_t? = nil) {
     } else if ch == "\t" {
       postKey(48, to: pid)
     } else {
-      let units = Array(String(ch).utf16)
-      for down in [true, false] {
-        let e = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down)
-        e?.flags = []
-        units.withUnsafeBufferPointer { e?.keyboardSetUnicodeString(stringLength: units.count, unicodeString: $0.baseAddress) }
-        send(e, to: pid)
-      }
+      postChar(String(ch), flags: [], to: pid)
     }
     usleep(6_000)
   }
@@ -495,9 +548,21 @@ func isFocused(_ el: AXUIElement) -> Bool {
 
 func valueOf(_ el: AXUIElement) -> String { string(attr(el, "AXValue")) ?? "" }
 
+/** How many characters a field holds, when it says (AXValue is sometimes cut short, e.g. WhatsApp). */
+func charCount(_ el: AXUIElement) -> Int? { (attr(el, "AXNumberOfCharacters") as? NSNumber)?.intValue }
+
 /** Same text, ignoring invisible marks, spacing and case (apps reformat what they're given). */
 func loosely(_ s: String) -> String {
   String(s.unicodeScalars.filter { !BIDI.contains($0) && !CharacterSet.whitespacesAndNewlines.contains($0) }).lowercased()
+}
+
+/** Whether the field now holds `expected`: by its value, or by its character count when the value is cut short. */
+func holds(_ el: AXUIElement, _ expected: String) -> Bool {
+  let now = valueOf(el)
+  if loosely(now) == loosely(expected) { return true }
+  // Apps show emoji and some symbols as placeholders in AXValue: a matching length is good evidence.
+  if let n = charCount(el), n == (expected as NSString).length || n == expected.count { return true }
+  return false
 }
 
 func selectAll(_ el: AXUIElement, length: Int) -> Bool {
@@ -511,32 +576,68 @@ func caretAtEnd(_ el: AXUIElement, length: Int) {
 }
 
 /**
- * Without bringing the app forward (so the user can keep working): focus the field inside its
- * window, then insert the text through accessibility, or as key events sent only to that app.
- * Returns how, or nil when the app didn't take it (the field is then exactly as it was).
+ * Without bringing the app forward (so the user can keep working): put the text in through
+ * accessibility (an insert, like dictation; or the whole value, which WhatsApp and other UIKit
+ * apps accept), or as key events sent only to that app. Returns how, or nil when nothing took
+ * (the field is then exactly as it was).
  */
 func setTextInBackground(_ el: AXUIElement, text: String, replace: Bool, old: String) -> String? {
   let pid = pidOf(el)
   AXUIElementSetAttributeValue(el, "AXFocused" as CFString, kCFBooleanTrue)
   usleep(60_000)
   let length = (old as NSString).length
-  let expected = loosely(replace ? text : old + text)
+  let expected = replace ? text : old + text
   func place() -> Bool {
     if replace { return length == 0 || selectAll(el, length: length) }
     caretAtEnd(el, length: length)
     return true
   }
-  // Accessibility insert: what a dictation app does. Instant, and native apps treat it as typing.
+  // 1. Accessibility insert: what a dictation app does. Native apps treat it as typing.
   if place(), AXUIElementSetAttributeValue(el, "AXSelectedText" as CFString, text as CFString) == .success {
     usleep(80_000)
-    if loosely(valueOf(el)) == expected { return "accessibility" }
+    if holds(el, expected) { return "accessibility" }
   }
-  if valueOf(el) != old { return nil }
-  // Key events to that app only.
+  if valueOf(el) != old && !valueOf(el).isEmpty { return nil }
+  // 2. The whole value at once.
+  if AXUIElementSetAttributeValue(el, "AXValue" as CFString, expected as CFString) == .success {
+    usleep(80_000)
+    if holds(el, expected) { return "value" }
+  }
+  if valueOf(el) != old && !valueOf(el).isEmpty { return nil }
+  // 3. Key events to that app only.
   if place() {
     typeText(text, to: pid)
     usleep(150_000)
-    if loosely(valueOf(el)) == expected { return "keys" }
+    if holds(el, expected) { return "keys" }
+  }
+  return nil
+}
+
+/** A button called Send (or similar) in the field's window, for apps whose Return key can't be sent from behind. */
+func sendButton(near el: AXUIElement) -> AXUIElement? {
+  guard let win = attr(el, "AXWindow") else { return nil }
+  let w = Walk(maxNodes: 600, query: nil, seconds: 2)
+  walk(win as! AXUIElement, depth: 0, visible: frameOf(win as! AXUIElement) ?? .null, inWeb: false, labelOwner: nil, w)
+  let names: Set<String> = ["send", "send message", "submit", "post", "reply"]
+  for (id, cand) in w.elements {
+    guard let node = w.nodes.first(where: { ($0["id"] as? Int) == id }), node["role"] as? String == "button", node["disabled"] == nil else { continue }
+    if names.contains(loosely((node["label"] as? String) ?? "")) { return cand }
+  }
+  return nil
+}
+
+/**
+ * Presses Return for a field in the background, or its Send button. Returns how, or nil when it
+ * can't tell whether anything happened (the text is still there).
+ */
+func submitInBackground(_ el: AXUIElement, pid: pid_t, expected: String) -> String? {
+  postKey(36, to: pid)
+  usleep(300_000)
+  // A sent message empties the box; a search keeps its text, so "still there" isn't proof of failure.
+  if !holds(el, expected) { return "keys" }
+  if let button = sendButton(near: el), AXUIElementPerformAction(button, "AXPress" as CFString) == .success {
+    usleep(300_000)
+    return holds(el, expected) ? nil : "send-button"
   }
   return nil
 }
@@ -545,6 +646,8 @@ func setTextInBackground(_ el: AXUIElement, text: String, replace: Bool, old: St
  * Puts text in a field. Apps in the background are typed into without being brought forward when
  * they allow it; otherwise (and for apps in front) the field is focused (clicked if focusing doesn't
  * take), its text replaced or appended to, and typed like a person, so the app sees normal input.
+ * Return (submit) is only pressed when the field still holds the text and the app is still where
+ * it was: a chat the user switched meanwhile never gets it.
  */
 func setText(_ req: [String: Any]) throws -> [String: Any] {
   let el = try element(req)
@@ -553,18 +656,20 @@ func setText(_ req: [String: Any]) throws -> [String: Any] {
   let submit = req["submit"] as? Bool == true
   let old = valueOf(el)
   let pid = pidOf(el)
-  let inFront = bool(attr(AXUIElementCreateApplication(pid), "AXFrontmost")) == true
+  let expected = replace ? text : old + text
   var out: [String: Any] = ["typed": text.count]
 
   // Password fields can't be read back, so there'd be no telling whether a background insert worked.
   let secure = string(attr(el, "AXSubrole")) == "AXSecureTextField"
-  if !inFront, !secure, req["background"] as? Bool != false, !text.isEmpty, let how = setTextInBackground(el, text: text, replace: replace, old: old) {
+  if !isFrontmost(pid), !secure, req["background"] as? Bool != false, !text.isEmpty, let how = setTextInBackground(el, text: text, replace: replace, old: old) {
     out["background"] = how
     if submit {
-      postKey(36, to: pid)
-      usleep(250_000)
-      // A sent message empties the box; anything else (a search) may keep its text.
-      if !valueOf(el).isEmpty && loosely(valueOf(el)) == loosely(replace ? text : old + text) { out["submitted"] = "unconfirmed" }
+      if let via = submitInBackground(el, pid: pid, expected: expected) {
+        out["submitted"] = via
+      } else {
+        out["submitted"] = "unconfirmed"
+        out["value"] = clip(valueOf(el), 300)
+      }
     } else {
       out["value"] = clip(valueOf(el), 300)
     }
@@ -577,14 +682,16 @@ func setText(_ req: [String: Any]) throws -> [String: Any] {
     return out
   }
 
-  bringForward(el)
+  try bringForward(el, what: "Typing")
   AXUIElementSetAttributeValue(el, "AXFocused" as CFString, kCFBooleanTrue)
   usleep(120_000)
   if !isFocused(el) {
-    let p = try center(el)
-    clickAndReturn(p)
+    try requireUserPause("Typing")
+    clickAndReturn(try center(el))
     usleep(150_000)
   }
+  try requireUserPause("Typing")
+  if !isFrontmost(pid) { throw Failure(message: "Typing: the app isn't in front any more (the user switched apps). Nothing was typed.", code: "not-front") }
   if replace && !old.isEmpty {
     if !selectAll(el, length: (old as NSString).length) { postKey(0, flags: .maskCommand) }  // Select all.
     usleep(50_000)
@@ -595,8 +702,22 @@ func setText(_ req: [String: Any]) throws -> [String: Any] {
   typeText(text)
   usleep(150_000)
   if submit {
+    // The same field, with our text, in the app that's still in front: otherwise Return could send
+    // something else (the user's half-typed message in another chat).
+    if !isFrontmost(pid) || !isFocused(el) || !holds(el, expected) {
+      out["submitted"] = "skipped"
+      out["value"] = clip(valueOf(el), 300)
+      return out
+    }
+    if userIdleSeconds() < 1.0 {
+      out["submitted"] = "skipped"
+      out["reason"] = "busy"
+      out["value"] = clip(valueOf(el), 300)
+      return out
+    }
     postKey(36)
     usleep(100_000)
+    out["submitted"] = "keys"
   }
   let now = string(attr(el, "AXValue"))
   if let now, !submit { out["value"] = clip(now, 300) }
@@ -605,9 +726,50 @@ func setText(_ req: [String: Any]) throws -> [String: Any] {
 
 func click(_ req: [String: Any]) throws -> [String: Any] {
   guard let x = (req["x"] as? NSNumber)?.doubleValue, let y = (req["y"] as? NSNumber)?.doubleValue else { throw Failure(message: "x and y are required.") }
+  try requireUserPause("Clicking")
   let b = req["button"] as? String
   postClick(CGPoint(x: x, y: y), button: b == "right" ? .right : b == "middle" ? .center : .left, clicks: req["clicks"] as? Int ?? 1)
   return ["ok": true]
+}
+
+/** The app named in a request, when it's running and not in front: input can go to it alone. */
+func backgroundTarget(_ req: [String: Any]) throws -> pid_t? {
+  guard let name = req["app"] as? String, !name.isEmpty else { return nil }
+  let pid = try findApp(name)
+  return isFrontmost(pid) ? nil : pid
+}
+
+/** Types text: into the named app from behind when it isn't in front, else into the app in front. */
+func typeCommand(_ req: [String: Any]) throws -> [String: Any] {
+  let text = req["text"] as? String ?? ""
+  if let pid = try backgroundTarget(req) {
+    typeText(text, to: pid)
+    return ["typed": text.count, "to": "app"]
+  }
+  try requireUserPause("Typing")
+  typeText(text)
+  return ["typed": text.count, "to": "front"]
+}
+
+let FLAGS: [String: CGEventFlags] = ["command": .maskCommand, "shift": .maskShift, "option": .maskAlternate, "control": .maskControl]
+
+/** A key or shortcut: {code} or {char}, with modifiers; to the named app from behind, or to the front. */
+func keyCommand(_ req: [String: Any]) throws -> [String: Any] {
+  var flags: CGEventFlags = []
+  for m in (req["modifiers"] as? [String]) ?? [] {
+    guard let f = FLAGS[m] else { throw Failure(message: "Unknown modifier \(m).") }
+    flags.insert(f)
+  }
+  let pid = try backgroundTarget(req)
+  if pid == nil { try requireUserPause("Pressing the key") }
+  if let code = req["code"] as? Int {
+    postKey(CGKeyCode(code), flags: flags, to: pid)
+  } else if let ch = req["char"] as? String, !ch.isEmpty {
+    postChar(ch, flags: flags, to: pid)
+  } else {
+    throw Failure(message: "Give a key code or a character.")
+  }
+  return ["ok": true, "to": pid == nil ? "front" : "app"]
 }
 
 // MARK: Reading text on screen
@@ -642,20 +804,20 @@ func screenLocked() -> Bool {
   return (session["CGSSessionScreenIsLocked"] as? Bool) == true || (session["CGSSessionScreenIsLocked"] as? Int) == 1
 }
 
-let NEEDS_UNLOCKED: Set<String> = ["snapshot", "press", "setText", "type", "click"]
+let NEEDS_UNLOCKED: Set<String> = ["snapshot", "press", "setText", "type", "key", "click"]
 
 func handle(_ req: [String: Any]) throws -> Any {
   if let cmd = req["cmd"] as? String, NEEDS_UNLOCKED.contains(cmd), screenLocked() {
     throw Failure(message: "This Mac's screen is locked, so apps can't be seen or used. Ask the user to unlock it, then try again.", code: "locked")
   }
   switch req["cmd"] as? String {
-  case "ping": return ["trusted": AXIsProcessTrusted(), "pid": Int(getpid()), "locked": screenLocked()]
+  case "ping": return ["trusted": AXIsProcessTrusted(), "pid": Int(getpid()), "locked": screenLocked(), "idle": userIdleSeconds()]
   case "snapshot": return try snapshot(req)
   case "press": return try press(req)
   case "setText": return try setText(req)
-  case "type":
-    typeText(req["text"] as? String ?? "")
-    return ["typed": (req["text"] as? String ?? "").count]
+  case "type": return try typeCommand(req)
+  case "key": return try keyCommand(req)
+  case "idle": return ["idle": userIdleSeconds()]
   case "click": return try click(req)
   case "ocr": return try ocr(req)
   case "front":

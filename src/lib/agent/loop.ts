@@ -55,7 +55,9 @@ export const COMPUTER_GUIDANCE = [
   "- Check mac_recipes first: if a saved recipe does the task, run it with mac_recipe_run. After working out a multi-step task the user may ask for again, save it as a recipe (steps that worked, elements named by text, changing values as {{params}}).",
   "- Take the shortest path: app links (whatsapp://send?phone=…&text=…, mailto:, spotify:…) and keyboard shortcuts (mac_key) beat clicking through menus. mac_open_app opens an app and lists its controls in one step.",
   "- ADT Bot's own window is usually in front: name the app you mean (app: \"WhatsApp\").",
-  "- Check the result before saying it's done (e.g. the sent message appears in the chat). If something didn't work, try another way: a different element, a shortcut, or a screenshot to see what happened.",
+  "- The user may be using the Mac at the same time. Stay in the background: name the app (app: \"WhatsApp\"), press by name, type with mac_set_text. Tools that need the front app wait for the user to pause and refuse if there's none (\"busy\"): wait a moment and try again, don't fight for the keyboard.",
+  "- Sending: use mac_set_text with submit:true, which sends only if the field still holds your text in the same app. If it reports the text is still there, press the app's Send button by name. Never press enter on its own to send: the user may have switched chats, and Return would send whatever they were typing.",
+  "- Check the result before saying it's done (e.g. the sent message appears in the chat, in the right chat). If something didn't work, try another way: a different element, a shortcut, or a screenshot to see what happened.",
   "- Don't describe each step to the user. Ask before sending messages, emails or payments only when the user didn't clearly ask for that exact action.",
 ].join("\n");
 

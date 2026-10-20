@@ -498,6 +498,27 @@ async function ensureUnlocked(what) {
   if (state?.locked) throw new Error(`${what}: this Mac's screen is locked, so apps can't be seen or used. Ask the user to unlock it, then try again.`);
 }
 
+const busyError = (what, idle) =>
+  Object.assign(
+    new Error(`${what}: the user is using this Mac right now (keyboard or mouse used ${idle.toFixed(1)} s ago). Wait for them to pause and try again, or work in the background (mac_ui, mac_press, mac_set_text with the app named).`),
+    { code: "busy" },
+  );
+
+/**
+ * Pointer and key events go to whatever the user is doing: wait for a pause (up to 4 s), and
+ * refuse if there's none. The helper does the same itself for what it sends.
+ */
+async function requireUserPause(what) {
+  if (!hasHelper()) return;
+  const deadline = Date.now() + 4_000;
+  for (;;) {
+    const idle = (await helperCall("idle", {}, { what, timeoutMs: 5_000 }).catch(() => null))?.idle;
+    if (typeof idle !== "number" || idle >= 1.2) return;
+    if (Date.now() > deadline) throw busyError(what, idle);
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
 /**
  * The controls in an app's window (buttons, fields, links, rows, text) from macOS accessibility,
  * with ids for mac_press / mac_set_text. Each element also gets its centre in screenshot pixels.
@@ -708,6 +729,7 @@ async function move({ x, y, space } = {}) {
   await requireAccessibility("Moving the pointer");
   await ensureUnlocked("Moving the pointer");
   const p = await pointFor(x, y, space);
+  await requireUserPause("Moving the pointer");
   await jxa(MOVE_JXA, [p.x, p.y], "Moving the pointer");
   return { ok: true, screen: p };
 }
@@ -729,6 +751,7 @@ async function drag({ x, y, toX, toY, space } = {}) {
   await ensureUnlocked("Dragging");
   const a = await pointFor(x, y, space);
   const b = await pointFor(toX, toY, space);
+  await requireUserPause("Dragging");
   await jxa(DRAG_JXA, [a.x, a.y, b.x, b.y], "Dragging", 30_000);
   return { ok: true, from: a, to: b };
 }
@@ -740,11 +763,12 @@ async function scroll({ x, y, dx = 0, dy = 0, space } = {}) {
   const p = x === undefined || y === undefined ? (await cursor()).screen : await pointFor(x, y, space);
   const sx = Math.max(-5000, Math.min(5000, Math.round(Number(dx) || 0)));
   const sy = Math.max(-5000, Math.min(5000, Math.round(Number(dy) || 0)));
+  await requireUserPause("Scrolling");
   await jxa(SCROLL_JXA, [p.x, p.y, sx, sy], "Scrolling");
   return { ok: true, screen: p };
 }
 
-async function typeText({ text } = {}) {
+async function typeText({ text, app: appName } = {}) {
   ensureMac();
   const value = String(text ?? "");
   if (!value) return { ok: true, typed: 0 };
@@ -752,19 +776,33 @@ async function typeText({ text } = {}) {
   await requireAccessibility("Typing");
   await ensureUnlocked("Typing");
   const timeoutMs = Math.min(180_000, 20_000 + value.length * 60);
-  // The helper types any character as a key event, so the clipboard is never touched.
-  if (hasHelper()) await helperCall("type", { text: value }, { what: "Typing", timeoutMs }).catch((error) => (helperBroken ? jxa(TYPE_JXA, [value], "Typing", timeoutMs) : Promise.reject(error)));
-  else await jxa(TYPE_JXA, [value], "Typing", timeoutMs);
-  return { ok: true, typed: value.length };
+  // The helper types any character as a key event (clipboard untouched), into the named app from
+  // behind when it isn't in front, and waits for the user to pause before typing into the front app.
+  if (hasHelper()) {
+    const done = await helperCall("type", { text: value, app: appName ? String(appName).slice(0, 200) : undefined }, { what: "Typing", timeoutMs }).catch((error) =>
+      helperBroken ? jxa(TYPE_JXA, [value], "Typing", timeoutMs).then(() => ({ to: "front" })) : Promise.reject(error),
+    );
+    return { ok: true, typed: value.length, to: done?.to ?? "front" };
+  }
+  await jxa(TYPE_JXA, [value], "Typing", timeoutMs);
+  return { ok: true, typed: value.length, to: "front" };
 }
 
-async function key({ combo } = {}) {
+async function key({ combo, app: appName } = {}) {
   ensureMac();
   const parsed = parseCombo(combo);
-  await requireAccessibility(`Pressing ${parsed.label}`);
-  await ensureUnlocked(`Pressing ${parsed.label}`);
-  await jxa(KEY_JXA, keyArgs(parsed), `Pressing ${parsed.label}`);
-  return { ok: true, label: parsed.label };
+  const what = `Pressing ${parsed.label}`;
+  await requireAccessibility(what);
+  await ensureUnlocked(what);
+  if (hasHelper()) {
+    const payload = { modifiers: parsed.modifiers, app: appName ? String(appName).slice(0, 200) : undefined };
+    if (parsed.keyCode !== undefined) payload.code = parsed.keyCode;
+    else payload.char = parsed.character;
+    const done = await helperCall("key", payload, { what }).catch((error) => (helperBroken ? jxa(KEY_JXA, keyArgs(parsed), what).then(() => ({ to: "front" })) : Promise.reject(error)));
+    return { ok: true, label: parsed.label, to: done?.to ?? "front" };
+  }
+  await jxa(KEY_JXA, keyArgs(parsed), what);
+  return { ok: true, label: parsed.label, to: "front" };
 }
 
 async function listApps() {
@@ -818,6 +856,7 @@ async function appleScript({ source, language = "applescript" } = {}) {
   if (!code.trim()) throw new Error("Give the script to run.");
   if (code.length > MAX_SCRIPT) throw new Error("The script is too long.");
   await ensureUnlocked("Running the script");
+  await requireUserPause("Running the script");
   // The script itself is the user's (approved) input here; it's the only thing in the source position.
   const lang = language === "javascript" ? "JavaScript" : "AppleScript";
   const output = await exec(OSASCRIPT, ["-l", lang, "-e", code], { what: "Running the script", timeoutMs: 60_000 });
@@ -1247,6 +1286,7 @@ exports.register = ({ app, ipcMain, shell, access, onStopAll }) => {
   act("browser", browser);
   handle("findText", findText);
   handle("helper", () => ({ available: hasHelper() }));
+  handle("idle", () => (hasHelper() ? helperCall("idle", {}, { what: "Checking activity", timeoutMs: 5_000 }) : { idle: null }));
   app?.on?.("will-quit", stopHelper);
 };
 
@@ -1276,6 +1316,7 @@ exports._test = {
   frontmost,
   APP_LINK,
   BROWSERS,
+  busyError,
   pageScript,
   browserError,
   helperPath,
