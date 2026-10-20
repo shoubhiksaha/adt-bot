@@ -1,6 +1,7 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
+import pkg from "./package.json";
 import brand from "./src/brand.json";
 // @ts-expect-error plain ESM module shared with the Node server
 import { createProxyHandler } from "./server/proxy.mjs";
@@ -17,6 +18,8 @@ const isolation = { "Cross-Origin-Opener-Policy": "same-origin", "Cross-Origin-E
 
 export default defineConfig({
   base: "./",
+  // Settings → About shows it on web and mobile (the desktop app asks Electron).
+  define: { __APP_VERSION__: JSON.stringify(pkg.version) },
   // Multi-threaded WebAssembly for on-device speech needs cross-origin isolation.
   server: { headers: isolation },
   preview: { headers: isolation },

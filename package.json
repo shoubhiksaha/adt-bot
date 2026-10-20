@@ -17,10 +17,11 @@
     "icons": "node scripts/icons.mjs",
     "desktop": "npm run build && electron .",
     "desktop:dev": "electron . --dev",
-    "dist:mac": "npm run native:mac && npm run build && electron-builder --mac",
-    "dist:win": "npm run build && electron-builder --win",
-    "dist:linux": "npm run build && electron-builder --linux",
-    "dist:all": "npm run native:mac && npm run build && electron-builder --mac --win --linux",
+    "dist:mac": "npm run native:mac && npm run build && electron-builder --mac --publish never",
+    "dist:win": "npm run build && electron-builder --win --publish never",
+    "dist:linux": "npm run build && electron-builder --linux --publish never",
+    "dist:all": "npm run native:mac && npm run build && electron-builder --mac --win --linux --publish never",
+    "sign:updates": "node scripts/sign-update-manifest.mjs",
     "cap:sync": "npm run build && cap sync",
     "android": "npm run cap:sync && cap open android",
     "ios": "npm run cap:sync && cap open ios",
@@ -43,11 +44,20 @@
       "!**/*.test.cjs",
       "package.json"
     ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "shoubhiksaha",
+        "repo": "adt-bot",
+        "releaseType": "release"
+      }
+    ],
     "mac": {
       "target": [
         "dmg",
         "zip"
       ],
+      "artifactName": "ADT-Bot-${version}-mac-${arch}.${ext}",
       "category": "public.app-category.productivity",
       "icon": "build/icon.png",
       "extendInfo": {
@@ -71,6 +81,12 @@
       ],
       "icon": "build/icon.png"
     },
+    "nsis": {
+      "artifactName": "ADT-Bot-Setup-${version}-windows.${ext}"
+    },
+    "portable": {
+      "artifactName": "ADT-Bot-${version}-windows-portable.${ext}"
+    },
     "linux": {
       "target": [
         "AppImage",
@@ -79,6 +95,9 @@
       "category": "Utility",
       "icon": "build/icon.png",
       "maintainer": "ADT Bot"
+    },
+    "appImage": {
+      "artifactName": "ADT-Bot-${version}-linux-${arch}.${ext}"
     },
     "electronFuses": {
       "runAsNode": false,
@@ -107,6 +126,7 @@
     "electron-builder": "^26.15.3",
     "highlight.js": "^11.12.0",
     "idb-keyval": "^6.3.0",
+    "js-yaml": "^4.3.2",
     "kokoro-js": "^1.2.1",
     "lucide-react": "^1.59.0",
     "mammoth": "^1.13.0",
@@ -128,5 +148,8 @@
     "kokoro-js": {
       "@huggingface/transformers": "$@huggingface/transformers"
     }
+  },
+  "dependencies": {
+    "electron-updater": "6.8.10"
   }
 }

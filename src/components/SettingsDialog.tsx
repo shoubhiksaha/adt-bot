@@ -21,6 +21,7 @@ import {
 import { detectEnv, type Platform } from "../lib/transport";
 import { Dialog } from "./Dialog";
 import { ProviderSetup } from "./ProviderSetup";
+import { AboutSettings } from "./settings/About";
 import { AppearanceSettings } from "./settings/Appearance";
 import { useFeatureRegistry } from "../features/registry";
 import { ModelInput, Toggle } from "./settings/controls";
@@ -29,7 +30,7 @@ import { ToolsSettings } from "./settings/ToolsSettings";
 import { VoiceSettings } from "./settings/VoiceSettings";
 import { WorkspaceSettings } from "./settings/Workspace";
 
-export type SettingsTab = "general" | "appearance" | "workspace" | "providers" | "tools" | "search" | "images" | "voice" | "data" | (string & {});
+export type SettingsTab = "general" | "appearance" | "workspace" | "providers" | "tools" | "search" | "images" | "voice" | "data" | "about" | (string & {});
 const TABS: { id: SettingsTab; label: string }[] = [
   { id: "general", label: "General" },
   { id: "appearance", label: "Appearance" },
@@ -40,6 +41,7 @@ const TABS: { id: SettingsTab; label: string }[] = [
   { id: "images", label: "Images" },
   { id: "voice", label: "Voice" },
   { id: "data", label: "Data" },
+  { id: "about", label: "About" },
 ];
 
 export default function SettingsDialog({ onClose, initialTab = "general" }: { onClose: () => void; initialTab?: SettingsTab }) {
@@ -75,6 +77,7 @@ export default function SettingsDialog({ onClose, initialTab = "general" }: { on
       {tab === "images" && <ImagesTab />}
       {tab === "voice" && <VoiceSettings />}
       {tab === "data" && <DataTab />}
+      {tab === "about" && <AboutSettings />}
     </Dialog>
   );
 }

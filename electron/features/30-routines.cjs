@@ -62,6 +62,12 @@ exports.register = ({ app, ipcMain, getWindow, send }) => {
   app.on("before-quit", () => {
     quitting = true;
   });
+  // Installing an update on macOS closes the windows before "before-quit" fires.
+  try {
+    require("electron").autoUpdater?.on("before-quit-for-update", () => {
+      quitting = true;
+    });
+  } catch {}
 
   // Closing the window hides it instead, while "keep running" is on.
   app.on("browser-window-created", (_event, win) => {

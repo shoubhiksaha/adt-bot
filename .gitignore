@@ -16,3 +16,6 @@ ios/App/build/
 *.tsbuildinfo
 .claude/
 build/native/
+
+# The update signing key lives in ~/.config/adt-bot; never commit a copy
+update-signing-key*

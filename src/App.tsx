@@ -7,6 +7,7 @@ import { useNav } from "./features/registry";
 import type { SettingsTab } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { stopStreaming } from "./lib/chat";
+import { desktopOn } from "./lib/desktop";
 import { selectBot, startNewChat, useStore } from "./lib/store";
 import { preferredMode, themeCss } from "./lib/theme";
 
@@ -122,7 +123,12 @@ export function App() {
   useEffect(() => {
     const open = (e: Event) => setSettingsTab(((e as CustomEvent).detail as SettingsTab) ?? "general");
     window.addEventListener("adt:open-settings", open);
-    return () => window.removeEventListener("adt:open-settings", open);
+    // Clicking the "update available" notification (desktop).
+    const offUpdates = desktopOn("adt:updates:open", () => setSettingsTab("about"));
+    return () => {
+      window.removeEventListener("adt:open-settings", open);
+      offUpdates();
+    };
   }, []);
 
   // Global shortcuts: ⌘/Ctrl+K search chats, ⌘/Ctrl+Shift+O new chat, "/" focus input, Esc stop.
