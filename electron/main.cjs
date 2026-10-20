@@ -2,12 +2,13 @@
 // The UI is served from a private app:// origin (so saved chats survive restarts), and
 // app://adtbot/api/proxy relays provider calls outside the page, which avoids CORS for every
 // cloud provider, local LLM server and private model server.
-const { app, BrowserWindow, globalShortcut, ipcMain, Menu, Notification, net, protocol, session, shell, systemPreferences } = require("electron");
+const { app, BrowserWindow, globalShortcut, ipcMain, Menu, Notification, net, protocol, safeStorage, session, shell, systemPreferences } = require("electron");
 const { lookup } = require("node:dns/promises");
 const fs = require("node:fs");
 const { isIP } = require("node:net");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
+const { createVault } = require("./secrets.cjs");
 
 const DEV = process.argv.includes("--dev");
 const DIST = path.join(__dirname, "..", "dist");
@@ -274,6 +275,8 @@ function loadFeatures() {
     /** Push an event to the app UI (channel must start with "adt:"). */
     send: (channel, payload) => mainWindow?.webContents.send(channel, payload),
     userData: app.getPath("userData"),
+    /** Secrets encrypted with the OS keychain (electron/secrets.cjs). */
+    secrets: createVault({ dir: app.getPath("userData"), safeStorage }),
     /**
      * Settings → Tools & safety → Computer access, pushed by the app (adt:system:access). Until it
      * arrives, assume the strictest mode.

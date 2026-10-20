@@ -4,13 +4,27 @@ import { canImagine, IMAGE_MODEL_SUGGESTIONS, resolveImageModel } from "../lib/i
 import { MOD } from "../lib/keys";
 import { formatHeaders, parseHeaders } from "../lib/providers";
 import { SEARCH_ENGINES, webSearch } from "../lib/search";
-import { exportData, importChanges, importData, removeProvider, updateProvider, updateSettings, useStore } from "../lib/store";
+import { backupPasswordProblem } from "../lib/backup-crypto";
+import {
+  backupHasSealedKeys,
+  eraseAllData,
+  exportData,
+  exportDataWithKeys,
+  importChanges,
+  importData,
+  removeProvider,
+  unlockBackup,
+  updateProvider,
+  updateSettings,
+  useStore,
+} from "../lib/store";
 import { detectEnv, type Platform } from "../lib/transport";
 import { Dialog } from "./Dialog";
 import { ProviderSetup } from "./ProviderSetup";
 import { AppearanceSettings } from "./settings/Appearance";
 import { useFeatureRegistry } from "../features/registry";
 import { ModelInput, Toggle } from "./settings/controls";
+import { KeyStorageNote } from "./settings/KeyStorage";
 import { ToolsSettings } from "./settings/ToolsSettings";
 import { VoiceSettings } from "./settings/VoiceSettings";
 import { WorkspaceSettings } from "./settings/Workspace";
@@ -160,6 +174,7 @@ function ProvidersTab() {
           </details>
         </div>
       ))}
+      <KeyStorageNote warningsOnly />
       {adding ? (
         <ProviderSetup onDone={() => setAdding(false)} />
       ) : (
@@ -295,9 +310,12 @@ function ImagesTab() {
 
 function DataTab() {
   const [message, setMessage] = useState<string | null>(null);
+  // "Export with keys": the keys in the file are sealed with this password.
+  const [sealing, setSealing] = useState<{ password: string; confirm: string; busy?: boolean } | null>(null);
+  // A chosen backup whose keys are password-protected, waiting for its password.
+  const [unlocking, setUnlocking] = useState<{ text: string; password: string; busy?: boolean } | null>(null);
 
-  const download = async (includeKeys: boolean) => {
-    const json = exportData(includeKeys);
+  const save = async (json: string) => {
     const name = `adt-bot-backup-${new Date().toISOString().slice(0, 10)}.json`;
     const file = new File([json], name, { type: "application/json" });
     if (navigator.canShare?.({ files: [file] })) {
@@ -312,17 +330,67 @@ function DataTab() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
+  const exportSealed = async () => {
+    if (!sealing) return;
+    setSealing({ ...sealing, busy: true });
+    try {
+      await save(await exportDataWithKeys(sealing.password));
+      setSealing(null);
+      setMessage("Backup saved. Its keys open only with the password you chose.");
+    } catch (error) {
+      setSealing({ ...sealing, busy: false });
+      setMessage((error as Error).message);
+    }
+  };
+
+  const finishImport = (text: string) => {
+    // A backup from someone else could point your providers at their server.
+    const changes = importChanges(text);
+    if (
+      changes.length &&
+      !window.confirm(
+        `This backup sends your chats to these addresses:\n\n${changes.slice(0, 8).join("\n")}\n\nOnly import backups you made yourself. Import anyway?`,
+      )
+    ) {
+      setMessage("Import cancelled.");
+      return;
+    }
+    importData(text);
+    setMessage("Backup imported.");
+  };
+
+  const importLocked = async (withKeys: boolean) => {
+    if (!unlocking) return;
+    try {
+      if (!withKeys) {
+        setUnlocking(null);
+        finishImport(unlocking.text);
+        return;
+      }
+      setUnlocking({ ...unlocking, busy: true });
+      const text = await unlockBackup(unlocking.text, unlocking.password);
+      setUnlocking(null);
+      finishImport(text);
+    } catch (error) {
+      setUnlocking({ ...unlocking, busy: false });
+      setMessage((error as Error).message);
+    }
+  };
+
+  const sealProblem = sealing ? backupPasswordProblem(sealing.password, sealing.confirm) : "";
+
   return (
     <div>
       <p className="muted small" style={{ marginTop: 0 }}>
         Everything (bots, memory, chats, keys) lives only on this device. Export a backup to move it to another device.
       </p>
+      <KeyStorageNote />
       <div className="btn-row" style={{ marginBottom: 16 }}>
-        <button type="button" className="btn" onClick={() => void download(false)}>
+        <button type="button" className="btn" onClick={() => void save(exportData())}>
           Export (without keys)
         </button>
-        <button type="button" className="btn" onClick={() => void download(true)}>
-          Export with API keys
+        <button type="button" className="btn" onClick={() => setSealing(sealing ? null : { password: "", confirm: "" })}>
+          Export with keys…
         </button>
         <label className="btn">
           Import backup
@@ -332,23 +400,13 @@ function DataTab() {
             hidden
             onChange={async (e) => {
               const file = e.target.files?.[0];
+              e.target.value = "";
               if (!file) return;
+              setMessage(null);
               try {
                 const text = await file.text();
-                // A backup from someone else could point your providers at their server.
-                const changes = importChanges(text);
-                if (
-                  changes.length &&
-                  !window.confirm(
-                    `This backup sends your chats to these addresses:\n\n${changes.slice(0, 8).join("\n")}\n\nOnly import backups you made yourself. Import anyway?`,
-                  )
-                ) {
-                  setMessage("Import cancelled.");
-                  e.target.value = "";
-                  return;
-                }
-                importData(text);
-                setMessage("Backup imported.");
+                if (backupHasSealedKeys(text)) setUnlocking({ text, password: "" });
+                else finishImport(text);
               } catch (error) {
                 setMessage((error as Error).message);
               }
@@ -356,13 +414,76 @@ function DataTab() {
           />
         </label>
       </div>
+      {sealing && (
+        <div className="card">
+          <p className="small" style={{ marginTop: 0 }}>
+            The keys in the file are encrypted with this password (AES-256). You'll need it to import them, and it can't be recovered.
+          </p>
+          <div className="field-row">
+            <input
+              className="input"
+              type="password"
+              autoComplete="new-password"
+              placeholder="Password"
+              value={sealing.password}
+              onChange={(e) => setSealing({ ...sealing, password: e.target.value })}
+            />
+            <input
+              className="input"
+              type="password"
+              autoComplete="new-password"
+              placeholder="Same password again"
+              value={sealing.confirm}
+              onChange={(e) => setSealing({ ...sealing, confirm: e.target.value })}
+            />
+          </div>
+          {sealing.password && sealProblem && <p className="status err">{sealProblem}</p>}
+          <div className="btn-row" style={{ marginTop: 10 }}>
+            <button type="button" className="btn primary" disabled={Boolean(sealProblem) || sealing.busy} onClick={() => void exportSealed()}>
+              {sealing.busy && <Loader2 size={14} className="spin" />} Export with keys
+            </button>
+            <button type="button" className="btn" onClick={() => setSealing(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {unlocking && (
+        <div className="card">
+          <p className="small" style={{ marginTop: 0 }}>
+            This backup's keys are protected with a password.
+          </p>
+          <input
+            className="input"
+            type="password"
+            autoComplete="current-password"
+            placeholder="Backup password"
+            value={unlocking.password}
+            onChange={(e) => setUnlocking({ ...unlocking, password: e.target.value })}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && unlocking.password && !unlocking.busy) void importLocked(true);
+            }}
+          />
+          <div className="btn-row" style={{ marginTop: 10 }}>
+            <button type="button" className="btn primary" disabled={!unlocking.password || unlocking.busy} onClick={() => void importLocked(true)}>
+              {unlocking.busy && <Loader2 size={14} className="spin" />} Import with keys
+            </button>
+            <button type="button" className="btn" disabled={unlocking.busy} onClick={() => void importLocked(false)}>
+              Import without keys
+            </button>
+            <button type="button" className="btn" disabled={unlocking.busy} onClick={() => setUnlocking(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
       {message && <p className="small">{message}</p>}
       <button
         type="button"
         className="btn danger"
-        onClick={() => {
+        onClick={async () => {
           if (confirm("Delete all bots, chats, memory and keys from this device?")) {
-            void useStore.persist.clearStorage();
+            await eraseAllData();
             location.reload();
           }
         }}

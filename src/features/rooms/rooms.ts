@@ -1,6 +1,7 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
 import { desktopInvoke, desktopOn, isDesktop } from "../../lib/desktop";
+import { roomSecretsCodec, SecretKeeper } from "../../lib/secrets";
 import { useStore } from "../../lib/store";
 import type { ToolCallRecord } from "../../lib/types";
 import { botsToAnswer, newPin, newRoomId, type RoomGuest, type RoomMessage, type RoomTools } from "./logic";
@@ -52,9 +53,35 @@ type RoomsState = {
   live: Record<string, LiveRoom>;
 };
 
+/** Room PINs: in the OS keychain on desktop (src/lib/secrets.ts); the rest stays in localStorage. */
+const pins = new SecretKeeper<RoomsState>("rooms", roomSecretsCodec<RoomsState>());
+let lastSaved: StorageValue<RoomsState> | null = null;
+
+const roomsStorage: PersistStorage<RoomsState> = {
+  getItem: async (name) => {
+    const text = typeof localStorage === "undefined" ? null : localStorage.getItem(name);
+    if (!text) {
+      await pins.open();
+      return null;
+    }
+    const stored = JSON.parse(text) as StorageValue<RoomsState>;
+    const state = await pins.load(stored.state, (blanked) => localStorage.setItem(name, JSON.stringify({ ...stored, state: blanked })));
+    return { ...stored, state };
+  },
+  setItem: (name, value) => {
+    lastSaved = value;
+    if (typeof localStorage !== "undefined") localStorage.setItem(name, JSON.stringify({ ...value, state: pins.forDisk(value.state) }));
+  },
+  removeItem: (name) => {
+    if (typeof localStorage !== "undefined") localStorage.removeItem(name);
+  },
+};
+pins.onFallback = () => lastSaved && roomsStorage.setItem("adtbot-rooms", lastSaved);
+
 export const useRooms = create<RoomsState>()(
   persist(() => ({ configs: [], selectedId: null, live: {} }) as RoomsState, {
     name: "adtbot-rooms",
+    storage: roomsStorage,
     partialize: (s) => ({ configs: s.configs, selectedId: s.selectedId }) as RoomsState,
   }),
 );

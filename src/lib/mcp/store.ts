@@ -6,6 +6,7 @@ import { get, set } from "idb-keyval";
 import { create } from "zustand";
 import { registerToolGroup } from "../agent/tools";
 import { isDesktop } from "../desktop";
+import { connectorSecretsCodec, SecretKeeper } from "../secrets";
 import { useStore } from "../store";
 import { providerFetch } from "../transport";
 import { buildAgentTools, CONNECTORS_GROUP, type ConnectorConfig, ConnectorManager, type ConnectorStatus, syncAgentTools } from "./connectors";
@@ -43,9 +44,13 @@ export const connectorManager = new ConnectorManager({
   onTools: (id, tools) => updateServer(id, { tools }),
 });
 
+/** Tokens, header and environment values: in the OS keychain on desktop (src/lib/secrets.ts). */
+const keeper = new SecretKeeper("connectors", connectorSecretsCodec);
+keeper.onFallback = () => save();
+
 function save() {
   const { servers, loaded } = useConnectors.getState();
-  if (loaded) void set(STORAGE_KEY, servers).catch(() => undefined);
+  if (loaded) void set(STORAGE_KEY, keeper.forDisk(servers)).catch(() => undefined);
 }
 
 export function getServer(id: string) {
@@ -116,8 +121,9 @@ export function startConnectors() {
     if (state.servers !== previous.servers) syncTools();
   });
   void get<ConnectorConfig[]>(STORAGE_KEY)
+    .then((saved) => keeper.load(Array.isArray(saved) ? saved : [], (blanked) => set(STORAGE_KEY, blanked)))
     .then((servers) => {
-      useConnectors.setState({ servers: Array.isArray(servers) ? servers : [], loaded: true });
+      useConnectors.setState({ servers, loaded: true });
       for (const server of useConnectors.getState().servers) {
         if (server.enabled && runnable(server)) void refreshServer(server).catch(() => undefined);
       }

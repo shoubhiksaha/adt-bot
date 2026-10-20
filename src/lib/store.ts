@@ -2,8 +2,10 @@ import { del, get, set } from "idb-keyval";
 import { create } from "zustand";
 import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
 import brandDefaults from "../brand.json";
+import { isSealed, openSecrets, sealSecrets } from "./backup-crypto";
 import { BOT_PRESETS } from "./presets";
 import { catalogModels, presetById } from "./providers";
+import { appSecretsCodec, SecretKeeper, type SecretMap } from "./secrets";
 import type { Bot, Conversation, ProviderConfig, Settings } from "./types";
 
 export const uid = () => crypto.randomUUID();
@@ -25,12 +27,16 @@ export type State = {
 
 type Persisted = Omit<State, "streamingId" | "hydrated">;
 
+/** Keys and secret header values: in the OS keychain on desktop (src/lib/secrets.ts). */
+const appKeeper = new SecretKeeper<Persisted>("app", appSecretsCodec<Persisted>());
+
 /**
  * IndexedDB storage that writes at most every 700 ms. Streaming replies update the store ~30
  * times a second; serialising every chat (with images) that often made long chats janky.
  */
 function createThrottledStorage(): PersistStorage<Persisted> & { flush: () => void } {
   let pending: StorageValue<Persisted> | null = null;
+  let latest: StorageValue<Persisted> | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const flush = () => {
@@ -41,7 +47,13 @@ function createThrottledStorage(): PersistStorage<Persisted> & { flush: () => vo
     pending = null;
     // Without IndexedDB (tests in Node, locked-down webviews) set() throws synchronously, inside a timer.
     if (typeof indexedDB === "undefined") return;
-    void set(STORAGE_KEY, value).catch((error) => console.error("Could not save", error));
+    void set(STORAGE_KEY, { ...value, state: appKeeper.forDisk(value.state) }).catch((error) => console.error("Could not save", error));
+  };
+
+  // If the keychain stops taking keys, save again with them in place so nothing is lost.
+  appKeeper.onFallback = () => {
+    pending ??= latest;
+    flush();
   };
 
   if (typeof window !== "undefined") {
@@ -54,24 +66,40 @@ function createThrottledStorage(): PersistStorage<Persisted> & { flush: () => vo
     getItem: async (name) => {
       let value = await get(name);
       for (const legacy of LEGACY_KEYS) value ??= await get(legacy);
-      if (value == null) return null;
+      if (value == null) {
+        await appKeeper.open();
+        return null;
+      }
       // Older versions stored a JSON string.
-      return (typeof value === "string" ? JSON.parse(value) : value) as StorageValue<Persisted>;
+      const stored = (typeof value === "string" ? JSON.parse(value) : value) as StorageValue<Persisted>;
+      const state = await appKeeper.load(stored.state, async (blanked) => {
+        // Keys moved to the keychain: drop the plain copies, including any under older names.
+        await set(STORAGE_KEY, { ...stored, state: blanked });
+        for (const legacy of LEGACY_KEYS) await del(legacy);
+      });
+      return { ...stored, state };
     },
     setItem: (_name, value) => {
-      pending = value;
+      pending = latest = value;
       timer ??= setTimeout(flush, 700);
     },
     removeItem: async (name) => {
-      pending = null;
+      pending = latest = null;
       await del(name);
       for (const legacy of LEGACY_KEYS) await del(legacy);
+      await appKeeper.clear();
     },
   };
 }
 
 const storage = createThrottledStorage();
 export const flushStorage = storage.flush;
+
+/** "Erase all data": the saved state and its keys in the keychain. */
+export async function eraseAllData() {
+  useStore.persist.clearStorage();
+  await appKeeper.clear();
+}
 
 /** Build-time brand (see `npm run brand`); the app's own Appearance settings start from it. */
 export const DEFAULT_THEME: Settings["brand"]["theme"] = { ...brandDefaults.theme };
@@ -378,49 +406,54 @@ export function updateSettings(patch: Partial<Settings>) {
 
 // Backup ------------------------------------------------------------------
 
-/** Header values can be secrets too (Authorization, CF-Access-Client-Secret…). */
-const blankValues = (headers?: Record<string, string>) => (headers ? Object.fromEntries(Object.keys(headers).map((k) => [k, ""])) : headers);
-
-/** "Name: value" lines: values that aren't {{placeholders}} are blanked. */
-const blankHeaderLines = (text: string) =>
-  text
-    .split("\n")
-    .map((line) => {
-      const i = line.indexOf(":");
-      return i > 0 && !line.includes("{{") ? `${line.slice(0, i)}: ` : line;
-    })
-    .join("\n");
-
-/** Settings without any key, token or secret header (for "Export without keys"). */
+/** Settings without any key, token or secret header value. */
 export function withoutSecrets(settings: Settings): Settings {
-  const voice = settings.voice;
-  return {
-    ...settings,
-    search: { ...settings.search, apiKey: "" },
-    voice: {
-      ...voice,
-      elevenKey: "",
-      cloudTts: Object.fromEntries(Object.entries(voice.cloudTts ?? {}).map(([id, c]) => [id, { ...c, key: "" }])) as Settings["voice"]["cloudTts"],
-      customVoices: (voice.customVoices ?? []).map((c) => ({ ...c, key: "", headers: blankHeaderLines(c.headers ?? "") })),
-    },
-  };
+  return appSecretsCodec<{ settings: Settings }>().split({ settings }).value.settings;
 }
 
-export function exportData(includeKeys: boolean): string {
+/** Everything a backup holds, with keys and secret header values blanked, plus the keys taken out. */
+function backupParts() {
   const { providers, bots, conversations, settings } = getState();
-  return JSON.stringify(
-    {
-      app: "adt-bot",
-      version: 3,
-      exportedAt: new Date().toISOString(),
-      providers: includeKeys ? providers : providers.map((p) => ({ ...p, apiKey: "", headers: blankValues(p.headers) })),
-      bots,
-      conversations: Object.fromEntries(Object.entries(conversations).filter(([, c]) => !c.temporary)),
-      settings: includeKeys ? settings : withoutSecrets(settings),
-    },
-    null,
-    2,
-  );
+  const { value, secrets } = appSecretsCodec<{ providers: ProviderConfig[]; settings: Settings }>().split({ providers, settings });
+  const body = {
+    app: "adt-bot",
+    version: 3,
+    exportedAt: new Date().toISOString(),
+    providers: value.providers,
+    bots,
+    conversations: Object.fromEntries(Object.entries(conversations).filter(([, c]) => !c.temporary)),
+    settings: value.settings,
+  };
+  return { body, secrets };
+}
+
+/** A backup without any key (safe to keep anywhere). */
+export function exportData(): string {
+  return JSON.stringify(backupParts().body, null, 2);
+}
+
+/** A backup whose keys are sealed with a password: the file never holds them in plain text. */
+export async function exportDataWithKeys(password: string): Promise<string> {
+  const { body, secrets } = backupParts();
+  return JSON.stringify({ ...body, version: 4, secrets: await sealSecrets(secrets, password) }, null, 2);
+}
+
+/** The backup has password-protected keys (made with "Export with keys"). */
+export function backupHasSealedKeys(json: string): boolean {
+  try {
+    return isSealed(JSON.parse(json)?.secrets);
+  } catch {
+    return false;
+  }
+}
+
+/** The backup with its keys put back, for importData(). A wrong password throws. */
+export async function unlockBackup(json: string, password: string): Promise<string> {
+  const data = JSON.parse(json);
+  const secrets = await openSecrets<SecretMap>(data.secrets, password);
+  const joined = appSecretsCodec<{ providers?: ProviderConfig[]; settings?: Settings }>().join({ providers: data.providers, settings: data.settings }, secrets ?? {});
+  const { secrets: _sealed, ...rest } = data;
+  return JSON.stringify({ ...rest, providers: joined.providers, settings: joined.settings });
 }
 
 /**

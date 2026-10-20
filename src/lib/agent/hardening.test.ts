@@ -189,7 +189,7 @@ describe("backups", () => {
         },
       },
     }));
-    const json = exportData(false);
+    const json = exportData();
     for (const secret of ["sk-1", "shh", "el-1", "fish-1", "cv-1", "cv-2"]) expect(json).not.toContain(secret);
     expect(json).toContain("{{key}}");
     expect(withoutSecrets(useStore.getState().settings).voice.elevenKey).toBe("");
