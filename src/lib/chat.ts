@@ -162,6 +162,98 @@ export async function sendMessage(text: string, attachments: Attachment[] = [], 
   await runAssistant(conversationId, bot.id, opts);
 }
 
+/**
+ * A voice reply started while the user had probably, but not surely, finished speaking. Until it's
+ * kept, nothing shows in the chat, nothing is saved, and no tool runs: the model's answer streams
+ * into memory and its tool calls wait.
+ */
+export type EarlyReply = {
+  /** The words it answers. */
+  text: string;
+  /** performance.now() when it started, and when the model's first words arrived. */
+  startedAt: number;
+  firstWordsAt(): number | undefined;
+  /** Date.now() when it started (the reply message's createdAt). */
+  createdAt: number;
+  /**
+   * The turn is over and these were the words: put the question and the reply so far in the chat
+   * and let it carry on (tools included). False when it can't be kept (it failed, or the chat changed
+   * meanwhile): it's dropped, and the question should be sent the normal way.
+   */
+  keep(): boolean;
+  /** Resolves when the reply has finished (or was dropped). */
+  done: Promise<void>;
+  /** The user carried on, or said something else: stop it without a trace. */
+  discard(): void;
+};
+
+/** What runAssistant needs to hold a reply back until it's kept (see EarlyReply). */
+type Draft = {
+  user: Message;
+  /** Resolves when kept; rejects (AbortError) when dropped. */
+  kept: Promise<void>;
+  /** Set by runAssistant: shows the question and reply in the chat. */
+  show?: () => void;
+  abort?: () => void;
+  firstWordsAt?: number;
+  /** It ended (error, stopped) before being kept: there's nothing worth keeping. */
+  over?: boolean;
+};
+
+export function startEarlyReply(text: string, options: SendOptions = {}): EarlyReply | null {
+  const state = useStore.getState();
+  const bot = state.bots.find((b) => b.id === state.activeBotId);
+  const { command, rest } = parseCommand(text);
+  // A plain question only: commands, images and linked pages (which would be fetched) wait for the end of the turn.
+  if (!bot || state.streamingId || command || !rest || options.imagine || findUrls(rest).length) return null;
+  const conversationId = state.activeConversationId;
+  const conversation = conversationId ? state.conversations[conversationId] : undefined;
+  if (conversationId && !conversation) return null;
+  const lastId = conversation?.messages.at(-1)?.id;
+
+  let keep!: () => void;
+  let drop!: (reason: Error) => void;
+  const kept = new Promise<void>((resolve, reject) => {
+    keep = resolve;
+    drop = reject;
+  });
+  kept.catch(() => undefined);
+  const draft: Draft = { user: { id: uid(), role: "user", content: rest, createdAt: Date.now() }, kept };
+  const done = runAssistant(conversationId, bot.id, options, draft).catch(() => undefined);
+  let status: "pending" | "kept" | "dropped" = "pending";
+  const discard = () => {
+    if (status !== "pending") return;
+    status = "dropped";
+    drop(new DOMException("Dropped", "AbortError"));
+    draft.abort?.();
+  };
+  return {
+    text,
+    startedAt: performance.now(),
+    firstWordsAt: () => draft.firstWordsAt,
+    createdAt: draft.user.createdAt,
+    done,
+    discard,
+    keep() {
+      if (status !== "pending") return status === "kept";
+      const now = useStore.getState();
+      // Still the same chat, with nothing added since, and nothing else replying.
+      const unchanged =
+        now.activeBotId === bot.id &&
+        now.activeConversationId === conversationId &&
+        (!conversationId || now.conversations[conversationId]?.messages.at(-1)?.id === lastId);
+      if (!unchanged || now.streamingId || draft.over || !draft.show) {
+        discard();
+        return false;
+      }
+      status = "kept";
+      draft.show();
+      keep();
+      return true;
+    },
+  };
+}
+
 /** Drop everything after `messageId` (optionally replacing its text) and ask again. */
 export async function resendFrom(conversationId: string, messageId: string, newText?: string) {
   const state = useStore.getState();
@@ -242,7 +334,8 @@ export function stopEverything() {
 // The global "Stop all bots" shortcut and menu item (electron/main.cjs).
 if (typeof window !== "undefined") desktopOn("adt:stop-all", () => stopAllBots());
 
-async function runAssistant(conversationId: string, botId: string, opts: SendOptions) {
+/** `draft`: an early voice reply, kept out of the chat until it's kept (see startEarlyReply); `conversationId` may then be null (a new chat). */
+async function runAssistant(conversationId: string | null, botId: string, opts: SendOptions, draft?: Draft) {
   const state = useStore.getState();
   const bot = state.bots.find((b) => b.id === botId)!;
   const { settings, providers } = state;
@@ -250,28 +343,52 @@ async function runAssistant(conversationId: string, botId: string, opts: SendOpt
   const voiceOverride = opts.voice && settings.voice.voiceModel && providers.find((p) => p.id === settings.voice.voiceProviderId);
   const provider = voiceOverride || providers.find((p) => p.id === bot.providerId);
   const model = voiceOverride ? settings.voice.voiceModel : bot.model;
-  const history = state.conversations[conversationId].messages;
-  const temporary = Boolean(state.conversations[conversationId].temporary);
+  const conversation = conversationId ? state.conversations[conversationId] : undefined;
+  const history = [...(conversation?.messages ?? []), ...(draft ? [draft.user] : [])];
+  const temporary = Boolean(conversation?.temporary);
   const lastUser = [...history].reverse().find((m) => m.role === "user");
   const started = performance.now();
 
-  const reply: Message = { id: uid(), role: "assistant", content: "", model, createdAt: Date.now() };
-  updateConversation(conversationId, (c) => ({ ...c, messages: [...c.messages, reply] }));
+  const reply: Message = { id: uid(), role: "assistant", content: "", model, createdAt: draft?.user.createdAt ?? Date.now() };
+  /** A draft's changes wait here until it's kept; null once the reply is in the chat. */
+  let held: Partial<Message> | null = draft ? {} : null;
   // updatedAt only moves at the start and end of a reply, so the chat list doesn't re-sort per token.
-  const patchReply = (patch: Partial<Message>) =>
-    updateConversation(conversationId, (c) => ({
+  const patchReply = (patch: Partial<Message>) => {
+    if (held) return void Object.assign(held, patch);
+    updateConversation(conversationId!, (c) => ({
       ...c,
       messages: c.messages.map((m) => (m.id === reply.id ? { ...m, ...patch } : m)),
     }));
+  };
 
   const own = new AbortController();
   if (opts.signal?.aborted) own.abort();
   opts.signal?.addEventListener("abort", () => own.abort(), { once: true });
   const signal = own.signal;
   running.add(own);
-  if (!opts.background) {
+  const foreground = () => {
+    if (opts.background) return;
     controller = own;
     useStore.setState({ streamingId: conversationId });
+  };
+  if (draft) {
+    draft.abort = () => own.abort();
+    draft.show = () => {
+      if (!held) return;
+      conversationId ??= useStore.getState().activeConversationId ?? newConversation(botId).id;
+      const shown = { ...reply, ...held };
+      held = null;
+      updateConversation(conversationId, (c) => ({
+        ...c,
+        title: c.messages.length ? c.title : titleFrom(draft.user.content),
+        messages: [...c.messages, draft.user, shown],
+        updatedAt: Date.now(),
+      }));
+      foreground();
+    };
+  } else {
+    updateConversation(conversationId!, (c) => ({ ...c, messages: [...c.messages, reply] }));
+    foreground();
   }
 
   try {
@@ -368,6 +485,7 @@ async function runAssistant(conversationId: string, botId: string, opts: SendOpt
           return;
         }
         firstMs ??= performance.now() - started;
+        if (draft && event.type === "text") draft.firstWordsAt ??= performance.now();
         if (event.type === "text") content += event.text;
         else reasoning += event.text;
         // Repaint at most ~20 times a second; the store work per paint stays small.
@@ -394,9 +512,14 @@ async function runAssistant(conversationId: string, botId: string, opts: SendOpt
         await runToolLoop({
           request,
           tools: agentTools,
+          // An early voice reply runs no tool until the user has surely finished speaking.
+          hold: draft?.kept,
           context: {
             bot,
-            conversationId,
+            // A draft's chat may only exist once it's kept, which is before any tool runs.
+            get conversationId() {
+              return conversationId ?? "";
+            },
             settings,
             providers,
             platform,
@@ -447,6 +570,8 @@ async function runAssistant(conversationId: string, botId: string, opts: SendOpt
       }
     }
 
+    // An early voice reply that has finished writing waits here until it's kept (or dropped).
+    if (draft) await draft.kept;
     const remembered = [...content.matchAll(REMEMBER_TAG)].map((m) => (m[1] ?? m[2] ?? "").trim());
     if (remembered.length && !temporary) addMemory(bot.id, remembered);
     const finalText = stripMemoryTags(content);
@@ -460,18 +585,23 @@ async function runAssistant(conversationId: string, botId: string, opts: SendOpt
     if (settings.autoSpeak && finalText && !signal.aborted && !voiceModeActive && !opts.background) {
       speak(finalText, { voice: settings.voice, providers, useProxy: settings.useProxy });
     }
-    if (!signal.aborted) void autoTitle(conversationId);
+    if (!signal.aborted && conversationId) void autoTitle(conversationId);
   } catch (error) {
     if ((error as Error).name !== "AbortError") patchReply({ error: (error as Error).message, status: undefined });
     else patchReply({ status: undefined });
   } finally {
     running.delete(own);
-    updateConversation(conversationId, (c) => ({ ...c, updatedAt: Date.now() }));
-    if (!opts.background) {
-      controller = null;
-      useStore.setState({ streamingId: null });
+    if (held) {
+      // A draft that ended before it was kept (dropped, failed): it never reached the chat or the stop button.
+      if (draft) draft.over = true;
+    } else {
+      updateConversation(conversationId!, (c) => ({ ...c, updatedAt: Date.now() }));
+      if (!opts.background) {
+        controller = null;
+        useStore.setState({ streamingId: null });
+      }
+      flushStorage();
     }
-    flushStorage();
   }
 }
 

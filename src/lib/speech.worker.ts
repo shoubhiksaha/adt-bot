@@ -5,7 +5,7 @@ import { createStore, get, set } from "idb-keyval";
 import * as ort from "onnxruntime-web/webgpu";
 import ortMjs from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.mjs?url";
 import ortWasm from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url";
-import { FRAME, Segmenter, type SegmentEvent } from "./segmenter";
+import { FRAME, lullFor, patientFor, Segmenter, type SegmentEvent, startsEarly } from "./segmenter";
 
 // Use the copies of ONNX Runtime bundled with the app, so nothing is fetched from a CDN.
 ort.env.wasm.wasmPaths = { mjs: ortMjs, wasm: ortWasm };
@@ -164,10 +164,13 @@ const PARTIAL_GAP_MS = 700;
 const PARTIAL_MIN_SAMPLES = 32000;
 const PARTIAL_NEW_SAMPLES = 8000;
 /**
- * How long to wait when the turn model thinks the speaker is mid-thought, following the user's
- * "end of turn" setting (quick 450 ms → 1.2 s, normal 700 ms → 1.6 s, patient 1.2 s → 2.5 s).
+ * Early replies: when the turn has probably ended but isn't certain yet, the transcript is offered
+ * to voice mode ("tentative"), which may start the answer without speaking it (see startsEarly).
  */
-const patientFor = (endSilenceMs: number) => Math.round(Math.min(2500, Math.max(1200, endSilenceMs * 2.2)));
+let early = false;
+/** The utterance version last offered, and the one that last ended (its transcript goes out as the utterance). */
+let offered = -1;
+let ended = -1;
 let levelTick = 0;
 const frames: Float32Array[] = [];
 let pumping = false;
@@ -212,15 +215,21 @@ function handle(event: SegmentEvent) {
   } else if (event.type === "silence") {
     const { version, audio } = event;
     void turnFinished(audio).then(({ probability, ms }) => {
-      if (probability === null) return;
-      segmenter.decide(version, probability > 0.5);
-      live({ type: "turn", probability: Math.round(probability * 100) / 100, ms });
+      if (probability !== null) {
+        segmenter.decide(version, probability > 0.5);
+        live({ type: "turn", probability: Math.round(probability * 100) / 100, ms });
+      }
+      if (startsEarly(probability)) offer(version);
     });
+  } else if (event.type === "lull") {
+    offer(event.version);
   } else if (event.type === "resume") {
     if (speculative?.version === event.version) {
       speculative = null;
       cancelSlot("speculative");
     }
+    // The speaker carried on: an early reply to what they'd said so far is now wrong.
+    if (offered === event.version) live({ type: "resume" });
   } else if (
     event.type === "progress" &&
     partials &&
@@ -246,9 +255,24 @@ function handle(event: SegmentEvent) {
   }
 }
 
+/** Offers the transcript of utterance `version` as a probable end of turn, once it's ready. */
+function offer(version: number) {
+  const guess = speculative;
+  if (!early || mode !== "local" || offered === version || guess?.version !== version) return;
+  offered = version;
+  const listener = owner;
+  void guess.text
+    .then((text) => {
+      // Not if the turn ended meanwhile (the utterance follows) or the speaker carried on.
+      if (text && speculative === guess && ended !== version) live({ type: "tentative", text }, [], listener);
+    })
+    .catch(() => undefined);
+}
+
 async function finish(event: Extract<SegmentEvent, { type: "end" }>) {
   // The listener that heard it gets the result, even if another takes the microphone meanwhile.
   const listener = owner;
+  ended = event.version;
   live({ type: "transcribing" });
   if (mode === "cloud") {
     live({ type: "utterance", audio: event.audio }, [event.audio.buffer]);
@@ -281,7 +305,9 @@ self.onmessage = async (event: MessageEvent) => {
       size = data.size ?? size;
       language = data.language ?? language;
       partials = Boolean(data.partials);
-      segmenter.configure({ endSilenceMs: data.endSilenceMs ?? 700, patientEndMs: patientFor(data.endSilenceMs ?? 700), startThreshold: 0.6 });
+      early = Boolean(data.early);
+      const endSilenceMs = data.endSilenceMs ?? 700;
+      segmenter.configure({ endSilenceMs, patientEndMs: patientFor(endSilenceMs), lullMs: lullFor(endSilenceMs), startThreshold: 0.6 });
       segmenter.reset();
       // Only the newest microphone feeds the detector; two interleaved streams would garble both.
       port?.close();
@@ -303,8 +329,11 @@ self.onmessage = async (event: MessageEvent) => {
       // Settings from a listener that no longer owns the microphone (e.g. closing late) don't apply.
       if (data.listener !== undefined && data.listener !== owner) return;
       if (data.startThreshold !== undefined) segmenter.configure({ startThreshold: data.startThreshold });
-      if (data.endSilenceMs !== undefined) segmenter.configure({ endSilenceMs: data.endSilenceMs, patientEndMs: patientFor(data.endSilenceMs) });
+      if (data.endSilenceMs !== undefined) {
+        segmenter.configure({ endSilenceMs: data.endSilenceMs, patientEndMs: patientFor(data.endSilenceMs), lullMs: lullFor(data.endSilenceMs) });
+      }
       if (data.partials !== undefined) partials = data.partials;
+      if (data.early !== undefined) early = data.early;
       if (data.muted !== undefined) {
         muted = data.muted;
         if (muted) {

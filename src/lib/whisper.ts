@@ -137,6 +137,10 @@ export type ListenerEvent =
   /** The sound that started a turn was too short to be speech. */
   | { type: "discard" }
   | { type: "partial"; text: string }
+  /** The speaker has probably finished (not certain yet): what they said, to start the reply early. */
+  | { type: "tentative"; text: string }
+  /** They carried on after a "tentative": drop anything started for it. */
+  | { type: "resume" }
   | { type: "transcribing" }
   /** `ms`: transcription time; `waitMs`: silence waited before the turn was judged over. */
   | { type: "utterance"; text?: string; audio?: Float32Array; ms?: number; waitMs?: number }
@@ -165,6 +169,8 @@ export type ListenerOptions = {
   size: SpeechModel;
   endSilenceMs: number;
   partials: boolean;
+  /** Report probable ends of turn ("tentative"), for early replies in voice mode. */
+  early?: boolean;
   onEvent: (event: ListenerEvent) => void;
 };
 
@@ -292,6 +298,7 @@ export class Listener {
         language: language(),
         endSilenceMs: options.endSilenceMs,
         partials: options.partials,
+        early: Boolean(options.early),
         port: channel.port2,
       },
       [channel.port2],

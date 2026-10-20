@@ -92,6 +92,8 @@ export type LoopOptions = {
   mode: "auto" | "native" | "prompted";
   maxSteps: number;
   callbacks: LoopCallbacks;
+  /** Tool calls wait for this before running; if it rejects, none run (an early voice reply that was dropped). */
+  hold?: Promise<void>;
 };
 
 const findToolsSchema: ToolSchema = {
@@ -162,6 +164,7 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
     }
     if (!asked || !asked.calls.length) return;
     if (asked.text) callbacks.onEvent({ type: "text", text: "\n\n" });
+    if (options.hold) await options.hold;
 
     turns.push({ raw: asked.raw, text: asked.text, calls: asked.calls, results: await runStep(asked.calls) });
   }

@@ -159,7 +159,7 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
               className="latency"
               title={
                 state.timing
-                  ? `You stopped talking → first word: waiting for you to finish ${(state.timing.turn / 1000).toFixed(1)}s, understanding speech ${(state.timing.stt / 1000).toFixed(1)}s, model ${(state.timing.model / 1000).toFixed(1)}s, voice ${(state.timing.speech / 1000).toFixed(1)}s`
+                  ? `You stopped talking → first word: waiting for you to finish ${(state.timing.turn / 1000).toFixed(1)}s, understanding speech ${(state.timing.stt / 1000).toFixed(1)}s, model ${(state.timing.model / 1000).toFixed(1)}s${state.timing.early ? ` (it started ${(state.timing.early / 1000).toFixed(1)}s early, during your pause)` : ""}, voice ${(state.timing.speech / 1000).toFixed(1)}s`
                   : "From when you stopped talking to the first spoken word"
               }
             >

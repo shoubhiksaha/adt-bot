@@ -1,10 +1,10 @@
-import { sendMessage, setVoiceModeActive, stopStreaming, stripMemoryTags } from "./chat";
+import { type EarlyReply, sendMessage, setVoiceModeActive, startEarlyReply, stopStreaming, stripMemoryTags } from "./chat";
 import { splitThink } from "./llm";
 import { selectBot, startNewChat, updateSettings, useStore } from "./store";
 import { localChoice, localVoiceReady } from "./local-tts";
 import { chime, createSpeaker, duckSpeech, type Speaker, takeSentences } from "./tts";
 import { END_SILENCE_MS, type Engine, ENGINE_LABELS, listen, type ListenSession, resolveEngine, stopReadAloud, transcribe } from "./voice";
-import { isEcho, isLikelyHallucination, isSubstantial, matchWakeWord, parseVoiceCommand } from "./voice-commands";
+import { isEcho, isLikelyHallucination, isSubstantial, matchWakeWord, normalize, parseVoiceCommand } from "./voice-commands";
 import { Listener, type ListenerEvent, localSpeechModel, onWhisperProgress, SPEECH_MODELS, toWav } from "./whisper";
 
 /** What the bot is doing during a tool step, for the voice screen. */
@@ -50,8 +50,11 @@ export type VoiceState = {
   download: number | null;
   /** Time from the end of the user's turn to the first spoken word. */
   latencyMs: number | null;
-  /** Where that time went: speech-to-text, waiting for the model's first words, and starting speech. */
-  timing: { turn: number; stt: number; model: number; speech: number } | null;
+  /**
+   * Where that time went: speech-to-text, waiting for the model's first words, and starting speech.
+   * `early`: how much of the model's wait was saved by starting the reply before the turn was over.
+   */
+  timing: { turn: number; stt: number; model: number; speech: number; early?: number } | null;
   engineLabel: string;
   wakeName: string;
 };
@@ -61,6 +64,9 @@ const IDLE_TO_STANDBY_MS = 60_000;
 const ECHO_TAIL_MS = 450;
 /** While tools work silently, say "Still working on it" after this long without speaking. */
 const STILL_WORKING_MS = 8000;
+
+/** The same words, ignoring case and punctuation (an early reply is kept only for what was finally heard). */
+const sameWords = (a: string, b: string) => normalize(a) === normalize(b);
 
 /** Resolves once no reply is streaming (sendMessage ignores new messages until then). */
 function streamStopped(timeoutMs = 5000): Promise<void> {
@@ -99,9 +105,11 @@ export class VoiceSession {
   /** What the bot said last, to recognise its echo arriving just after it stops. */
   private lastSpoken = "";
   /** When the bot last stopped speaking: sound right after it may be its echo (room, Bluetooth delay). */
-  private speechEndedAt = 0;
+  private speechEndedAt = -Infinity;
   /** The user may be cutting in: the bot's voice is turned down until we know (see "speech"). */
   private ducked = false;
+  /** A reply started during a pause that probably ended the turn; kept if the turn ends with the same words. */
+  private early: EarlyReply | null = null;
 
   constructor(private hooks: { onState: (state: VoiceState) => void; onClose: () => void; initialRequest?: string }) {
     const { settings, providers } = useStore.getState();
@@ -180,6 +188,7 @@ export class VoiceSession {
           size: voice.localModel,
           endSilenceMs: END_SILENCE_MS[voice.endSilence],
           partials: true,
+          early: voice.earlyReply,
           onEvent: (event) => void this.onListenerEvent(event),
         });
         // Closed while getting ready: don't leave the microphone on.
@@ -208,6 +217,7 @@ export class VoiceSession {
   close(notify = true) {
     if (this.closed) return;
     this.closed = true;
+    this.dropEarly();
     this.clearIdle();
     this.offProgress?.();
     this.listener?.close();
@@ -266,6 +276,7 @@ export class VoiceSession {
 
   private enterStandby() {
     if (this.closed) return;
+    this.dropEarly();
     this.clearIdle();
     this.set({ phase: "standby", partial: "", sentence: "", wakeName: this.wakeNames()[0] ?? "ADT" });
     if (!this.usesVad) void this.deviceLoop();
@@ -317,6 +328,14 @@ export class VoiceSession {
       this.unduck();
       // Too short to be speech: back to listening rather than showing "Listening…" forever.
       if (phase === "hearing") this.enterListening();
+      return;
+    }
+    if (event.type === "tentative") {
+      this.startEarly(event.text);
+      return;
+    }
+    if (event.type === "resume") {
+      this.dropEarly();
       return;
     }
     if (event.type === "silent") {
@@ -402,17 +421,45 @@ export class VoiceSession {
     duckSpeech(false);
   }
 
+  /**
+   * The user has probably finished: start the answer now, silently, so it's under way by the time
+   * the turn is surely over. Kept only if the turn ends with these words (see onUtterance); nothing
+   * shows, is saved or runs until then. Only for a plain question to the bot while it's quiet.
+   */
+  private startEarly(text: string) {
+    if (!this.context().voice.earlyReply || this.phase() !== "hearing" || this.segmentDuringSpeech) return;
+    if (this.early && sameWords(this.early.text, text)) return;
+    this.dropEarly();
+    if (isLikelyHallucination(text) || parseVoiceCommand(text, useStore.getState().bots)) return;
+    const modes = useStore.getState().settings.modes;
+    this.early = startEarlyReply(text, { search: modes.search, think: modes.think, voice: true });
+  }
+
+  private dropEarly() {
+    this.early?.discard();
+    this.early = null;
+  }
+
   private async onUtterance(text: string) {
     const { phase } = this.state;
     const duringSpeech = this.segmentDuringSpeech;
     this.segmentDuringSpeech = false;
+    // The early reply is kept only when the turn ended with the words it answers, as a plain question.
+    let early = this.early;
+    this.early = null;
+    if (early && !(phase === "hearing" && sameWords(early.text, text) && !parseVoiceCommand(text, useStore.getState().bots))) {
+      early.discard();
+      early = null;
+    }
     if (!text || isLikelyHallucination(text)) {
+      early?.discard();
       this.unduck();
       if (phase === "hearing") this.enterListening();
       return;
     }
     // Started while the bot was talking but finished after it stopped: drop it if it's the bot's own voice.
     if (duringSpeech && (phase === "listening" || phase === "hearing") && isEcho(text, this.lastSpoken)) {
+      early?.discard();
       if (phase === "hearing") this.enterListening();
       return;
     }
@@ -442,7 +489,7 @@ export class VoiceSession {
     } else if (phase === "muted") {
       return;
     }
-    await this.process(text);
+    await this.process(text, early);
   }
 
   private matchWake(text: string): { rest: string } | null {
@@ -468,9 +515,11 @@ export class VoiceSession {
 
   // Answering ---------------------------------------------------------------------
 
-  private async process(text: string) {
+  /** `early`: a reply already started for exactly this question (see startEarly). */
+  private async process(text: string, early: EarlyReply | null = null) {
     const { bots } = useStore.getState();
     const command = parseVoiceCommand(text, bots);
+    if (command) early?.discard();
     this.set({ heard: text, partial: "" });
     switch (command?.type) {
       case "stop":
@@ -514,7 +563,7 @@ export class VoiceSession {
         await this.ask(command.prompt, { imagine: true });
         return;
       default:
-        await this.ask(text);
+        await this.ask(text, {}, early);
     }
   }
 
@@ -533,16 +582,19 @@ export class VoiceSession {
     return turn === this.turn && !this.closed;
   }
 
-  private async ask(text: string, options: { search?: boolean; imagine?: boolean } = {}) {
+  private async ask(text: string, options: { search?: boolean; imagine?: boolean } = {}, early: EarlyReply | null = null) {
     const turn = ++this.turn;
     this.clearIdle();
     this.unduck();
     this.listener?.setSensitivity("strict");
     this.set({ phase: "thinking", reply: "", sentence: "", spokenChars: 0, activity: "", latencyMs: null, timing: null, error: null });
-    const startedAt = Date.now();
+    // An early reply's message was created when it started.
+    const startedAt = early?.createdAt ?? Date.now();
     const askedAt = performance.now();
     let firstTextAt = 0;
     let spokenAny = false;
+    /** How much of the model's wait an early reply saved (it had been running this long, up to its first words). */
+    let savedMs = 0;
     /** Last time the bot made a sound in this turn (for "Still working on it"). */
     let lastSoundAt = performance.now();
     const speaker = createSpeaker(this.context(), {
@@ -559,6 +611,7 @@ export class VoiceSession {
               stt: Math.round(askedAt - this.endOfSpeechAt - this.turnMs),
               model: Math.round((firstTextAt || now) - askedAt),
               speech: Math.round(now - (firstTextAt || now)),
+              ...(savedMs ? { early: Math.round(savedMs) } : {}),
             },
           });
         }
@@ -656,11 +709,22 @@ export class VoiceSession {
       stopStreaming();
       await streamStopped(10_000);
     }
-    if (turn !== this.turn || this.closed) return clearInterval(ticker);
+    if (turn !== this.turn || this.closed) {
+      early?.discard();
+      return clearInterval(ticker);
+    }
     const unsubscribe = useStore.subscribe(() => feed(false));
     const modes = useStore.getState().settings.modes;
     try {
-      await sendMessage(text, [], { search: options.search ?? modes.search, think: modes.think, imagine: options.imagine, voice: true });
+      if (early?.keep()) {
+        const now = performance.now();
+        savedMs = Math.max(0, Math.min(now, early.firstWordsAt() ?? now) - early.startedAt);
+        // What it has written so far goes straight to the speaker.
+        feed(false);
+        await early.done;
+      } else {
+        await sendMessage(text, [], { search: options.search ?? modes.search, think: modes.think, imagine: options.imagine, voice: true });
+      }
     } finally {
       unsubscribe();
       clearInterval(ticker);
@@ -683,6 +747,7 @@ export class VoiceSession {
 
   private interrupt() {
     this.turn++;
+    this.dropEarly();
     if (this.speaker) {
       this.lastSpoken = this.speaker.spoken;
       if (this.speaker.speaking) this.speechEndedAt = performance.now();

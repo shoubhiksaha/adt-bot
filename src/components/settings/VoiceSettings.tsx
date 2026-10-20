@@ -193,6 +193,14 @@ export function VoiceSettings() {
             </select>
           </div>
         </div>
+        {engine === "whisper-local" && (
+          <Toggle
+            checked={voice.earlyReply}
+            onChange={(v) => set({ earlyReply: v })}
+            title="Start answering during pauses"
+            hint="When you've probably finished, the bot starts on its answer before it's sure, which can save a second or more. Nothing is shown, said or done until you've really finished; if you keep talking, it's dropped (that can cost a few extra tokens)."
+          />
+        )}
         <Toggle checked={voice.concise} onChange={(v) => set({ concise: v })} title="Short spoken answers" hint="Bots answer in a sentence or two, like a phone call, and skip formatting." />
         <div className="field">
           <label htmlFor="voice-model">Model for voice conversations</label>

@@ -188,6 +188,11 @@ export type VoiceSettings = {
   endSilence: "fast" | "normal" | "patient";
   /** Interrupt the bot by talking. "auto" = instantly with natural voices, after a short check with device voices. */
   bargeIn: "auto" | "on" | "off";
+  /**
+   * Start answering during a pause that probably ends your turn, before it's certain (on-device
+   * speech recognition). Nothing is shown, saved or run until the turn is over; dropped if you carry on.
+   */
+  earlyReply: boolean;
   /** Short, spoken-style answers in voice mode. */
   concise: boolean;
   /** Optional faster model just for voice conversations ("" = the bot's own model). */

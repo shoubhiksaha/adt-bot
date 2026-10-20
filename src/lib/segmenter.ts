@@ -14,6 +14,11 @@ export type SegmenterOptions = {
   pauseMs?: number;
   /** Silence that ends a turn the turn model judged unfinished (the speaker is mid-thought). */
   patientEndMs?: number;
+  /**
+   * Silence after which the speaker has probably finished, even if the turn model thought not
+   * ("lull" event): voice mode may start the reply early, without speaking it yet.
+   */
+  lullMs?: number;
   /** Speech shorter than this is treated as a noise blip. */
   minSpeechMs?: number;
   /** Audio kept from just before speech starts, so first syllables aren't clipped. */
@@ -33,6 +38,8 @@ export type SegmentEvent =
   | { type: "discard" }
   /** Silence just began: a good moment to start transcribing speculatively. */
   | { type: "pause"; audio: Float32Array; version: number }
+  /** `lullMs` of silence: the speaker has probably finished, though the turn isn't over yet. Once per pause. */
+  | { type: "lull"; version: number }
   /** Speech continued, so any speculative transcription for `version` is stale. */
   | { type: "resume"; version: number }
   /** `silenceMs`: how long the speaker had been quiet when the turn was judged over. */
@@ -69,6 +76,7 @@ export class Segmenter {
       settleMs: 200,
       pauseMs: 128,
       patientEndMs: 2000,
+      lullMs: 1000,
       ...options,
     };
   }
@@ -164,6 +172,9 @@ export class Segmenter {
     if (this.state === "trailing" && this.silence === frames(o.settleMs) && this.speechFrames >= frames(o.minSpeechMs)) {
       events.push({ type: "silence", audio: concat(this.frames), version: this.version });
     }
+    if (this.state === "trailing" && this.silence === frames(o.lullMs) && this.speechFrames >= frames(o.minSpeechMs)) {
+      events.push({ type: "lull", version: this.version });
+    }
 
     const verdict = this.verdict?.version === this.version ? this.verdict : null;
     const endAfter = verdict ? (verdict.complete ? Math.min(o.endSilenceMs, o.settleMs) : Math.max(o.endSilenceMs, o.patientEndMs)) : o.endSilenceMs;
@@ -181,6 +192,25 @@ export class Segmenter {
     }
     return events;
   }
+}
+
+/**
+ * How long to wait when the turn model thinks the speaker is mid-thought, following the user's
+ * "end of turn" setting (quick 450 ms → 1.2 s, normal 700 ms → 1.6 s, patient 1.2 s → 2.5 s).
+ */
+export const patientFor = (endSilenceMs: number) => Math.round(Math.min(2500, Math.max(1200, endSilenceMs * 2.2)));
+
+/** Halfway through that longer wait, the speaker has probably finished after all ("lull"). */
+export const lullFor = (endSilenceMs: number) => Math.max(endSilenceMs, Math.round(patientFor(endSilenceMs) / 2));
+
+/**
+ * Whether the turn model's verdict on a pause (null: no model) makes it worth starting the reply
+ * early. Over 0.5 the turn ends at once anyway; an unsure verdict means the longer wait. On synthetic
+ * questions, finished ones mostly scored over 0.85 and cut-off ones under 0.1, with the odd finished
+ * one in between (0.15); anything lower waits for the lull.
+ */
+export function startsEarly(probability: number | null): boolean {
+  return probability === null || (probability >= 0.1 && probability <= 0.5);
 }
 
 export function concat(chunks: Float32Array[]): Float32Array {

@@ -156,6 +156,7 @@ export const defaultSettings: Settings = {
     elevenModel: "eleven_flash_v2_5",
     endSilence: "normal",
     bargeIn: "auto",
+    earlyReply: true,
     concise: true,
     voiceProviderId: "",
     voiceModel: "",
