@@ -301,6 +301,9 @@ function createWindow() {
     minWidth: 380,
     minHeight: 500,
     title: "ADT Bot",
+    // Electron remembers this window's size, position and maximized/full-screen state between runs.
+    name: "main",
+    windowStatePersistence: true,
     backgroundColor: "#0b0c0e",
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     autoHideMenuBar: process.platform !== "darwin",
