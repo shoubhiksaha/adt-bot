@@ -170,7 +170,7 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
     let asked: Extract<StreamEvent, { type: "tool_calls" }> | null = null;
     // After an action on screen nobody has looked at, an answer now may be sent back for one look:
     // hold this step's text until it's clear, so a premature "done" never shows.
-    const hold = unseen !== null && !nudged && !last;
+    const holdText = unseen !== null && !nudged && !last;
     const held: StreamEvent[] = [];
     try {
       for await (const event of streamChat({
@@ -182,7 +182,7 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
         toolMode: mode,
       })) {
         if (event.type === "tool_calls") asked = event;
-        else if (hold && (event.type === "text" || event.type === "reasoning")) held.push(event);
+        else if (holdText && (event.type === "text" || event.type === "reasoning")) held.push(event);
         else callbacks.onEvent(event);
       }
     } catch (error) {
@@ -200,7 +200,7 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
     }
     if (!asked || !asked.calls.length) {
       const answer = held.map((e) => (e.type === "text" ? e.text : "")).join("");
-      if (hold && unseen && turns.length && claimsSuccess(answer)) {
+      if (holdText && unseen && turns.length && claimsSuccess(answer)) {
         // Ask for one look first: the note rides on the last result, and this answer is dropped.
         nudged = true;
         const previous = turns[turns.length - 1];
