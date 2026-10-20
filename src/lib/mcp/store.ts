@@ -9,10 +9,21 @@ import { isDesktop } from "../desktop";
 import { connectorSecretsCodec, SecretKeeper } from "../secrets";
 import { useStore } from "../store";
 import { providerFetch } from "../transport";
-import { buildAgentTools, CONNECTORS_GROUP, type ConnectorConfig, ConnectorManager, type ConnectorStatus, syncAgentTools } from "./connectors";
+import {
+  buildAgentTools,
+  CONNECTORS_GROUP,
+  type ConnectorConfig,
+  ConnectorManager,
+  type ConnectorStatus,
+  launchApproved,
+  syncAgentTools,
+} from "./connectors";
 import type { FetchFn } from "./http";
+import { approveTools, launchKey } from "./security";
 
 const STORAGE_KEY = "adtbot-connectors";
+/** Set once existing servers were marked as approved (see startConnectors). */
+const TRUST_KEY = "adtbot-connectors-trust";
 
 type State = { loaded: boolean; servers: ConnectorConfig[]; status: Record<string, ConnectorStatus> };
 
@@ -41,12 +52,29 @@ function fetchFor(config: ConnectorConfig): FetchFn {
 export const connectorManager = new ConnectorManager({
   fetchFor,
   onStatus: (id, status) => useConnectors.setState((s) => ({ status: { ...s.status, [id]: status } })),
-  onTools: (id, tools) => updateServer(id, { tools }),
+  // The first listing after the user adds a server is what they approved; later changes wait for review.
+  onTools: (id, tools) => {
+    const server = getServer(id);
+    updateServer(id, server && !server.approvedTools ? { tools, approvedTools: approveTools(undefined, tools) } : { tools });
+  },
+  onEra: (id, protocolEra) => updateServer(id, { protocolEra }),
 });
 
 /** Tokens, header and environment values: in the OS keychain on desktop (src/lib/secrets.ts). */
 const keeper = new SecretKeeper("connectors", connectorSecretsCodec);
 keeper.onFallback = () => save();
+
+/** The user reviewed changed or new tools and accepts them as they are now (all of them without names). */
+export function approveToolChanges(id: string, names?: string[]) {
+  const server = getServer(id);
+  if (server) updateServer(id, { approvedTools: approveTools(server.approvedTools, server.tools, names) });
+}
+
+/** The user confirmed a local server's command (shown in full) on this device. */
+export function approveLaunch(id: string) {
+  const server = getServer(id);
+  if (server) updateServer(id, { approvedLaunch: launchKey(server) });
+}
 
 function save() {
   const { servers, loaded } = useConnectors.getState();
@@ -96,7 +124,7 @@ export async function refreshServer(server: ConnectorConfig) {
 /** "Test connection": a fresh connection, handshake and tool listing. */
 export async function testServer(server: ConnectorConfig) {
   await connectorManager.disconnect(server.id, false);
-  return refreshServer(server);
+  return connectorManager.listTools(server, undefined, true);
 }
 
 const runnable = (server: ConnectorConfig) => server.transport === "http" || isDesktop();
@@ -120,12 +148,27 @@ export function startConnectors() {
   useConnectors.subscribe((state, previous) => {
     if (state.servers !== previous.servers) syncTools();
   });
-  void get<ConnectorConfig[]>(STORAGE_KEY)
-    .then((saved) => keeper.load(Array.isArray(saved) ? saved : [], (blanked) => set(STORAGE_KEY, blanked)))
-    .then((servers) => {
+  void Promise.all([get<ConnectorConfig[]>(STORAGE_KEY), get<number>(TRUST_KEY)])
+    .then(([saved, trusted]) =>
+      keeper.load(Array.isArray(saved) ? saved : [], (blanked) => set(STORAGE_KEY, blanked)).then((servers) => ({ servers, trusted })),
+    )
+    .then(({ servers: loaded, trusted }) => {
+      let servers = loaded;
+      if (!trusted) {
+        // Once, for servers saved before these checks existed (added by the user in Settings, the
+        // only way to add one): their command and their last tool list count as approved. After
+        // this, a server that arrives any other way waits for the user's confirmation.
+        servers = servers.map((s) => ({
+          ...s,
+          approvedLaunch: s.transport === "stdio" && s.approvedLaunch === undefined ? launchKey(s) : s.approvedLaunch,
+          approvedTools: s.approvedTools ?? (s.tools?.length ? approveTools(undefined, s.tools) : undefined),
+        }));
+        void set(TRUST_KEY, 1).catch(() => undefined);
+      }
       useConnectors.setState({ servers, loaded: true });
+      if (!trusted) save();
       for (const server of useConnectors.getState().servers) {
-        if (server.enabled && runnable(server)) void refreshServer(server).catch(() => undefined);
+        if (server.enabled && runnable(server) && launchApproved(server)) void refreshServer(server).catch(() => undefined);
       }
     })
     .catch(() => useConnectors.setState({ loaded: true }));

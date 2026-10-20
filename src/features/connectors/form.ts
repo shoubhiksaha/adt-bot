@@ -1,4 +1,19 @@
 import type { ConnectorConfig } from "../../lib/mcp/connectors";
+import { commandLine } from "../../lib/mcp/security";
+
+const SECRET_NAME = /key|token|secret|passw|auth|credential|cookie/i;
+
+/**
+ * What the user confirms before a local server first runs: the whole command line, never
+ * shortened (values of variables that look like secrets are hidden; everything else is shown).
+ */
+export function launchConfirmText(c: Pick<ConnectorConfig, "name" | "command" | "args" | "env" | "cwd">): string {
+  const env = Object.fromEntries(Object.entries(c.env ?? {}).map(([k, v]) => [k, SECRET_NAME.test(k) && v ? "•••" : v]));
+  return (
+    `Run this command on your computer for the "${c.name}" connector?\n\n${commandLine({ ...c, env })}\n\n` +
+    "It runs with your permissions: it can read and change your files and use the network. Only allow servers you trust."
+  );
+}
 
 /** Splits a command line into arguments, honouring "double" and 'single' quotes and backslashes. */
 export function splitArgs(text: string): string[] {

@@ -29,6 +29,8 @@ export type ToolContext = {
   signal: AbortSignal;
   /** Short progress line shown under the tool while it runs. */
   progress: (text: string) => void;
+  /** The chat's id for this call (a connector shows its server's questions under it). */
+  callId?: string;
   /** Nobody can answer an approval card (voice mode): calls that would ask are refused instead. */
   unattended?: boolean;
   /** The request came from people other than the owner (a chat room): Full access doesn't apply. */

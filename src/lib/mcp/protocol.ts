@@ -7,14 +7,45 @@
  * labelled lines, structuredContent when content is empty, an explicit "nothing returned").
  */
 import type { ToolDisplay } from "../types";
+import { stripHidden } from "./unicode";
 
-/** What we ask for; the server may answer with any version in SUPPORTED_PROTOCOL_VERSIONS. */
-export const LATEST_PROTOCOL_VERSION = "2025-06-18";
-export const SUPPORTED_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+/**
+ * "Modern" versions (2026-07-28 on) are stateless: no handshake, every request carries its version
+ * and capabilities in _meta. "Legacy" versions open with initialize. Newest first: the client
+ * speaks the newest one the server supports.
+ */
+export const MODERN_PROTOCOL_VERSIONS = ["2026-07-28"];
+export const LEGACY_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+/** What we ask for in initialize; the server may answer with any older legacy version. */
+export const LATEST_LEGACY_VERSION = LEGACY_PROTOCOL_VERSIONS[0];
+export const LATEST_PROTOCOL_VERSION = MODERN_PROTOCOL_VERSIONS[0];
+export const SUPPORTED_PROTOCOL_VERSIONS = [...MODERN_PROTOCOL_VERSIONS, ...LEGACY_PROTOCOL_VERSIONS];
 
 export const LIST_TIMEOUT_MS = 15_000;
 export const CALL_TIMEOUT_MS = 60_000;
 export const MAX_RESULT_CHARS = 20_000;
+
+/** Error codes the 2026-07-28 spec defines; seeing one means the server is modern. */
+export const HEADER_MISMATCH = -32020;
+export const MISSING_CLIENT_CAPABILITY = -32021;
+export const UNSUPPORTED_PROTOCOL_VERSION = -32022;
+export const MODERN_ERROR_CODES = [HEADER_MISMATCH, MISSING_CLIENT_CAPABILITY, UNSUPPORTED_PROTOCOL_VERSION];
+
+/** Per-request _meta keys (modern versions). */
+export const META = {
+  protocolVersion: "io.modelcontextprotocol/protocolVersion",
+  clientInfo: "io.modelcontextprotocol/clientInfo",
+  clientCapabilities: "io.modelcontextprotocol/clientCapabilities",
+  serverInfo: "io.modelcontextprotocol/serverInfo",
+  subscriptionId: "io.modelcontextprotocol/subscriptionId",
+} as const;
+export const TASKS_EXTENSION = "io.modelcontextprotocol/tasks";
+
+/** A result's type; servers before 2026-07-28 leave it out, which means "complete". */
+export function resultTypeOf(result: unknown): string {
+  const type = (result as { resultType?: unknown } | null)?.resultType;
+  return typeof type === "string" ? type : "complete";
+}
 
 export type JsonRpcId = string | number;
 export type JsonRpcRequest = { jsonrpc: "2.0"; id: JsonRpcId; method: string; params?: Record<string, unknown> };
@@ -47,6 +78,109 @@ export type McpTool = {
   inputSchema?: Record<string, unknown>;
   annotations?: McpToolAnnotations;
 };
+
+/** Whether an error is one only 2026-07-28-or-later servers send. */
+export function isModernError(error: unknown): boolean {
+  return error instanceof McpError && MODERN_ERROR_CODES.includes(error.code);
+}
+
+/** The versions a server listed (UnsupportedProtocolVersion error or server/discover). */
+export function supportedFrom(error: unknown): string[] {
+  const data = error instanceof McpError ? (error.data as { supported?: unknown } | undefined) : undefined;
+  return Array.isArray(data?.supported) ? data.supported.filter((v): v is string => typeof v === "string") : [];
+}
+
+// HTTP request headers (2026-07-28) ---------------------------------------------------------------
+
+const SENTINEL = /^=\?base64\?.*\?=$/s;
+
+/**
+ * A header-safe value: plain visible ASCII as is; anything else (non-ASCII, control characters,
+ * leading/trailing spaces, or text that looks like the encoding) as =?base64?…?=.
+ */
+export function headerValue(value: string): string {
+  if (/^[\x21-\x7e]([\x20-\x7e\t]*[\x21-\x7e])?$/.test(value) && !SENTINEL.test(value)) return value;
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return `=?base64?${btoa(binary)}?=`;
+}
+
+/** Mcp-Method and Mcp-Name for a request (tools/call name, resources/read uri, task id…). */
+export function standardHeaders(message: JsonRpcMessage): Record<string, string> {
+  if (!("method" in message)) return {};
+  const headers: Record<string, string> = { "mcp-method": message.method };
+  const p = message.params ?? {};
+  const name =
+    message.method === "tools/call" || message.method === "prompts/get"
+      ? p.name
+      : message.method === "resources/read"
+        ? p.uri
+        : message.method.startsWith("tasks/")
+          ? p.taskId
+          : undefined;
+  if (typeof name === "string") headers["mcp-name"] = headerValue(name);
+  return headers;
+}
+
+const TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const DATA_KEYWORDS = new Set(["default", "examples", "const", "enum"]);
+
+export type McpHeaderParam = { header: string; path: string[] };
+
+/**
+ * The parameters a tool mirrors into Mcp-Param-* headers (x-mcp-header in its input schema), or why
+ * the tool definition is invalid: the spec has clients drop such tools from the list.
+ */
+export function mcpHeaderParams(schema: unknown): { params: McpHeaderParam[] } | { error: string } {
+  const params: McpHeaderParam[] = [];
+  const seen = new Set<string>();
+  let error = "";
+  const visit = (node: unknown, path: string[], reachable: boolean, depth: number) => {
+    if (error || !node || typeof node !== "object" || depth > 32) return;
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item, path, false, depth + 1);
+      return;
+    }
+    const obj = node as Record<string, unknown>;
+    if ("x-mcp-header" in obj) {
+      const name = obj["x-mcp-header"];
+      if (!reachable || !path.length) error = "x-mcp-header is only allowed on properties reached through plain properties";
+      else if (typeof name !== "string" || !TOKEN.test(name)) error = `x-mcp-header "${String(name)}" isn't a valid header name`;
+      else if (seen.has(name.toLowerCase())) error = `x-mcp-header "${name}" is used twice`;
+      else if (!["string", "integer", "boolean"].includes(String(obj.type))) error = `x-mcp-header "${name}" is on a ${String(obj.type ?? "untyped")} parameter`;
+      else {
+        seen.add(name.toLowerCase());
+        params.push({ header: name, path });
+      }
+    }
+    for (const [key, value] of Object.entries(obj)) {
+      if (DATA_KEYWORDS.has(key) || key === "x-mcp-header") continue;
+      if (key === "properties" && value && typeof value === "object" && !Array.isArray(value)) {
+        for (const [prop, child] of Object.entries(value)) visit(child, [...path, prop], reachable, depth + 1);
+      } else {
+        visit(value, path, false, depth + 1);
+      }
+    }
+  };
+  visit(schema, [], true, 0);
+  return error ? { error } : { params };
+}
+
+/** Mcp-Param-* headers for a call's arguments; absent or null values send no header. */
+export function paramHeaders(params: McpHeaderParam[], args: Record<string, unknown>): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const { header, path } of params) {
+    let value: unknown = args;
+    for (const key of path) value = value && typeof value === "object" ? (value as Record<string, unknown>)[key] : undefined;
+    let text: string | undefined;
+    if (typeof value === "string") text = value;
+    else if (typeof value === "boolean") text = String(value);
+    else if (typeof value === "number" && Number.isSafeInteger(value)) text = String(value);
+    if (text !== undefined) headers[`mcp-param-${header.toLowerCase()}`] = headerValue(text);
+  }
+  return headers;
+}
 
 export type McpContent =
   | { type: "text"; text: string }
@@ -248,8 +382,18 @@ const LINK_FIELD_CHARS = 400;
 const bounded = (value: string) => (value.length > LINK_FIELD_CHARS ? `${value.slice(0, LINK_FIELD_CHARS)}…` : value);
 const field = (value: unknown) => (typeof value === "string" && value.trim() !== "" ? value : null);
 
-/** What the model reads (text) and what the chat shows (first image) from a tools/call result. */
-export function convertResult(result: McpCallResult): { text: string; display?: ToolDisplay; truncated: boolean } {
+/**
+ * What the model reads (text) and what the chat shows (first image) from a tools/call result.
+ * Hidden characters are removed (and counted): results are read by the model too.
+ */
+export function convertResult(result: McpCallResult): { text: string; display?: ToolDisplay; truncated: boolean; hidden: number } {
+  const converted = convertParts(result);
+  const { text, removed } = stripHidden(converted.text);
+  if (!removed) return { ...converted, hidden: 0 };
+  return { ...converted, text: `${text}\n\n[ADT Bot removed ${removed} hidden character${removed === 1 ? "" : "s"} from this result.]`, hidden: removed };
+}
+
+function convertParts(result: McpCallResult): { text: string; display?: ToolDisplay; truncated: boolean } {
   const parts = Array.isArray(result.content) ? result.content : [];
   let display: ToolDisplay | undefined;
   const lines = parts.map((part): string => {

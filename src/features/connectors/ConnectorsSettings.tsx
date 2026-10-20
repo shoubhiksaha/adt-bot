@@ -1,12 +1,32 @@
-import { ChevronDown, ChevronRight, Loader2, Pencil, Plug, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, Pencil, Plug, Plus, RefreshCw, ShieldAlert, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Section } from "../../components/settings/controls";
 import { isDesktop } from "../../lib/desktop";
-import type { ConnectorConfig, ConnectorStatus } from "../../lib/mcp/connectors";
+import { type ConnectorConfig, type ConnectorStatus, connectionKey, launchApproved } from "../../lib/mcp/connectors";
 import { agentToolName, claimsReadOnly, riskFromAnnotations } from "../../lib/mcp/protocol";
-import { addServer, connectorManager, removeServer, setServerEnabled, testServer, updateServer, useConnectors } from "../../lib/mcp/store";
-import { COMPUTER_PRESETS, configFromDraft, type Draft, draftFrom, emptyDraft, PRESETS } from "./form";
+import { cleanTool, launchKey, type ToolReview, toolsToReview, toolsWithHidden } from "../../lib/mcp/security";
+import {
+  addServer,
+  approveLaunch,
+  approveToolChanges,
+  connectorManager,
+  getServer,
+  removeServer,
+  setServerEnabled,
+  testServer,
+  updateServer,
+  useConnectors,
+} from "../../lib/mcp/store";
+import { COMPUTER_PRESETS, configFromDraft, type Draft, draftFrom, emptyDraft, launchConfirmText, PRESETS } from "./form";
 import "./connectors.css";
+
+/** Asks before a local server's command runs for the first time (or after it changed). */
+function ensureLaunchApproved(server: ConnectorConfig): boolean {
+  if (launchApproved(server)) return true;
+  if (!confirm(launchConfirmText(server))) return false;
+  approveLaunch(server.id);
+  return true;
+}
 
 export function ConnectorsSettings() {
   const servers = useConnectors((s) => s.servers);
@@ -52,7 +72,8 @@ function statusLine(server: ConnectorConfig, status: ConnectorStatus | undefined
   if (status.state === "connecting") return { text: "Connecting…", tone: "busy" };
   if (status.state === "error") return { text: "Error", tone: "err" };
   const name = status.server?.title || status.server?.name;
-  return { text: `Connected${name ? ` to ${name}${status.server?.version ? ` ${status.server.version}` : ""}` : ""} · ${status.transport ?? ""}`, tone: "ok" };
+  const version = status.protocolVersion ? ` · MCP ${status.protocolVersion}` : "";
+  return { text: `Connected${name ? ` to ${name}${status.server?.version ? ` ${status.server.version}` : ""}` : ""} · ${status.transport ?? ""}${version}`, tone: "ok" };
 }
 
 function ConnectorCard({ server, status, desktop, onEdit }: { server: ConnectorConfig; status?: ConnectorStatus; desktop: boolean; onEdit: () => void }) {
@@ -63,12 +84,17 @@ function ConnectorCard({ server, status, desktop, onEdit }: { server: ConnectorC
   const tools = server.tools ?? [];
   const canRun = server.transport === "http" || desktop;
   const enabledCount = tools.filter((t) => !server.disabledTools.includes(t.name)).length;
+  const hiddenTools = toolsWithHidden(tools);
+  const review = toolsToReview(tools, server.approvedTools);
+  const toReview = new Set(review.map((r) => r.name));
+  const unconfirmed = !launchApproved(server);
 
   const test = async () => {
+    if (!ensureLaunchApproved(server)) return;
     setBusy(true);
     setResult(null);
     try {
-      const list = await testServer(server);
+      const list = await testServer(getServer(server.id) ?? server);
       setResult(`Works: ${list.length} tool${list.length === 1 ? "" : "s"} found.`);
       setOpen(true);
     } catch {
@@ -97,7 +123,15 @@ function ConnectorCard({ server, status, desktop, onEdit }: { server: ConnectorC
           </div>
         </div>
         <label className="connector-switch" title={server.enabled ? "Switch off" : "Switch on"}>
-          <input type="checkbox" checked={server.enabled} disabled={!canRun} onChange={(e) => void setServerEnabled(server.id, e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={server.enabled}
+            disabled={!canRun}
+            onChange={(e) => {
+              if (e.target.checked && !ensureLaunchApproved(server)) return;
+              void setServerEnabled(server.id, e.target.checked);
+            }}
+          />
           <span className="small">{server.enabled ? "On" : "Off"}</span>
         </label>
       </div>
@@ -109,6 +143,30 @@ function ConnectorCard({ server, status, desktop, onEdit }: { server: ConnectorC
       </div>
       {server.enabled && status?.state === "error" && status.error && <pre className="connector-error">{status.error}</pre>}
       {result && <div className="status ok">{result}</div>}
+      {unconfirmed && canRun && (
+        <div className="connector-warning small" role="alert">
+          <ShieldAlert size={14} aria-hidden />
+          <span className="grow">This command hasn't been confirmed on this device, so it won't run until you allow it.</span>
+          <button className="btn" onClick={() => void test()}>
+            Review command
+          </button>
+        </div>
+      )}
+      {hiddenTools.length > 0 && (
+        <div className="connector-warning small" role="alert">
+          <ShieldAlert size={14} aria-hidden />
+          <span>
+            Hidden characters in {hiddenTools.map((t) => t.name).join(", ")}. They're removed before the AI reads them, but hidden text is a common way to
+            slip instructions to an AI. Keep this connector only if you trust it.
+          </span>
+        </div>
+      )}
+      {review.length > 0 && <ToolChanges serverId={server.id} review={review} />}
+      {status?.skippedTools?.length ? (
+        <div className="small muted">
+          Left out (the server described them wrongly): {status.skippedTools.map((t) => `${t.name} (${t.reason})`).join("; ")}
+        </div>
+      ) : null}
 
       <div className="btn-row connector-actions">
         <button className="btn" onClick={() => void test()} disabled={busy || !canRun}>
@@ -144,14 +202,18 @@ function ConnectorCard({ server, status, desktop, onEdit }: { server: ConnectorC
                 const trusted = server.readOnlyTools?.includes(tool.name) ?? false;
                 const risk = riskFromAnnotations(tool.annotations, trusted);
                 const claims = claimsReadOnly(tool.annotations);
+                // Shown as the AI sees it: hidden characters removed.
+                const { tool: shown, hidden } = cleanTool(tool);
                 return (
                   <li key={tool.name}>
                     <label>
                       <input type="checkbox" checked={!server.disabledTools.includes(tool.name)} onChange={(e) => toggleTool(tool.name, e.target.checked)} />
                       <span className="grow">
-                        <code>{tool.name}</code>
+                        <code>{shown.name}</code>
                         <span className={`badge risk-${risk}`}>{risk === "read" ? "read-only" : risk === "destructive" ? "destructive" : "asks"}</span>
-                        {tool.description && <span className="small muted connector-tool-desc">{tool.description}</span>}
+                        {hidden > 0 && <span className="badge tool-flag">hidden characters</span>}
+                        {toReview.has(tool.name) && <span className="badge tool-flag">off until reviewed</span>}
+                        {shown.description && <span className="small muted connector-tool-desc">{shown.description}</span>}
                         <span className="small muted connector-tool-desc">as {agentToolName(server.name, tool.name)}</span>
                       </span>
                     </label>
@@ -196,15 +258,20 @@ function ConnectorForm({ initial, desktop, onDone, existing }: { initial: Draft;
   const save = async () => {
     const parsed = configFromDraft(draft);
     if ("error" in parsed) return setError(parsed.error);
+    // A local command runs only after the user saw it in full and allowed it.
+    const launch = parsed.config.transport === "stdio" ? launchKey(parsed.config) : undefined;
+    if (launch && launch !== existing?.approvedLaunch && !confirm(launchConfirmText(parsed.config))) return;
     setError("");
     setSaving(true);
     try {
       if (existing) {
-        updateServer(existing.id, parsed.config);
+        // Pointed at a different server: its first tool list is what the user approves, as when adding.
+        const moved = connectionKey({ ...existing, ...parsed.config }) !== connectionKey(existing);
+        updateServer(existing.id, { ...parsed.config, approvedLaunch: launch, ...(moved ? { approvedTools: undefined } : {}) });
         const now = useConnectors.getState().servers.find((s) => s.id === existing.id);
         if (now?.enabled) await testServer(now).catch(() => undefined);
       } else {
-        const server = addServer({ ...parsed.config, enabled: true });
+        const server = addServer({ ...parsed.config, enabled: true, approvedLaunch: launch });
         await testServer(server).catch(() => undefined);
       }
       onDone();
@@ -381,6 +448,57 @@ function ConnectorForm({ initial, desktop, onDone, existing }: { initial: Draft;
         <button className="btn" onClick={onDone} disabled={saving}>
           Cancel
         </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Tools that changed after the user approved the connector, or appeared later. They stay off
+ * (the AI doesn't even see them) until the user reads what they say now and approves them.
+ */
+function ToolChanges({ serverId, review }: { serverId: string; review: ToolReview[] }) {
+  const [open, setOpen] = useState(false);
+  const count = `${review.length} tool${review.length === 1 ? "" : "s"}`;
+  return (
+    <div className="connector-warning small" role="alert">
+      <ShieldAlert size={14} aria-hidden />
+      <div className="grow">
+        <div>
+          {count} changed or appeared since you added this connector, and {review.length === 1 ? "stays" : "stay"} off until you review{" "}
+          {review.length === 1 ? "it" : "them"}. A server can change what its tools tell the AI after you approve it.
+        </div>
+        <button className="link-btn" onClick={() => setOpen(!open)} aria-expanded={open}>
+          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />} Review
+        </button>
+        {open && (
+          <ul className="connector-review">
+            {review.map((r) => (
+              <li key={r.name}>
+                <code>{cleanTool({ name: r.name }).tool.name}</code>{" "}
+                <span className="badge tool-flag">{r.kind === "new" ? "new" : `changed: ${r.changes.join(", ") || "details"}`}</span>
+                {r.kind === "changed" && r.before !== r.after && (
+                  <>
+                    <div className="small muted">Before</div>
+                    <pre>{r.before || "(no description)"}</pre>
+                  </>
+                )}
+                <div className="small muted">{r.kind === "changed" ? "Now" : "Description"}</div>
+                <pre>{r.after || "(no description)"}</pre>
+                <button className="btn" onClick={() => approveToolChanges(serverId, [r.name])}>
+                  Approve
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {open && review.length > 1 && (
+          <div className="btn-row">
+            <button className="btn" onClick={() => approveToolChanges(serverId, review.map((r) => r.name))}>
+              Approve all {review.length}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

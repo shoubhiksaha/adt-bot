@@ -9,7 +9,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { configFromDraft, emptyDraft, splitArgs } from "../../features/connectors/form";
 import { getTool, type ToolContext } from "../agent/tools";
 import { McpClient } from "./client";
-import { buildAgentTools, type ConnectorConfig, ConnectorManager, type ConnectorStatus, syncAgentTools } from "./connectors";
+import { buildAgentTools, type ConnectorConfig, ConnectorManager, type ConnectorStatus, LaunchNotApprovedError, syncAgentTools } from "./connectors";
 import { connectHttp, type FetchFn, StreamableHttpTransport } from "./http";
 import {
   agentToolName,
@@ -25,6 +25,7 @@ import {
   serverSlug,
   toolParameters,
 } from "./protocol";
+import { launchKey } from "./security";
 import type { StdioBridge } from "./stdio";
 
 const PNG = Buffer.from("png-bytes").toString("base64");
@@ -285,10 +286,15 @@ describe("Streamable HTTP", () => {
       const client = await connectHttp({ url: `${base}/mcp-${mode}` }, plainFetch);
       expect(client.transport.kind).toBe("streamable-http");
       expect(client.serverInfo.name).toBe("test-server");
-      expect(client.protocolVersion).toBe("2025-06-18");
+      // A legacy server: the server/discover probe failed, so the client used the handshake.
+      expect(client.era).toBe("legacy");
+      expect(client.protocolVersion).toBe("2025-11-25");
+      expect(log[0]).toMatchObject({ method: "server/discover", headers: { "mcp-protocol-version": "2026-07-28", "mcp-method": "server/discover" } });
+      expect(log[1].method).toBe("initialize");
+      expect(log[1].headers["mcp-method"]).toBeUndefined();
       const initialized = log.find((l) => l.method === "notifications/initialized");
       expect(initialized?.headers["mcp-session-id"]).toMatch(/^s-\d+$/);
-      expect(initialized?.headers["mcp-protocol-version"]).toBe("2025-06-18");
+      expect(initialized?.headers["mcp-protocol-version"]).toBe("2025-11-25");
 
       const tools = await client.listTools();
       expect(tools.map((t) => t.name)).toEqual([...PAGE1, ...PAGE2].map((t) => t.name));
@@ -483,7 +489,7 @@ describe("stdio servers through the Electron feature", () => {
   it("starts the process, lists, calls, survives a crash and reconnects", async () => {
     const statuses: ConnectorStatus[] = [];
     const manager = new ConnectorManager({ fetchFor: () => plainFetch, stdioBridge: bridge, onStatus: (_id, s) => statuses.push(s) });
-    const config: ConnectorConfig = {
+    const unconfirmed: ConnectorConfig = {
       id: "local1",
       name: "Echo",
       enabled: true,
@@ -493,6 +499,11 @@ describe("stdio servers through the Electron feature", () => {
       env: { GREETING: "hello" },
       disabledTools: [],
     };
+    // A local server never starts until the user confirmed its exact command.
+    await expect(manager.listTools(unconfirmed)).rejects.toBeInstanceOf(LaunchNotApprovedError);
+    expect(processes.running()).toEqual([]);
+    const config = { ...unconfirmed, approvedLaunch: launchKey(unconfirmed) };
+    await expect(manager.listTools({ ...config, args: [script, "--other"] })).rejects.toBeInstanceOf(LaunchNotApprovedError);
     const tools = await manager.listTools(config);
     expect(tools.map((t) => t.name)).toEqual(["echo", "crash"]);
     expect(statuses.at(-1)).toMatchObject({ state: "connected", transport: "stdio", server: { name: "echo-stdio" } });
@@ -519,7 +530,8 @@ describe("stdio servers through the Electron feature", () => {
 
   it("reports a command that doesn't exist", async () => {
     const manager = new ConnectorManager({ fetchFor: () => plainFetch, stdioBridge: bridge });
-    const config: ConnectorConfig = { id: "missing", name: "Missing", enabled: true, transport: "stdio", command: "/definitely/not/a/command-xyz", disabledTools: [] };
+    const command: ConnectorConfig = { id: "missing", name: "Missing", enabled: true, transport: "stdio", command: "/definitely/not/a/command-xyz", disabledTools: [] };
+    const config = { ...command, approvedLaunch: launchKey(command) };
     await expect(manager.listTools(config)).rejects.toThrow(/process (exited|couldn't start)/);
   }, 30_000);
 });

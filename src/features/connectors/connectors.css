@@ -169,3 +169,89 @@
 .connector-readonly {
   margin: 2px 0 6px 24px;
 }
+
+/* Warnings: hidden characters, changed tools, unconfirmed commands */
+.connector-warning {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  margin: 6px 0;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--warning) 50%, var(--border));
+  background: color-mix(in srgb, var(--warning) 9%, var(--card));
+  border-radius: calc(var(--radius) * 0.6);
+  overflow-wrap: anywhere;
+}
+.connector-warning > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--warning);
+}
+.connector-warning .btn {
+  padding: 4px 9px;
+  font-size: 12.5px;
+}
+.connector-warning .grow {
+  flex: 1;
+  min-width: 0;
+}
+.connector-review {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+.connector-review li {
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+.connector-review pre {
+  margin: 4px 0;
+  padding: 6px 8px;
+  max-height: 140px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) * 0.6);
+}
+.badge.tool-flag {
+  color: var(--warning);
+}
+
+/* In the chat: a connector tool's approval details and its server's questions */
+.connector-approval .approval-detail {
+  max-height: 320px;
+}
+.connector-approval-desc summary {
+  cursor: pointer;
+  margin: 4px 0;
+}
+.connector-approval-desc p {
+  margin: 4px 0 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow: auto;
+}
+.connector-question-message {
+  margin: 0 0 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.connector-question-form .field {
+  margin-bottom: 8px;
+}
+.connector-question-multi {
+  border: 0;
+  padding: 0;
+  margin: 0 0 8px;
+}
+.connector-question .btn-row {
+  margin: 6px 0;
+}
+.connector-url {
+  margin: 0 0 6px;
+  overflow-wrap: anywhere;
+}

@@ -3,7 +3,7 @@
  * the process and relays newline-delimited JSON-RPC; this transport speaks to it over IPC.
  */
 import { desktopInvoke, desktopOn } from "../desktop";
-import type { McpTransport } from "./client";
+import type { McpTransport, SendOptions } from "./client";
 import { type JsonRpcMessage, McpClosedError } from "./protocol";
 
 export type StdioStartPayload = { id: string; command: string; args: string[]; env: Record<string, string>; cwd?: string };
@@ -70,7 +70,7 @@ export class StdioTransport implements McpTransport {
     }
   }
 
-  async send(message: JsonRpcMessage) {
+  async send(message: JsonRpcMessage, _options?: SendOptions) {
     if (this.closed || this.session === undefined) throw new McpClosedError();
     await this.bridge.send({ id: this.payload.id, session: this.session, message });
   }

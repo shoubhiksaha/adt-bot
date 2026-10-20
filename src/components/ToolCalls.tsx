@@ -3,7 +3,9 @@ import { useEffect, useState } from "react";
 import { isPending, onApprovalsChanged } from "../lib/agent/approvals";
 import { answerApproval } from "../lib/agent/loop";
 import { openConversation, useStore } from "../lib/store";
+import { ConnectorApprovalInfo, ConnectorQuestion, isConnectorTool, useQuestionsVersion } from "../features/connectors/ToolCallParts";
 import { openView } from "../features/registry";
+import { pendingQuestion } from "../lib/mcp/elicitation";
 import type { ToolCallRecord } from "../lib/types";
 import { Visualization } from "./viz/Visualization";
 
@@ -102,7 +104,10 @@ function usePendingVersion() {
 /** The tools a bot used for an answer, with approval cards for actions waiting on the user. */
 export function ToolCalls({ calls, live }: { calls: ToolCallRecord[]; live: boolean }) {
   usePendingVersion();
-  const waiting = calls.some((c) => c.status === "awaiting");
+  useQuestionsVersion();
+  // A connector's question (elicitation) waits on the user like an approval does.
+  const asking = calls.some((c) => c.status === "running" && pendingQuestion(c.id));
+  const waiting = asking || calls.some((c) => c.status === "awaiting");
   const [open, setOpen] = useState(false);
   const expanded = open || waiting || (live && calls.some((c) => c.status === "running"));
   const done = calls.filter((c) => c.status === "done").length;
@@ -111,7 +116,7 @@ export function ToolCalls({ calls, live }: { calls: ToolCallRecord[]; live: bool
     <div className="tool-calls">
       <button type="button" className="tool-calls-head" onClick={() => setOpen((v) => !v)} aria-expanded={expanded}>
         <Wrench size={13} />
-        {live && !waiting ? "Working…" : waiting ? "Needs your approval" : `Used ${calls.length} tool${calls.length === 1 ? "" : "s"}`}
+        {live && !waiting ? "Working…" : asking ? "Needs your answer" : waiting ? "Needs your approval" : `Used ${calls.length} tool${calls.length === 1 ? "" : "s"}`}
         {!live && done !== calls.length && <span className="muted"> · {calls.length - done} not completed</span>}
         <ChevronRight size={13} className={`chev${expanded ? " open" : ""}`} />
       </button>
@@ -148,6 +153,7 @@ function ToolCallRow({ call }: { call: ToolCallRecord }) {
         {call.ms !== undefined && call.status !== "awaiting" && <span className="small muted">{(call.ms / 1000).toFixed(1)}s</span>}
       </button>
       {call.status === "running" && call.result && <div className="tool-progress small muted">{call.result}</div>}
+      {call.status === "running" && <ConnectorQuestion callId={call.id} />}
 
       {awaiting && call.approval && (
         <div className="approval-card" role="group" aria-label="Approval needed">
@@ -155,7 +161,7 @@ function ToolCallRow({ call }: { call: ToolCallRecord }) {
             <ShieldAlert size={15} /> {askTitle(call)}
           </div>
           {/\s/.test(call.approval.reason ?? "") && <div className="small muted approval-reason">Asking because {call.approval.reason}.</div>}
-          <pre className="approval-detail">{call.approval.detail}</pre>
+          {isConnectorTool(call.name) ? <ConnectorApprovalInfo call={call} /> : <pre className="approval-detail">{call.approval.detail}</pre>}
           {actionable ? (
             <div className="btn-row">
               <button type="button" className="btn primary" onClick={() => answerApproval(call, "once")}>

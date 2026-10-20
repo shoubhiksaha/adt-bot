@@ -284,7 +284,7 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
         await withTimeout(
           // The tool gets its own signal, aborted on Stop and on the time limit, so it can end its
           // work (kill a command) instead of running on after the loop gave up on it.
-          (callSignal) => tool.run(call.args, { ...context, signal: callSignal, progress: (text) => update(call.id, { result: text }) }),
+          (callSignal) => tool.run(call.args, { ...context, signal: callSignal, callId: call.id, progress: (text) => update(call.id, { result: text }) }),
           tool.timeoutMs ?? 120_000,
           context.signal,
         ),

@@ -7,7 +7,8 @@
  * 15 s listing / 60 s call timeouts, bearer-token handling, visible truncation).
  */
 import { type AgentTool, registerTool, unregisterTool } from "../agent/tools";
-import { McpClient, type ServerInfo } from "./client";
+import { type Asker, type Era, McpClient, McpProbeClosedError, type ServerInfo } from "./client";
+import { askUser, QUESTION_TIMEOUT_MS, questionFromRequest } from "./elicitation";
 import { connectHttp, type FetchFn } from "./http";
 import {
   agentToolName,
@@ -15,12 +16,17 @@ import {
   convertResult,
   LIST_TIMEOUT_MS,
   type McpCallResult,
+  McpError,
   McpSessionExpiredError,
   type McpTool,
+  MISSING_CLIENT_CAPABILITY,
   riskFromAnnotations,
+  shortHash,
   toolParameters,
 } from "./protocol";
+import { cleanTool, launchKey, toolDefinition, toolsToReview, toolsWithHidden } from "./security";
 import { type StdioBridge, StdioTransport } from "./stdio";
+import { stripHidden } from "./unicode";
 
 export type ConnectorConfig = {
   id: string;
@@ -48,6 +54,15 @@ export type ConnectorConfig = {
   controlsComputer?: boolean;
   /** Last tool list, so tools are available at start-up before the server is reached. */
   tools?: McpTool[];
+  /**
+   * Tool definitions as the user approved them (security.ts). Tools that differ (changed after
+   * approval, or new) stay off until the user reviews them. Unset until the first listing.
+   */
+  approvedTools?: Record<string, string>;
+  /** launchKey() of the local command the user confirmed. A local server never starts without it. */
+  approvedLaunch?: string;
+  /** How the server answered last time (legacy servers then skip the server/discover probe). */
+  protocolEra?: { key: string; era: Era };
 };
 
 export type ConnectorStatus = {
@@ -56,7 +71,10 @@ export type ConnectorStatus = {
   transport?: string;
   server?: ServerInfo;
   protocolVersion?: string;
+  era?: Era;
   instructions?: string;
+  /** Tools the client had to leave out (e.g. invalid x-mcp-header annotations). */
+  skippedTools?: { name: string; reason: string }[];
   at?: number;
 };
 
@@ -65,6 +83,8 @@ export type ConnectorDeps = {
   stdioBridge?: StdioBridge;
   onStatus?: (id: string, status: ConnectorStatus) => void;
   onTools?: (id: string, tools: McpTool[]) => void;
+  /** The protocol era a server answered with, to remember for next time. */
+  onEra?: (id: string, era: { key: string; era: Era }) => void;
 };
 
 /** Fields that require a new connection when they change. */
@@ -77,38 +97,82 @@ export function connectionKey(c: ConnectorConfig): string {
 export function displayError(error: unknown): string {
   const e = error as Error;
   if (e?.name === "AbortError") return "Stopped.";
-  return e?.message || String(error);
+  return stripHidden(e?.message || String(error)).text;
 }
+
+/** A local server whose command the user hasn't confirmed on this device. */
+export class LaunchNotApprovedError extends Error {
+  constructor(name: string) {
+    super(`The ${name} connector's command hasn't been confirmed yet. Open Settings → Connectors and press Test connection to review and allow it.`);
+    this.name = "LaunchNotApprovedError";
+  }
+}
+
+export const launchApproved = (c: ConnectorConfig) => c.transport !== "stdio" || c.approvedLaunch === launchKey(c);
+
+type CachedList = { key: string; tools: McpTool[]; at: number; ttlMs?: number };
 
 export class ConnectorManager {
   private live = new Map<string, { key: string; promise: Promise<McpClient> }>();
+  /** tools/list results per server, fresh for the server's ttlMs (if it gave one). */
+  private lists = new Map<string, CachedList>();
 
   constructor(private deps: ConnectorDeps) {}
 
+  /** The last "connected" status per server, so later notes (skipped tools) keep its details. */
+  private connected = new Map<string, ConnectorStatus>();
+
   private status(id: string, status: ConnectorStatus) {
+    if (status.state === "connected") this.connected.set(id, status);
+    else this.connected.delete(id);
     this.deps.onStatus?.(id, { ...status, at: Date.now() });
   }
 
   private async open(config: ConnectorConfig, signal?: AbortSignal): Promise<McpClient> {
+    const key = shortHash(connectionKey(config));
+    const prefer = config.protocolEra?.key === key ? config.protocolEra.era : undefined;
+    let client: McpClient;
     if (config.transport === "stdio") {
       if (!config.command?.trim()) throw new Error("Enter the command that starts the server.");
-      const client = new McpClient(
-        new StdioTransport(
-          { id: config.id, command: config.command.trim(), args: config.args ?? [], env: config.env ?? {}, cwd: config.cwd?.trim() || undefined },
-          this.deps.stdioBridge,
-        ),
-      );
+      // Nothing starts a local server unless the user confirmed this exact command.
+      if (!launchApproved(config)) throw new LaunchNotApprovedError(config.name);
+      const start = async (era?: Era) => {
+        const c = new McpClient(
+          new StdioTransport(
+            { id: config.id, command: config.command!.trim(), args: config.args ?? [], env: config.env ?? {}, cwd: config.cwd?.trim() || undefined },
+            this.deps.stdioBridge,
+          ),
+        );
+        try {
+          await c.connect(LIST_TIMEOUT_MS * 2, signal, era); // first runs of npx/uvx download packages
+          return c;
+        } catch (error) {
+          await c.close();
+          throw error;
+        }
+      };
       try {
-        await client.connect(LIST_TIMEOUT_MS * 2, signal); // first runs of npx/uvx download packages
+        client = await start(prefer);
       } catch (error) {
-        await client.close();
-        throw error;
+        // The probe stopped an older server: start it again and use the handshake. A server that
+        // turned modern since last time answers the handshake with an error: probe again.
+        if (error instanceof McpProbeClosedError) client = await start("legacy");
+        else if (prefer === "legacy" && error instanceof McpError) client = await start();
+        else throw error;
       }
-      return client;
+    } else {
+      const url = config.url?.trim() ?? "";
+      if (!/^https?:\/\//i.test(url)) throw new Error("Enter the server's full http(s) URL.");
+      const connect = (era?: Era) => connectHttp({ url, headers: config.headers, token: config.token }, this.deps.fetchFor(config), LIST_TIMEOUT_MS, signal, era);
+      try {
+        client = await connect(prefer);
+      } catch (error) {
+        if (prefer === "legacy" && error instanceof McpError) client = await connect();
+        else throw error;
+      }
     }
-    const url = config.url?.trim() ?? "";
-    if (!/^https?:\/\//i.test(url)) throw new Error("Enter the server's full http(s) URL.");
-    return connectHttp({ url, headers: config.headers, token: config.token }, this.deps.fetchFor(config), LIST_TIMEOUT_MS, signal);
+    if (config.protocolEra?.key !== key || config.protocolEra.era !== client.era) this.deps.onEra?.(config.id, { key, era: client.era });
+    return client;
   }
 
   /** The live client for a server, connecting (or reconnecting after a config change) when needed. */
@@ -138,17 +202,18 @@ export class ConnectorManager {
       };
       client.onNotification = (method) => {
         if (method !== "notifications/tools/list_changed" || this.live.get(config.id)?.promise !== promise) return;
-        void client
-          .listTools()
-          .then((tools) => this.deps.onTools?.(config.id, tools))
-          .catch(() => undefined);
+        // The list changed: the cached one is stale now.
+        this.lists.delete(config.id);
+        void this.listTools(config, undefined, true).catch(() => undefined);
       };
+      client.listen();
       this.status(config.id, {
         state: "connected",
         transport: client.transport.kind,
         server: client.serverInfo,
         protocolVersion: client.protocolVersion,
-        instructions: client.instructions || undefined,
+        era: client.era,
+        instructions: stripHidden(client.instructions).text || undefined,
       });
       return client;
     } catch (error) {
@@ -170,10 +235,28 @@ export class ConnectorManager {
     }
   }
 
-  /** Connects (if needed) and lists the server's tools. */
-  async listTools(config: ConnectorConfig, signal?: AbortSignal): Promise<McpTool[]> {
+  /**
+   * Connects (if needed) and lists the server's tools. A list the server said is still fresh
+   * (ttlMs) is reused unless `force` (Test connection, a list_changed notification).
+   */
+  async listTools(config: ConnectorConfig, signal?: AbortSignal, force = false): Promise<McpTool[]> {
+    const key = connectionKey(config);
+    const cached = this.lists.get(config.id);
+    if (!force && cached?.key === key && fresh(cached) && this.isLive(config.id)) return cached.tools;
     try {
-      const tools = await this.withClient(config, (client) => client.listTools(LIST_TIMEOUT_MS, signal), signal);
+      let skipped: ConnectorStatus["skippedTools"];
+      const tools = await this.withClient(
+        config,
+        async (client) => {
+          const list = await client.listTools(LIST_TIMEOUT_MS, signal);
+          skipped = client.lastList?.rejected.length ? client.lastList.rejected : undefined;
+          this.lists.set(config.id, { key, tools: list, at: client.lastList?.at ?? Date.now(), ttlMs: client.lastList?.ttlMs });
+          return list;
+        },
+        signal,
+      );
+      const last = this.connected.get(config.id);
+      if (last && JSON.stringify(last.skippedTools) !== JSON.stringify(skipped)) this.status(config.id, { ...last, skippedTools: skipped });
       this.deps.onTools?.(config.id, tools);
       return tools;
     } catch (error) {
@@ -186,14 +269,42 @@ export class ConnectorManager {
     config: ConnectorConfig,
     name: string,
     args: Record<string, unknown>,
-    options: { signal?: AbortSignal; onProgress?: (text: string) => void } = {},
+    options: { signal?: AbortSignal; onProgress?: (text: string) => void; ask?: Asker; inputSchema?: Record<string, unknown> } = {},
   ): Promise<McpCallResult> {
     const timeoutMs = (config.timeoutSec ?? CALL_TIMEOUT_MS / 1000) * 1000;
-    return this.withClient(
-      config,
-      (client) => client.callTool(name, args, { timeoutMs, signal: options.signal, onProgress: options.onProgress, what: `${config.name} → ${name}` }),
-      options.signal,
-    );
+    try {
+      return await this.withClient(
+        config,
+        (client) =>
+          client.callTool(name, args, {
+            timeoutMs,
+            signal: options.signal,
+            onProgress: options.onProgress,
+            ask: options.ask,
+            inputSchema: options.inputSchema,
+            what: `${config.name} → ${name}`,
+          }),
+        options.signal,
+      );
+    } catch (error) {
+      // "No such tool" or "bad arguments" may mean the list changed: refresh it in the background.
+      if (error instanceof McpError && (error.code === -32601 || error.code === -32602)) this.refreshSoon(config, true);
+      throw error;
+    } finally {
+      // The server said how long its list stays fresh: re-read it on use once that has passed. Not
+      // polling, and at most every 30 s (a ttlMs of 0 would otherwise mean a listing per call).
+      const cached = this.lists.get(config.id);
+      if (cached?.ttlMs !== undefined && !fresh(cached) && Date.now() - cached.at > MIN_REFRESH_MS) this.refreshSoon(config);
+    }
+  }
+
+  private refreshing = new Set<string>();
+  private refreshSoon(config: ConnectorConfig, force = false) {
+    if (this.refreshing.has(config.id)) return;
+    this.refreshing.add(config.id);
+    void this.listTools(config, undefined, force)
+      .catch(() => undefined)
+      .finally(() => this.refreshing.delete(config.id));
   }
 
   async disconnect(id: string, report = true) {
@@ -214,45 +325,113 @@ export class ConnectorManager {
   }
 }
 
+const fresh = (list: CachedList) => list.ttlMs !== undefined && Date.now() < list.at + list.ttlMs;
+const MIN_REFRESH_MS = 30_000;
+
 // Agent tools -------------------------------------------------------------------------------
 
 export const CONNECTORS_GROUP = "connectors";
+
+/** What the approval card shows about a connector tool: where it comes from, its whole description. */
+export type ConnectorToolInfo = {
+  connectorId: string;
+  connector: string;
+  /** The tool's name on the server (hidden characters removed). */
+  tool: string;
+  title?: string;
+  description: string;
+  /** Hidden characters removed from this tool's name, description or schema. */
+  hidden: number;
+  /** Tools of this connector whose metadata had hidden characters. */
+  connectorHidden: number;
+};
+
+const info = new Map<string, ConnectorToolInfo>();
+
+/** Details for a connector tool's approval card (by agent tool name). */
+export function connectorToolInfo(name: string): ConnectorToolInfo | undefined {
+  return info.get(name);
+}
+
+const definitions = new WeakMap<McpTool, string>();
+const definitionOf = (tool: McpTool) => {
+  let d = definitions.get(tool);
+  if (d === undefined) definitions.set(tool, (d = toolDefinition(tool)));
+  return d;
+};
+
+/**
+ * Whether this definition of the tool is the server's current one and the user approved it (or
+ * nothing is pinned yet). A registration made before the server changed the tool fails this.
+ */
+export function toolApproved(config: ConnectorConfig, tool: McpTool): boolean {
+  const current = config.tools?.find((t) => t.name === tool.name);
+  if (current && current !== tool && definitionOf(current) !== definitionOf(tool)) return false;
+  return !config.approvedTools || config.approvedTools[tool.name] === definitionOf(tool);
+}
 
 /** The agent tools a set of connectors provides right now. */
 export function buildAgentTools(configs: ConnectorConfig[], manager: ConnectorManager, latest: (id: string) => ConnectorConfig | undefined): AgentTool[] {
   const out: AgentTool[] = [];
   const used = new Set<string>();
+  info.clear();
   for (const config of configs) {
     if (!config.enabled) continue;
-    for (const tool of config.tools ?? []) {
-      if (config.disabledTools.includes(tool.name)) continue;
-      let name = agentToolName(config.name, tool.name);
+    const connectorHidden = toolsWithHidden(config.tools).length;
+    // Changed or new tools wait for the user's review: even an uncalled tool's description reaches the model.
+    const review = new Set(toolsToReview(config.tools, config.approvedTools).map((r) => r.name));
+    for (const raw of config.tools ?? []) {
+      if (config.disabledTools.includes(raw.name) || review.has(raw.name)) continue;
+      const { tool, hidden } = cleanTool(raw);
+      let name = agentToolName(config.name, raw.name);
       // Two servers with the same name: keep both by adding the server id's hash.
-      if (used.has(name)) name = agentToolName(`${config.name}_${config.id.slice(0, 6)}`, tool.name);
+      if (used.has(name)) name = agentToolName(`${config.name}_${config.id.slice(0, 6)}`, raw.name);
       if (used.has(name)) continue;
       used.add(name);
-      const description = `[${config.name} connector] ${tool.title ?? tool.annotations?.title ?? ""}${tool.title || tool.annotations?.title ? ": " : ""}${tool.description ?? ""}`
-        .trim()
-        .slice(0, 1200);
+      const title = tool.title ?? tool.annotations?.title ?? "";
+      const description = `[${config.name} connector] ${title}${title ? ": " : ""}${tool.description ?? ""}`.trim().slice(0, 1200);
+      info.set(name, { connectorId: config.id, connector: config.name, tool: tool.name, title: title || undefined, description: tool.description ?? "", hidden, connectorHidden });
+      const callMs = (config.timeoutSec ?? CALL_TIMEOUT_MS / 1000) * 1000;
       out.push({
         name,
         description,
         parameters: toolParameters(tool.inputSchema) as AgentTool["parameters"],
         group: CONNECTORS_GROUP,
-        risk: riskFromAnnotations(tool.annotations, config.readOnlyTools?.includes(tool.name)),
+        risk: riskFromAnnotations(raw.annotations, config.readOnlyTools?.includes(raw.name)),
         kind: "mcp",
         controlsComputer: config.controlsComputer === true,
         platforms: config.transport === "stdio" ? ["desktop"] : undefined,
-        timeoutMs: (config.timeoutSec ?? CALL_TIMEOUT_MS / 1000) * 1000 + LIST_TIMEOUT_MS * 2,
+        // A backstop: the server's own time limit applies inside; this also leaves time for the user to answer its questions.
+        timeoutMs: callMs + LIST_TIMEOUT_MS * 2 + QUESTION_TIMEOUT_MS,
         available: () => {
           const now = latest(config.id);
-          return Boolean(now?.enabled && !now.disabledTools.includes(tool.name));
+          return Boolean(now?.enabled && !now.disabledTools.includes(raw.name) && launchApproved(now) && toolApproved(now, raw));
         },
         async run(args, ctx) {
           const now = latest(config.id) ?? config;
           if (!now.enabled) throw new Error(`The ${now.name} connector is switched off.`);
+          if (!toolApproved(now, raw)) throw new Error(`The ${now.name} connector changed the tool ${tool.name}; review it in Settings → Connectors first.`);
           ctx.progress(`Asking ${now.name}…`);
-          const result = await manager.callTool(now, tool.name, args, { signal: ctx.signal, onProgress: ctx.progress });
+          // The server's questions go to the user, under this tool call. Nobody to ask (voice mode): none are offered.
+          const callId = ctx.callId;
+          const ask: Asker | undefined =
+            callId && !ctx.unattended ? async (request) => askUser(callId, questionFromRequest(request, now.name), ctx.signal) : undefined;
+          let result: McpCallResult;
+          try {
+            result = await manager.callTool(now, raw.name, args, {
+              signal: ctx.signal,
+              onProgress: (text) => ctx.progress(stripHidden(text).text.slice(0, 300)),
+              ask,
+              inputSchema: raw.inputSchema,
+            });
+          } catch (error) {
+            if (error instanceof McpError && error.code === MISSING_CLIENT_CAPABILITY) {
+              throw new Error(`${now.name} needs to ask you something to run this, which can't be shown here (voice mode or a routine). Try it from a chat.`);
+            }
+            const e = error as Error;
+            if (e?.name === "AbortError") throw error;
+            throw new Error(displayError(error));
+          }
           const { text, display } = convertResult(result);
           const source = `the "${now.name}" connector (MCP tool ${tool.name})`;
           if (result.isError) return { content: `The tool reported an error:\n${text}`, untrustedSource: source };
@@ -291,4 +470,3 @@ export function syncAgentTools(tools: AgentTool[]): string[] {
   }
   return [...registered];
 }
-
