@@ -184,6 +184,23 @@ export type Speaker = {
 
 export type TtsContext = { voice: VoiceSettings; providers: ProviderConfig[]; useProxy: boolean };
 
+/**
+ * The Mac desktop app renders the built-in voices to audio (electron/features/20-speech.cjs), so the
+ * page plays them like any natural voice: the microphone's echo canceller then removes them, the orb
+ * follows them, and they can be turned down when the user cuts in.
+ */
+function canRenderDeviceVoice(): boolean {
+  return typeof window !== "undefined" && window.adtbotDesktop?.platform === "darwin" && Boolean(window.adtbotDesktop.invoke);
+}
+
+/** Loads the built-in voice ahead of the first reply (the first sentence otherwise waits about 2 s). */
+export function warmDeviceVoice(voice: VoiceSettings) {
+  if (voice.tts !== "system" || !canRenderDeviceVoice()) return;
+  void bestVoice(voice.voiceName)
+    .then((chosen) => window.adtbotDesktop?.invoke?.("adt:speech:warm", { voice: chosen?.name, lang: chosen?.lang, rate: voice.rate }))
+    .catch(() => undefined);
+}
+
 export function ttsLabel(voice: VoiceSettings): string {
   if (voice.tts === "local") return `On-device voice · ${voice.localVoice || "F1"}`;
   if (voice.tts === "supertonic3") return `Supertonic 3 · ${voice.localVoice || "F1"}`;
@@ -199,6 +216,10 @@ export function ttsLabel(voice: VoiceSettings): string {
 export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Speaker {
   const { voice } = context;
   const network = voice.tts !== "system";
+  /** Played by the page: natural voices, and the Mac's built-in ones rendered to audio. */
+  const inPage = network || canRenderDeviceVoice();
+  /** Rendering a built-in voice failed once (say, a voice `say` doesn't have): speak the rest the old way. */
+  let renderFailed = false;
   const queue: Clip[] = [];
   const controller = new AbortController();
   let busy = false;
@@ -215,7 +236,24 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
     }
   };
 
+  const renderDevice = async (text: string): Promise<AudioBuffer | null> => {
+    if (renderFailed) return null;
+    try {
+      const chosen = await bestVoice(voice.voiceName);
+      const wav = (await window.adtbotDesktop!.invoke!("adt:speech:render", { text, voice: chosen?.name, lang: chosen?.lang, rate: voice.rate })) as Uint8Array;
+      if (controller.signal.aborted) return null;
+      return await audioOutput().decodeAudioData(wav.slice().buffer);
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        renderFailed = true;
+        console.warn("Speaking with the system voice instead:", (error as Error).message);
+      }
+      return null;
+    }
+  };
+
   const fetchAudio = async (text: string): Promise<AudioBuffer | null> => {
+    if (!network) return renderDevice(text);
     try {
       const local = localChoice(voice);
       if (local) {
@@ -237,9 +275,9 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
   };
 
   const prefetch = () => {
-    // Keep at most two network requests ahead of playback.
+    // Keep at most two sentences being made (downloaded, generated or rendered) ahead of playback.
     queue.slice(0, 2).forEach((clip) => {
-      if (network && !clip.audio) clip.audio = fetchAudio(clip.text);
+      if (inPage && !clip.audio) clip.audio = fetchAudio(clip.text);
     });
   };
 
@@ -382,10 +420,11 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
       clip.started = true;
       queue.shift();
       spoken += `${clip.text} `;
-      if (network) {
+      if (inPage) {
         const buffer = await (clip.audio ?? fetchAudio(clip.text));
         if (buffer && !stopped) await playBuffer(buffer, clip.text);
-        // The voice service failed for this sentence (the error is shown): say it with the device voice.
+        // The voice service failed for this sentence (the error is shown), or the built-in voice
+        // couldn't be rendered: the system speaks it.
         else if (!buffer && !stopped && !controller.signal.aborted) {
           deviceStandIn = true;
           await speakDevice(clip.text).finally(() => (deviceStandIn = false));
@@ -406,7 +445,7 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
       // The device voice takes 1–2.5 s to start each utterance: after the first one, speak in
       // bigger pieces, joining sentences that arrive while it's still talking.
       const last = queue.at(-1);
-      if (!network && last && !last.started && last.text.length + clean.length < 400) last.text = `${last.text} ${clean}`;
+      if (!inPage && last && !last.started && last.text.length + clean.length < 400) last.text = `${last.text} ${clean}`;
       else queue.push({ text: clean, audio: null });
       prefetch();
       void pump();
@@ -440,10 +479,10 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
     },
     /** False while the device voice stands in (it can't be turned down, so cutting in must stop it). */
     get inPageAudio() {
-      return network && !deviceStandIn;
+      return inPage && !deviceStandIn;
     },
     get tailMs() {
-      return outputTailMs(network && !deviceStandIn);
+      return outputTailMs(inPage && !deviceStandIn);
     },
   };
 }

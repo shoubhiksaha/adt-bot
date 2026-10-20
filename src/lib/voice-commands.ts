@@ -293,31 +293,34 @@ export function withoutLeadingEcho(heard: string, spoken: string): string {
 export function echoesLastWords(heard: string, spoken: string): boolean {
   const h = normalize(heard).split(" ").filter(Boolean);
   if (h.length < 4) return false;
-  const s = normalize(spoken).split(" ").filter(Boolean).slice(-60);
-  // Most heard words found in order in what was just said, ending near its end (a late echo is
-  // always the last words).
-  let best = 0;
-  for (let start = 0; start < s.length; start++) {
-    let i = 0;
-    let last = -1;
-    for (let j = start; j < s.length && i < h.length; j++) {
-      if (s[j] === h[i] || near(s[j], h[i])) {
-        i++;
-        last = j;
-      }
-    }
-    if (last >= s.length - 15) best = Math.max(best, i);
-    if (best === h.length) break;
-  }
-  return best / h.length >= 0.75;
+  // A late echo is always the last words said: look back only a little further than it is long.
+  const s = normalize(spoken).split(" ").filter(Boolean).slice(-(Math.ceil(h.length * 1.5) + 8));
+  // "Yes, the message to Sayan was the right one": an answer that repeats the bot's words starts
+  // with one the bot didn't say.
+  if ((YES.test(h[0]) || NO.test(h[0])) && !s.some((w) => similar(w, h[0]))) return false;
+  // Most heard words found in order, allowing for words misheard ("with a chance" for "with the
+  // chance"), and ending near the end of what was said.
+  const { count, last } = latestAlignment(h, s);
+  return last >= s.length - 15 && count / h.length >= 0.75;
 }
 
-/** Speech-to-text often hears a word slightly differently ("Sayan" / "Sayen"). */
-function near(a: string, b: string): boolean {
-  if (a.length < 4 || b.length < 4 || Math.abs(a.length - b.length) > 1) return false;
-  let diff = 0;
-  for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] !== b[i] && ++diff > 1) return false;
-  return true;
+/** How many heard words line up, in order, with what was said, and where the last one is (as late as possible). */
+function latestAlignment(heard: string[], spoken: string[]): { count: number; last: number } {
+  const n = heard.length;
+  const m = spoken.length;
+  const table = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = 1; i <= n; i++) {
+    for (let j = 1; j <= m; j++) {
+      table[i][j] = similar(heard[i - 1], spoken[j - 1]) ? table[i - 1][j - 1] + 1 : Math.max(table[i - 1][j], table[i][j - 1]);
+    }
+  }
+  // Walk back from the end, skipping heard words before spoken ones, so the last match is the latest.
+  for (let i = n, j = m; i > 0 && j > 0; ) {
+    if (similar(heard[i - 1], spoken[j - 1]) && table[i][j] === table[i - 1][j - 1] + 1) return { count: table[n][m], last: j - 1 };
+    if (table[i - 1][j] >= table[i][j - 1]) i--;
+    else j--;
+  }
+  return { count: 0, last: -1 };
 }
 
 /**

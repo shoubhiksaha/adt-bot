@@ -2,7 +2,7 @@ import { type EarlyReply, sendMessage, setVoiceApprover, setVoiceModeActive, sta
 import { splitThink } from "./llm";
 import { selectBot, startNewChat, updateSettings, useStore } from "./store";
 import { localChoice, localVoiceReady } from "./local-tts";
-import { chime, createSpeaker, duckSpeech, type Speaker, takeSentences } from "./tts";
+import { chime, createSpeaker, duckSpeech, type Speaker, takeSentences, warmDeviceVoice } from "./tts";
 import { END_SILENCE_MS, type Engine, ENGINE_LABELS, listen, type ListenSession, resolveEngine, stopReadAloud, transcribe } from "./voice";
 import {
   echoesLastWords,
@@ -237,6 +237,7 @@ export class VoiceSession {
     const { voice } = this.context();
     const local = localChoice(voice);
     if (local) localVoiceReady(local);
+    else warmDeviceVoice(voice);
     chime("listen");
     if (this.hooks.initialRequest?.trim()) void this.process(this.hooks.initialRequest.trim());
     else this.enterListening();

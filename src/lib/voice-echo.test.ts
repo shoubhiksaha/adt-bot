@@ -36,6 +36,7 @@ vi.mock("./tts", async () => {
     takeSentences,
     chime: () => undefined,
     duckSpeech: () => undefined,
+    warmDeviceVoice: () => undefined,
     createSpeaker: (_context: unknown, hooks: { onSentence?: (s: string) => void } = {}) => {
       let spoken = "";
       return {
@@ -257,6 +258,12 @@ describe("telling a late echo from a reply", () => {
     // Words from the start of a long reply aren't a late echo (that is always the end).
     const long = "Sure I can help with that. " + "Here is a lot more detail about the plan and the steps involved in it today. ".repeat(3);
     expect(echoesLastWords("Sure I can help with that", long)).toBe(false);
+    // A word misheard in the middle ("a" for "the") doesn't hide the rest.
+    const weather = "The weather in Kolkata is warm and humid today, with the chance of rain in the evening.";
+    expect(echoesLastWords("Humid today with a chance of rain in the evening", weather)).toBe(true);
+    // An answer that repeats its words isn't an echo.
+    expect(echoesLastWords("Yes, the message to Sayan was the right one", spoken)).toBe(false);
+    expect(echoesLastWords("No, the message to Sayan was wrong", spoken)).toBe(false);
   });
 });
 

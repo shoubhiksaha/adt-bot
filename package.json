@@ -71,6 +71,10 @@
         {
           "from": "build/native/adt-mac-helper",
           "to": "bin/adt-mac-helper"
+        },
+        {
+          "from": "build/native/adt-speech-helper",
+          "to": "bin/adt-speech-helper"
         }
       ]
     },
