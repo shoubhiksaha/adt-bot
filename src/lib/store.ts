@@ -106,6 +106,7 @@ export const defaultSettings: Settings = {
     rate: 1,
     tts: "system",
     localVoice: "F1",
+    kokoroVoice: "af_heart",
     ttsProviderId: "",
     ttsModel: "gpt-4o-mini-tts",
     ttsVoice: "alloy",

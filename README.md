@@ -95,14 +95,24 @@ Bots can do things as well as talk. Turn it on or off, and choose what needs you
   as a bot's model.
 - **Control your Mac** (desktop, macOS, off by default; on with Full access). Bots use apps by name, the way
   [Ghost OS](https://github.com/ghostwright/ghost-os) does: a small built-in helper reads each app's controls from
-  macOS accessibility (buttons, fields, chat lists, dialogs, and web pages in Chrome, Brave or Electron apps), presses
-  them even when the app is behind other windows, and types any language or emoji without touching the clipboard.
-  Each action returns the updated window, so a task like "send Mom 'on my way' on WhatsApp" takes a few steps
-  instead of a screenshot-and-click loop. App links (`whatsapp://send?…`, `mailto:`, Spotify, Maps, Zoom…) open
-  directly. Screenshots, clicks, keys, scrolling and AppleScript are there for everything else. Buttons such as
-  Delete, Pay or Sign out always ask. A "Stop" banner shows while it works, and nothing is typed while the Mac is
-  locked. Needs Accessibility and Screen Recording permission (**Settings → Computer control** links to the right
-  System Settings pages).
+  macOS accessibility (buttons, fields, chat lists, dialogs), presses them even when the app is behind other
+  windows, and types any language or emoji without touching the clipboard. When an app is in the background it
+  types there **without bringing it forward**, so you can keep working. Each action returns the updated window, so
+  "send Mom 'on my way' on WhatsApp" takes a few steps instead of a screenshot-and-click loop.
+  - **Web pages in your own browser** (Safari, Chrome, Brave, Edge, Arc, Vivaldi), signed in as you: bots read
+    the page's links, buttons, fields and text, click, type, pick options and switch tabs, through the page
+    itself, even with the browser in the background. The first time, allow it in the browser: **View → Developer →
+    Allow JavaScript from Apple Events** (Chrome, Brave, Edge), or in Safari **Settings → Advanced → Show features
+    for web developers**, then **Develop → Allow JavaScript from Apple Events**.
+  - **Text on screen**: Apple's on-device text recognition finds text that accessibility can't see (canvases,
+    games, remote desktops), with positions to click.
+  - **Recipes**: after working out a task in an app, a bot can save the steps (with blanks such as contact and
+    message) and later replay them quickly the same way. Listed in **Settings → Computer control**.
+  - App links (`whatsapp://send?…`, `mailto:`, Spotify, Maps, Zoom…) open directly. Screenshots, clicks, keys,
+    scrolling and AppleScript cover everything else. Buttons such as Delete, Pay or Sign out, and typing
+    passwords, always ask. A "Stop" banner shows while it works (**⌘⇧⎋** stops every bot), and nothing is typed
+    while the Mac is locked. Needs Accessibility and Screen Recording permission (**Settings → Computer control**
+    links to the right System Settings pages).
 - **Each bot's own computer** (desktop): a Docker container per bot with a persistent `/workspace`,
   resource limits, and an optional "no network" switch. See **Computers** in the sidebar.
 - **Rooms** (desktop): people on your network chat with each other and your bots from any browser by
@@ -133,12 +143,18 @@ Click the **sound-wave button** next to the mic for a hands-free conversation:
 | Chrome, Edge, Safari | The browser's recognizer | Device voice, or a natural voice |
 | iPhone / iPad | iOS speech recognition | iOS voices, or a natural voice |
 | Android | Android speech recognition | Android voices, or a natural voice |
-| Desktop app, Firefox | Whisper on your device (77 MB once, then offline and private) | Device voice, or a natural voice |
+| Desktop app, Firefox | Whisper on your device (77 MB once, then offline and private), or Moonshine for English | Device voice, or a natural voice |
 
 **Natural voice on this device** (Settings → Voice → Reply voice): [Supertonic](https://huggingface.co/onnx-community/Supertonic-TTS-ONNX)
 runs offline in the app (a 262 MB download once, 10 voices). It starts speaking in about 0.2–0.6 s per
-sentence, much faster than the macOS voice, and you can interrupt it by talking. Kokoro's browser package wasn't
-used because it bundles GPL-licensed code.
+sentence, much faster than the macOS voice, and you can interrupt it by talking. **Kokoro** (92 MB once, 28 US and UK
+voices) sounds the most natural but takes about 3–5 s to start each sentence on an M1 Mac; it uses the GPU when it can.
+Its phonemizer includes eSpeak NG (GPL-3.0), loaded only when you choose Kokoro.
+
+**Faster on-device listening** (Settings → Voice → Speech recognition → On this device): **Moonshine** (67 MB base,
+32 MB tiny) transcribes English faster than Whisper because it only reads the audio you spoke, not a 30 s window
+(a 4.5 s question on an M1's CPU: 0.32 s vs 1.15 s for Whisper base; Whisper narrows the gap once it moves to the GPU).
+For other languages, or if it can't run, the matching Whisper size is used instead.
 
 **Natural voices online** (Settings → Voice → Reply voice): any OpenAI-compatible `/audio/speech` server (OpenAI
 `gpt-4o-mini-tts`, or a free self-hosted [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI) server added as a
@@ -323,7 +339,7 @@ src/lib/chat.ts        Send, search, stream, stop, regenerate, memory, smart tit
 src/lib/search.ts      Web search engines, page reading, citations
 src/lib/imagine.ts     Image generation (OpenRouter, Gemini, OpenAI-style)
 src/lib/voice-session.ts  Hands-free voice conversation: turns, commands, wake word, barge-in
-src/lib/speech.worker.ts  Silero VAD + Whisper in a worker (speculative transcription, live captions)
+src/lib/speech.worker.ts  Silero VAD + Whisper/Moonshine in a worker (speculative transcription, live captions)
 src/lib/segmenter.ts      Turn detection from voice probabilities
 src/lib/voice-commands.ts Voice commands, wake-word matching, echo detection
 src/lib/tts.ts            Reply voices: device, OpenAI-compatible, ElevenLabs, Fish Audio, Cartesia, Deepgram; sentence streaming

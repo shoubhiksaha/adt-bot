@@ -1,18 +1,15 @@
 import { createStore, keys } from "idb-keyval";
 import workletUrl from "./pcm-worklet.js?url";
+import { effectiveSpeechModel, SPEECH_MODELS, type SpeechModel } from "./speech-models";
 
-export type WhisperSize = "tiny" | "base" | "small";
-export const WHISPER_SIZES: Record<WhisperSize, { label: string; mb: number }> = {
-  tiny: { label: "Tiny: fastest, good for phones", mb: 41 },
-  base: { label: "Base: balanced (recommended)", mb: 77 },
-  small: { label: "Small: most accurate, slower", mb: 249 },
-};
+export { SPEECH_MODELS, type SpeechModel };
 
 type Progress = { progress: number; loaded: number; total: number };
 let worker: Worker | null = null;
 let nextId = 0;
 const pending = new Map<number, { resolve: (text: string) => void; reject: (error: Error) => void }>();
 const progressListeners = new Set<(p: Progress | null) => void>();
+const noticeListeners = new Set<(message: string) => void>();
 /** Live listeners by id; worker events carry the id of the listener they belong to. */
 const liveListeners = new Map<number, (message: any) => void>();
 let nextListener = 0;
@@ -30,6 +27,11 @@ function getWorker(): Worker {
       if (data.type === "progress") {
         const done = (data.progress ?? 0) >= 100;
         progressListeners.forEach((l) => l(done ? null : { progress: data.progress ?? 0, loaded: data.loaded ?? 0, total: data.total ?? 0 }));
+        return;
+      }
+      if (data.type === "notice") {
+        lastNotice = data.message;
+        noticeListeners.forEach((l) => l(data.message));
         return;
       }
       if (data.id !== undefined && pending.has(data.id)) {
@@ -69,31 +71,43 @@ function call(message: Record<string, unknown>, transfer: Transferable[] = []): 
 
 const language = () => (navigator.language || "en").split("-")[0].toLowerCase();
 
+/** The model that runs for this setting: Moonshine is English only, so other languages get Whisper. */
+export const localSpeechModel = (model: string): SpeechModel => effectiveSpeechModel(model, language());
+
+let lastNotice = "";
+/** Why the chosen model was swapped (e.g. Moonshine couldn't start here and Whisper took over). */
+export function onSpeechNotice(listener: (message: string) => void): () => void {
+  if (lastNotice) listener(lastNotice);
+  noticeListeners.add(listener);
+  return () => noticeListeners.delete(listener);
+}
+
 /** Download progress of the speech model (null when idle or done). */
 export function onWhisperProgress(listener: (p: Progress | null) => void): () => void {
   progressListeners.add(listener);
   return () => progressListeners.delete(listener);
 }
 
-export function preloadWhisper(size: WhisperSize): Promise<void> {
-  return call({ type: "load", size }).then(() => undefined);
+export function preloadWhisper(size: SpeechModel): Promise<void> {
+  return call({ type: "load", size: localSpeechModel(size) }).then(() => undefined);
 }
 
-export async function whisperDownloaded(size: WhisperSize): Promise<boolean> {
+export async function whisperDownloaded(size: SpeechModel): Promise<boolean> {
   try {
     const stored = (await keys(createStore("adtbot-models", "files"))) as string[];
     const has = (...parts: string[]) => stored.some((k) => parts.every((p) => k.includes(p)));
-    // Everything voice mode needs offline: both halves of Whisper and the voice detector.
-    return has(`whisper-${size}/`, "encoder") && has(`whisper-${size}/`, "decoder") && has("silero-vad");
+    const repo = `${SPEECH_MODELS[localSpeechModel(size)].repo.split("/")[1]}/`;
+    // Everything voice mode needs offline: both halves of the model and the voice detector.
+    return has(repo, "encoder") && has(repo, "decoder") && has("silero-vad");
   } catch {
     return false;
   }
 }
 
-export async function transcribeLocally(audio: Blob | Float32Array, size: WhisperSize): Promise<string> {
+export async function transcribeLocally(audio: Blob | Float32Array, size: SpeechModel): Promise<string> {
   const samples = audio instanceof Float32Array ? audio : await decodeTo16k(audio);
   if (samples.length < 16000 * 0.3) return "";
-  return call({ type: "transcribe", size, audio: samples, language: language() }, [samples.buffer]);
+  return call({ type: "transcribe", size: localSpeechModel(size), audio: samples, language: language() }, [samples.buffer]);
 }
 
 /** Whisper wants 16 kHz mono samples. */
@@ -148,7 +162,7 @@ async function silentMicMessage(): Promise<string> {
 
 export type ListenerOptions = {
   mode: "local" | "cloud";
-  size: WhisperSize;
+  size: SpeechModel;
   endSilenceMs: number;
   partials: boolean;
   onEvent: (event: ListenerEvent) => void;
@@ -274,7 +288,7 @@ export class Listener {
         type: "start",
         listener: this.id,
         mode: options.mode,
-        size: options.size,
+        size: localSpeechModel(options.size),
         language: language(),
         endSilenceMs: options.endSilenceMs,
         partials: options.partials,

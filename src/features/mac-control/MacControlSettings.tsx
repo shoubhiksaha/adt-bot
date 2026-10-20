@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Section, Toggle } from "../../components/settings/controls";
 import { useStore } from "../../lib/store";
 import { type MacPermissions, type MacScreenshot, mac } from "./api";
+import { deleteRecipe, useRecipes } from "./recipes";
 import { isMacDesktop, setMacControlEnabled, useMacControl } from "./store";
 import { macTools } from "./tools";
 
@@ -167,11 +168,51 @@ export function MacControlSettings() {
         <ul className="mac-control-tools small">
           {macTools.map((t) => (
             <li key={t.name}>
-              <code>{t.name}</code> <span className="muted">— {t.riskFor ? "opening asks per your policy, quitting always asks" : RISK_LABEL[t.risk]}</span>
+              <code>{t.name}</code> <span className="muted">— {VARIABLE_RISK[t.name] ?? RISK_LABEL[t.risk]}</span>
             </li>
           ))}
         </ul>
       </Section>
+
+      <Recipes />
     </div>
+  );
+}
+
+/** Tools whose risk depends on what they're asked to do. */
+const VARIABLE_RISK: Record<string, string> = {
+  mac_open_app: "opening asks per your policy, quitting always asks",
+  mac_press: "asks per your policy; delete, pay, sign out and similar always ask",
+  mac_set_text: "asks per your policy; typing into a terminal always asks",
+  mac_browser: "reading runs on its own; clicking and typing ask per your policy; payments, deletes and passwords always ask",
+  mac_recipes: "listing runs on its own; saving asks per your policy",
+  mac_recipe_run: "asks like its riskiest step",
+};
+
+function Recipes() {
+  const recipes = useRecipes((s) => s.recipes);
+  return (
+    <Section title="Recipes" hint="Tasks a bot worked out once and saved, so it can repeat them quickly the same way. Bots save them after doing something you're likely to ask for again.">
+      {recipes.length ? (
+        <ul className="mac-control-recipes">
+          {recipes.map((r) => (
+            <li key={r.name}>
+              <div>
+                <strong>{r.name}</strong>
+                {r.params.length > 0 && <span className="muted small"> · {r.params.join(", ")}</span>}
+                <div className="small muted">
+                  {r.description || `${r.steps.length} steps`} · {r.steps.length} steps · {r.runs ? `run ${r.runs} time${r.runs === 1 ? "" : "s"}` : "not run yet"}
+                </div>
+              </div>
+              <button type="button" className="btn danger" onClick={() => deleteRecipe(r.name)} aria-label={`Delete the recipe ${r.name}`}>
+                Delete
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="small muted">None yet. Ask a bot to do something in an app, then “save that as a recipe”.</p>
+      )}
+    </Section>
   );
 }

@@ -1,11 +1,11 @@
 import { sendMessage, setVoiceModeActive, stopStreaming, stripMemoryTags } from "./chat";
 import { splitThink } from "./llm";
 import { selectBot, startNewChat, updateSettings, useStore } from "./store";
-import { localVoiceReady } from "./local-tts";
+import { localChoice, localVoiceReady } from "./local-tts";
 import { chime, createSpeaker, duckSpeech, type Speaker, takeSentences } from "./tts";
 import { END_SILENCE_MS, type Engine, ENGINE_LABELS, listen, type ListenSession, resolveEngine, stopReadAloud, transcribe } from "./voice";
 import { isEcho, isLikelyHallucination, isSubstantial, matchWakeWord, parseVoiceCommand } from "./voice-commands";
-import { Listener, type ListenerEvent, onWhisperProgress, toWav } from "./whisper";
+import { Listener, type ListenerEvent, localSpeechModel, onWhisperProgress, SPEECH_MODELS, toWav } from "./whisper";
 
 /** What the bot is doing during a tool step, for the voice screen. */
 function activityFor(tool: string): string {
@@ -118,7 +118,9 @@ export class VoiceSession {
       download: null,
       latencyMs: null,
       timing: null,
-      engineLabel: ENGINE_LABELS[this.engine],
+      // Name the on-device model that actually runs (Whisper or Moonshine).
+      engineLabel:
+        this.engine === "whisper-local" ? `${SPEECH_MODELS[localSpeechModel(settings.voice.localModel)].label.split(":")[0]} on this device (private, offline)` : ENGINE_LABELS[this.engine],
       wakeName: this.wakeNames()[0] ?? "ADT",
     };
   }
@@ -195,7 +197,8 @@ export class VoiceSession {
     // Then the on-device voice (after the speech model, so the two don't load at once on a small
     // Mac); until it's ready, replies use the device voice.
     const { voice } = this.context();
-    if (voice.tts === "local") localVoiceReady(voice.localVoice);
+    const local = localChoice(voice);
+    if (local) localVoiceReady(local);
     chime("listen");
     if (this.hooks.initialRequest?.trim()) void this.process(this.hooks.initialRequest.trim());
     else this.enterListening();

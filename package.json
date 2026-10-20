@@ -107,6 +107,7 @@
     "electron-builder": "^26.15.3",
     "highlight.js": "^11.12.0",
     "idb-keyval": "^6.3.0",
+    "kokoro-js": "^1.2.1",
     "lucide-react": "^1.59.0",
     "mammoth": "^1.13.0",
     "pdfjs-dist": "^6.4.299",
@@ -122,5 +123,10 @@
     "vitest": "^5.0.5",
     "zustand": "^5.0.15"
   },
-  "homepage": "https://github.com/shoubhiksaha/adt-bot"
+  "homepage": "https://github.com/shoubhiksaha/adt-bot",
+  "overrides": {
+    "kokoro-js": {
+      "@huggingface/transformers": "$@huggingface/transformers"
+    }
+  }
 }

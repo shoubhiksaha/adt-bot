@@ -71,6 +71,27 @@
   padding-left: 18px;
   line-height: 1.7;
 }
+.mac-control-recipes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.mac-control-recipes li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  min-width: 0;
+}
+.mac-control-recipes li > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 @media (max-width: 520px) {
   .mac-control-perm {
     flex-wrap: wrap;

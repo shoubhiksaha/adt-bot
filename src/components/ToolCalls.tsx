@@ -35,6 +35,10 @@ const LABELS: Record<string, string> = {
   mac_open_app: "Opened",
   mac_list_apps: "Checked open apps",
   mac_applescript: "Ran an AppleScript",
+  mac_browser: "Used the browser",
+  mac_find_text: "Read the screen",
+  mac_recipes: "Recipes",
+  mac_recipe_run: "Ran a recipe",
 };
 
 /** What a bot asks to do, for approval cards: "Allow the bot to run a command?" */
@@ -55,11 +59,14 @@ const ASKS: Record<string, string> = {
   mac_drag: "drag on your Mac",
   mac_open_app: "open",
   mac_applescript: "run an AppleScript",
+  mac_browser: "use your browser",
+  mac_recipes: "save a recipe",
+  mac_recipe_run: "run a recipe",
   delegate_to_cli_agent: "hand a task to a coding agent",
   create_routine: "create a routine",
 };
 
-const MAIN_ARGS = ["query", "url", "command", "path", "fact", "expression", "prompt", "target", "task", "app", "text", "field", "combo", "script"];
+const MAIN_ARGS = ["query", "url", "command", "path", "fact", "expression", "prompt", "target", "task", "app", "element", "text", "field", "combo", "script", "name"];
 
 function mainArg(call: ToolCallRecord): string | undefined {
   const value = MAIN_ARGS.map((k) => call.args[k]).find((v) => typeof v === "string" && v) as string | undefined;

@@ -5,8 +5,9 @@ import { CUSTOM_VOICE_TEMPLATES, type CustomVoice, newCustomVoice } from "../../
 import { bestVoice, CLOUD_TTS, customVoiceFor, type DeviceVoice, listVoices, OPENAI_TTS_VOICES, rankVoice } from "../../lib/tts";
 import type { CloudTts, VoiceSettings } from "../../lib/types";
 import { ENGINE_LABELS, resolveEngine, speak, TRANSCRIBE_MODEL_SUGGESTIONS } from "../../lib/voice";
-import { LOCAL_VOICE_MB, LOCAL_VOICES, localVoiceDownloaded, onLocalVoiceProgress, preloadLocalVoice } from "../../lib/local-tts";
-import { onWhisperProgress, preloadWhisper, WHISPER_SIZES, whisperDownloaded } from "../../lib/whisper";
+import { KOKORO_MB, KOKORO_VOICES, LOCAL_VOICE_MB, LOCAL_VOICES, localChoice, localVoiceDownloaded, onLocalVoiceProgress, preloadLocalVoice } from "../../lib/local-tts";
+import { isMoonshine } from "../../lib/speech-models";
+import { localSpeechModel, onSpeechNotice, onWhisperProgress, preloadWhisper, SPEECH_MODELS, type SpeechModel, whisperDownloaded } from "../../lib/whisper";
 import { ModelInput, Section, Toggle } from "./controls";
 
 export function VoiceSettings() {
@@ -20,6 +21,7 @@ export function VoiceSettings() {
   const [downloaded, setDownloaded] = useState<boolean | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [speechNotice, setSpeechNotice] = useState("");
   const openaiLike = providers.filter((p) => p.kind === "openai");
   const engine = resolveEngine(voice, providers);
   const set = (patch: Partial<typeof voice>) => updateSettings({ voice: { ...voice, ...patch } });
@@ -33,6 +35,10 @@ export function VoiceSettings() {
     void whisperDownloaded(voice.localModel).then((yes) => setDownloaded(yes));
   }, [voice.localModel]);
   useEffect(() => onWhisperProgress((p) => setProgress(p ? Math.round(p.progress) : null)), []);
+  useEffect(() => onSpeechNotice(setSpeechNotice), []);
+  // Moonshine is English only: for other languages the matching Whisper size runs instead.
+  const speechModel = localSpeechModel(voice.localModel);
+  const systemLanguage = typeof navigator === "undefined" ? "en" : navigator.language || "en";
 
   const sortedVoices = [...voices].sort((a, b) => rankVoice(b) - rankVoice(a) || a.name.localeCompare(b.name));
   const [testError, setTestError] = useState("");
@@ -48,7 +54,8 @@ export function VoiceSettings() {
         <div>
           <strong>Voice is on</strong>
           <div className="small muted">
-            🎤 dictates into the message box · <AudioLines size={12} /> starts hands-free voice mode. Listening with {ENGINE_LABELS[engine]}.
+            🎤 dictates into the message box · <AudioLines size={12} /> starts hands-free voice mode. Listening with{" "}
+            {engine === "whisper-local" ? `${SPEECH_MODELS[speechModel].label.split(":")[0]} on this device (private, offline)` : ENGINE_LABELS[engine]}.
           </div>
         </div>
       </div>
@@ -67,7 +74,8 @@ export function VoiceSettings() {
             }}
           >
             <option value="system">Device voice (free, instant)</option>
-            <option value="local">Natural, on this device (free, private, works offline)</option>
+            <option value="local">Natural, on this device: Supertonic (free, private, works offline)</option>
+            <option value="kokoro">Natural, on this device: Kokoro (most natural, slower)</option>
             <option value="openai">Natural: OpenAI-compatible (OpenAI, or a self-hosted Kokoro/LocalAI server)</option>
             <option value="elevenlabs">Natural: ElevenLabs</option>
             <option value="fish">Natural: Fish Audio</option>
@@ -100,7 +108,7 @@ export function VoiceSettings() {
           </div>
         )}
 
-        {voice.tts === "local" && <LocalVoiceFields voice={voice} set={set} />}
+        {(voice.tts === "local" || voice.tts === "kokoro") && <LocalVoiceFields key={voice.tts} voice={voice} set={set} />}
 
         {voice.tts === "openai" && (
           <>
@@ -230,7 +238,7 @@ export function VoiceSettings() {
           <select id="stt-engine" className="select" value={voice.engine} onChange={(e) => set({ engine: e.target.value as typeof voice.engine })}>
             <option value="auto">Automatic (recommended)</option>
             <option value="device">This device's speech recognition</option>
-            <option value="whisper-local">Whisper on this device (private, works offline)</option>
+            <option value="whisper-local">On this device: Whisper or Moonshine (private, works offline)</option>
             <option value="whisper-cloud">Cloud Whisper (OpenAI, Groq, your server…)</option>
           </select>
           <span className="small muted">
@@ -239,14 +247,22 @@ export function VoiceSettings() {
         </div>
         {engine === "whisper-local" && (
           <div className="field">
-            <label htmlFor="whisper-size">On-device Whisper model</label>
-            <select id="whisper-size" className="select" value={voice.localModel} onChange={(e) => set({ localModel: e.target.value as typeof voice.localModel })}>
-              {(Object.keys(WHISPER_SIZES) as (keyof typeof WHISPER_SIZES)[]).map((size) => (
+            <label htmlFor="whisper-size">On-device speech model</label>
+            <select id="whisper-size" className="select" value={voice.localModel} onChange={(e) => set({ localModel: e.target.value as SpeechModel })}>
+              {(Object.keys(SPEECH_MODELS) as SpeechModel[]).map((size) => (
                 <option key={size} value={size}>
-                  {WHISPER_SIZES[size].label} · {WHISPER_SIZES[size].mb} MB
+                  {SPEECH_MODELS[size].label} · {SPEECH_MODELS[size].mb} MB
                 </option>
               ))}
             </select>
+            {isMoonshine(voice.localModel) && (
+              <span className="small muted">
+                {speechModel !== voice.localModel
+                  ? `Moonshine only understands English. Your system language is ${systemLanguage}, so ${SPEECH_MODELS[speechModel].label.split(":")[0]} is used instead.`
+                  : "Moonshine transcribes short questions faster than Whisper, but only understands English. If it can't run on this device, Whisper takes over."}
+              </span>
+            )}
+            {speechNotice && isMoonshine(voice.localModel) && <span className="small muted">{speechNotice}</span>}
             <div className="btn-row" style={{ marginTop: 6 }}>
               {downloaded ? (
                 <span className="status ok" style={{ marginTop: 0 }}>
@@ -264,7 +280,7 @@ export function VoiceSettings() {
                       .catch((e) => setDownloadError((e as Error).message));
                   }}
                 >
-                  {progress !== null ? `Downloading… ${progress}%` : "Download now"}
+                  {progress !== null ? `Downloading… ${progress}%` : `Download now (${SPEECH_MODELS[speechModel].mb} MB)`}
                 </button>
               )}
             </div>
@@ -435,19 +451,21 @@ function CustomVoiceFields({ voice, set }: { voice: VoiceSettings; set: (patch: 
   );
 }
 
-/** The on-device natural voice (Supertonic): voice choice and a one-time download. */
+/** An on-device natural voice (Supertonic or Kokoro): voice choice and a one-time download. */
 function LocalVoiceFields({ voice, set }: { voice: VoiceSettings; set: (patch: Partial<VoiceSettings>) => void }) {
+  const choice = localChoice(voice)!;
+  const kokoro = choice.engine === "kokoro";
   const [downloaded, setDownloaded] = useState<boolean | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
-    void localVoiceDownloaded().then(setDownloaded);
-  }, []);
-  useEffect(() => onLocalVoiceProgress(setProgress), []);
+    void localVoiceDownloaded(choice.engine).then(setDownloaded);
+  }, [choice.engine]);
+  useEffect(() => onLocalVoiceProgress(choice.engine, setProgress), [choice.engine]);
   const download = () => {
     setError("");
     setProgress(0);
-    preloadLocalVoice(voice.localVoice)
+    preloadLocalVoice(choice)
       .then(() => setDownloaded(true))
       .catch((e: Error) => setError(e.message))
       .finally(() => setProgress(null));
@@ -456,8 +474,13 @@ function LocalVoiceFields({ voice, set }: { voice: VoiceSettings; set: (patch: P
     <>
       <div className="field">
         <label htmlFor="local-voice">Voice</label>
-        <select id="local-voice" className="select" value={voice.localVoice || "F1"} onChange={(e) => set({ localVoice: e.target.value })}>
-          {LOCAL_VOICES.map((v) => (
+        <select
+          id="local-voice"
+          className="select"
+          value={choice.voice}
+          onChange={(e) => set(kokoro ? { kokoroVoice: e.target.value } : { localVoice: e.target.value })}
+        >
+          {(kokoro ? KOKORO_VOICES : LOCAL_VOICES).map((v) => (
             <option key={v.id} value={v.id}>
               {v.label}
             </option>
@@ -471,14 +494,21 @@ function LocalVoiceFields({ voice, set }: { voice: VoiceSettings; set: (patch: P
           ) : (
             <>
               <button type="button" className="btn" onClick={download} disabled={progress !== null}>
-                {progress !== null ? `Downloading… ${progress}%` : `Download voice (${LOCAL_VOICE_MB} MB, one time)`}
+                {progress !== null ? `Downloading… ${progress}%` : `Download voice (${kokoro ? KOKORO_MB : LOCAL_VOICE_MB} MB, one time)`}
               </button>
               <span className="small muted">Until it's downloaded, replies use the device voice.</span>
             </>
           )}
         </div>
         {error && <span className="small error-text">{error}</span>}
-        <span className="small muted">English only. Uses the Supertonic model by Supertone (OpenRAIL-M licence).</span>
+        {kokoro ? (
+          <span className="small muted">
+            English only. The most natural on-device voice, but slower than Supertonic to start each sentence: about 3–5 seconds on an M1
+            Mac, so replies begin after a pause. Uses the Kokoro-82M model (Apache-2.0) and eSpeak NG (GPL-3.0).
+          </span>
+        ) : (
+          <span className="small muted">English only. Uses the Supertonic model by Supertone (OpenRAIL-M licence).</span>
+        )}
       </div>
     </>
   );

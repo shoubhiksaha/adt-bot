@@ -12,6 +12,7 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import Vision
 
 setvbuf(stdout, nil, _IOLBF, 0)
 let systemWide = AXUIElementCreateSystemWide()
@@ -401,6 +402,19 @@ func postClick(_ p: CGPoint, button: CGMouseButton = .left, clicks: Int = 1) {
   }
 }
 
+/** Where the pointer is now (top-left origin, like every other coordinate here). */
+func pointerLocation() -> CGPoint { CGEvent(source: nil)?.location ?? .zero }
+
+/** Clicks for the user's sake: the pointer goes back where it was, so they can keep working. */
+func clickAndReturn(_ p: CGPoint, button: CGMouseButton = .left, clicks: Int = 1) {
+  let was = pointerLocation()
+  postClick(p, button: button, clicks: clicks)
+  usleep(40_000)
+  CGWarpMouseCursorPosition(was)
+  // Warping briefly decouples the mouse from the pointer; reconnect so the user's next move isn't ignored.
+  CGAssociateMouseAndMouseCursorPosition(1)
+}
+
 func center(_ el: AXUIElement) throws -> CGPoint {
   guard let f = frameOf(el), f.width > 0, f.height > 0 else { throw Failure(message: "That element has no position on screen.") }
   return CGPoint(x: f.midX, y: f.midY)
@@ -432,35 +446,41 @@ func press(_ req: [String: Any]) throws -> [String: Any] {
   let p = try center(el)
   bringForward(el)
   usleep(80_000)
-  postClick(p, button: how == "right_click" ? .right : .left, clicks: how == "double_click" ? 2 : 1)
+  clickAndReturn(p, button: how == "right_click" ? .right : .left, clicks: how == "double_click" ? 2 : 1)
   return ["method": "click", "x": Int(p.x), "y": Int(p.y)]
 }
 
 // Typing --------------------------------------------------------------------------------------
 
-func postKey(_ code: CGKeyCode, flags: CGEventFlags = []) {
+/** To the app in front (like a real keyboard), or straight to one app's queue when `pid` is given. */
+func send(_ e: CGEvent?, to pid: pid_t?) {
+  guard let e else { return }
+  if let pid { e.postToPid(pid) } else { e.post(tap: .cghidEventTap) }
+}
+
+func postKey(_ code: CGKeyCode, flags: CGEventFlags = [], to pid: pid_t? = nil) {
   let d = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true)
   d?.flags = flags
-  d?.post(tap: .cghidEventTap)
+  send(d, to: pid)
   let u = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false)
   u?.flags = flags
-  u?.post(tap: .cghidEventTap)
+  send(u, to: pid)
 }
 
 /** Types any text (accents, emoji, other scripts) as keyboard events, one character at a time. */
-func typeText(_ text: String) {
+func typeText(_ text: String, to pid: pid_t? = nil) {
   for ch in text {
     if ch == "\n" || ch == "\r\n" {
-      postKey(36)
+      postKey(36, to: pid)
     } else if ch == "\t" {
-      postKey(48)
+      postKey(48, to: pid)
     } else {
       let units = Array(String(ch).utf16)
       for down in [true, false] {
         let e = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down)
         e?.flags = []
         units.withUnsafeBufferPointer { e?.keyboardSetUnicodeString(stringLength: units.count, unicodeString: $0.baseAddress) }
-        e?.post(tap: .cghidEventTap)
+        send(e, to: pid)
       }
     }
     usleep(6_000)
@@ -473,26 +493,100 @@ func isFocused(_ el: AXUIElement) -> Bool {
   return CFEqual(f, el)
 }
 
+func valueOf(_ el: AXUIElement) -> String { string(attr(el, "AXValue")) ?? "" }
+
+/** Same text, ignoring invisible marks, spacing and case (apps reformat what they're given). */
+func loosely(_ s: String) -> String {
+  String(s.unicodeScalars.filter { !BIDI.contains($0) && !CharacterSet.whitespacesAndNewlines.contains($0) }).lowercased()
+}
+
+func selectAll(_ el: AXUIElement, length: Int) -> Bool {
+  var range = CFRange(location: 0, length: length)
+  return AXValueCreate(.cfRange, &range).map { AXUIElementSetAttributeValue(el, "AXSelectedTextRange" as CFString, $0) == .success } ?? false
+}
+
+func caretAtEnd(_ el: AXUIElement, length: Int) {
+  var range = CFRange(location: length, length: 0)
+  if let v = AXValueCreate(.cfRange, &range) { AXUIElementSetAttributeValue(el, "AXSelectedTextRange" as CFString, v) }
+}
+
 /**
- * Puts text in a field: focuses it (clicking if focusing doesn't take), replaces or appends, then
- * types like a person so the app sees normal input events (web apps ignore values set directly).
+ * Without bringing the app forward (so the user can keep working): focus the field inside its
+ * window, then insert the text through accessibility, or as key events sent only to that app.
+ * Returns how, or nil when the app didn't take it (the field is then exactly as it was).
+ */
+func setTextInBackground(_ el: AXUIElement, text: String, replace: Bool, old: String) -> String? {
+  let pid = pidOf(el)
+  AXUIElementSetAttributeValue(el, "AXFocused" as CFString, kCFBooleanTrue)
+  usleep(60_000)
+  let length = (old as NSString).length
+  let expected = loosely(replace ? text : old + text)
+  func place() -> Bool {
+    if replace { return length == 0 || selectAll(el, length: length) }
+    caretAtEnd(el, length: length)
+    return true
+  }
+  // Accessibility insert: what a dictation app does. Instant, and native apps treat it as typing.
+  if place(), AXUIElementSetAttributeValue(el, "AXSelectedText" as CFString, text as CFString) == .success {
+    usleep(80_000)
+    if loosely(valueOf(el)) == expected { return "accessibility" }
+  }
+  if valueOf(el) != old { return nil }
+  // Key events to that app only.
+  if place() {
+    typeText(text, to: pid)
+    usleep(150_000)
+    if loosely(valueOf(el)) == expected { return "keys" }
+  }
+  return nil
+}
+
+/**
+ * Puts text in a field. Apps in the background are typed into without being brought forward when
+ * they allow it; otherwise (and for apps in front) the field is focused (clicked if focusing doesn't
+ * take), its text replaced or appended to, and typed like a person, so the app sees normal input.
  */
 func setText(_ req: [String: Any]) throws -> [String: Any] {
   let el = try element(req)
   let text = req["text"] as? String ?? ""
   let replace = req["replace"] as? Bool ?? true
+  let submit = req["submit"] as? Bool == true
+  let old = valueOf(el)
+  let pid = pidOf(el)
+  let inFront = bool(attr(AXUIElementCreateApplication(pid), "AXFrontmost")) == true
+  var out: [String: Any] = ["typed": text.count]
+
+  // Password fields can't be read back, so there'd be no telling whether a background insert worked.
+  let secure = string(attr(el, "AXSubrole")) == "AXSecureTextField"
+  if !inFront, !secure, req["background"] as? Bool != false, !text.isEmpty, let how = setTextInBackground(el, text: text, replace: replace, old: old) {
+    out["background"] = how
+    if submit {
+      postKey(36, to: pid)
+      usleep(250_000)
+      // A sent message empties the box; anything else (a search) may keep its text.
+      if !valueOf(el).isEmpty && loosely(valueOf(el)) == loosely(replace ? text : old + text) { out["submitted"] = "unconfirmed" }
+    } else {
+      out["value"] = clip(valueOf(el), 300)
+    }
+    return out
+  }
+  if valueOf(el) != old {
+    // Something got in but not all of it: don't type it twice.
+    out["value"] = clip(valueOf(el), 300)
+    out["partial"] = true
+    return out
+  }
+
   bringForward(el)
   AXUIElementSetAttributeValue(el, "AXFocused" as CFString, kCFBooleanTrue)
   usleep(120_000)
   if !isFocused(el) {
-    postClick(try center(el))
+    let p = try center(el)
+    clickAndReturn(p)
     usleep(150_000)
   }
-  let old = string(attr(el, "AXValue")) ?? ""
   if replace && !old.isEmpty {
-    var range = CFRange(location: 0, length: (old as NSString).length)
-    let selected = AXValueCreate(.cfRange, &range).map { AXUIElementSetAttributeValue(el, "AXSelectedTextRange" as CFString, $0) == .success } ?? false
-    if !selected { postKey(0, flags: .maskCommand) }  // Select all.
+    if !selectAll(el, length: (old as NSString).length) { postKey(0, flags: .maskCommand) }  // Select all.
     usleep(50_000)
     if text.isEmpty { postKey(51) }  // Delete.
   } else if !replace {
@@ -500,13 +594,12 @@ func setText(_ req: [String: Any]) throws -> [String: Any] {
   }
   typeText(text)
   usleep(150_000)
-  if req["submit"] as? Bool == true {
+  if submit {
     postKey(36)
     usleep(100_000)
   }
   let now = string(attr(el, "AXValue"))
-  var out: [String: Any] = ["typed": text.count]
-  if let now, req["submit"] as? Bool != true { out["value"] = clip(now, 300) }
+  if let now, !submit { out["value"] = clip(now, 300) }
   return out
 }
 
@@ -515,6 +608,30 @@ func click(_ req: [String: Any]) throws -> [String: Any] {
   let b = req["button"] as? String
   postClick(CGPoint(x: x, y: y), button: b == "right" ? .right : b == "middle" ? .center : .left, clicks: req["clicks"] as? Int ?? 1)
   return ["ok": true]
+}
+
+// MARK: Reading text on screen
+
+/**
+ * Text in an image (a screenshot) with Apple's on-device text recognition, for what accessibility
+ * can't describe: canvases, games, remote desktops, images, apps without accessibility support.
+ * Boxes are fractions of the image, top-left origin.
+ */
+func ocr(_ req: [String: Any]) throws -> [String: Any] {
+  guard let path = req["path"] as? String, let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+    let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+  else { throw Failure(message: "Couldn't read the screenshot.") }
+  let request = VNRecognizeTextRequest()
+  request.recognitionLevel = req["fast"] as? Bool == true ? .fast : .accurate
+  request.usesLanguageCorrection = true
+  if #available(macOS 13.0, *) { request.automaticallyDetectsLanguage = true }
+  try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+  let lines: [[String: Any]] = (request.results ?? []).compactMap { obs in
+    guard let best = obs.topCandidates(1).first else { return nil }
+    let b = obs.boundingBox
+    return ["text": clip(best.string, 300), "confidence": (Double(best.confidence) * 100).rounded() / 100, "x": b.minX, "y": 1 - b.maxY, "w": b.width, "h": b.height]
+  }
+  return ["lines": lines, "width": image.width, "height": image.height]
 }
 
 // MARK: Main loop
@@ -540,6 +657,7 @@ func handle(_ req: [String: Any]) throws -> Any {
     typeText(req["text"] as? String ?? "")
     return ["typed": (req["text"] as? String ?? "").count]
   case "click": return try click(req)
+  case "ocr": return try ocr(req)
   case "front":
     guard let pid = frontApp() else { return NSNull() }
     return appInfo(pid)

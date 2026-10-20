@@ -49,7 +49,10 @@ export const TOOL_GUIDANCE = [
 /** How to use apps on the Mac well: by name, with as few steps as possible. */
 export const COMPUTER_GUIDANCE = [
   "Using apps on this Mac:",
-  "- Work by name, not by pixels: mac_ui lists an app's controls with [id]s; act with mac_press and mac_set_text. They return the window afterwards, so don't look again unless something is missing. Use mac_screenshot only for what mac_ui can't describe (images, canvases, games) or to check something visual.",
+  "- Work by name, not by pixels: mac_ui lists an app's controls with [id]s; act with mac_press and mac_set_text. They return the window afterwards, so don't look again unless something is missing. Typing into an app in the background leaves the user's window in front.",
+  "- Inside web pages (Safari, Chrome, Brave, Edge, Arc), use mac_browser: it reads and acts on the page itself, signed in as the user, even in the background.",
+  "- When mac_ui can't see something, mac_find_text reads the text on screen with positions for mac_click; use mac_screenshot only for what has no text (images, canvases, games) or to check something visual.",
+  "- Check mac_recipes first: if a saved recipe does the task, run it with mac_recipe_run. After working out a multi-step task the user may ask for again, save it as a recipe (steps that worked, elements named by text, changing values as {{params}}).",
   "- Take the shortest path: app links (whatsapp://send?phone=…&text=…, mailto:, spotify:…) and keyboard shortcuts (mac_key) beat clicking through menus. mac_open_app opens an app and lists its controls in one step.",
   "- ADT Bot's own window is usually in front: name the app you mean (app: \"WhatsApp\").",
   "- Check the result before saying it's done (e.g. the sent message appears in the chat). If something didn't work, try another way: a different element, a shortcut, or a screenshot to see what happened.",

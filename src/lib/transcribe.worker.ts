@@ -1,8 +1,9 @@
-// Whisper speech-to-text, on its own thread pool. Started by the speech worker, which keeps the
-// voice detector real-time in the meantime. Model files are cached in IndexedDB, so after the
-// first download it works offline and audio never leaves the device.
+// Speech-to-text (Whisper, or Moonshine for English), on its own thread pool. Started by the speech
+// worker, which keeps the voice detector real-time in the meantime. Model files are cached in
+// IndexedDB, so after the first download it works offline and audio never leaves the device.
 import { env, pipeline } from "@huggingface/transformers";
 import { createStore, get, keys, set } from "idb-keyval";
+import { isMoonshine, isNoiseTranscript, moonshineMaxTokens, SPEECH_MODELS, type SpeechModel, splitForMoonshine, whisperFor } from "./speech-models";
 import ortMjs from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.mjs?url";
 import ortWasm from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url";
 
@@ -82,17 +83,58 @@ const GPU_OPTIONS = {
   device: { encoder_model: "webgpu", decoder_model_merged: "wasm" },
 };
 
-function loadWhisper(size: string): Promise<Transcriber> {
-  if (whisper?.size !== size) {
-    // Straight to the GPU when its encoder is already here; otherwise the CPU version first.
-    const ready = gpuCached(size).then((cached) => (cached ? loadGpu(size) : loadCpu(size)));
-    whisper = { size, ready, gpu: false };
+/** Loaded Moonshine models (they take different options from Whisper). */
+const moonshines = new WeakSet<Transcriber>();
+
+/** `model`: a Whisper size or a Moonshine model; `whisper.size` is the model that was asked for. */
+function loadWhisper(model: string): Promise<Transcriber> {
+  if (whisper?.size !== model) {
+    const ready = isMoonshine(model) ? loadMoonshine(model) : loadWhisperSize(model);
+    whisper = { size: model, ready, gpu: false };
     ready.catch(() => (whisper = null));
   }
   return whisper.ready;
 }
 
-async function loadGpu(size: string): Promise<Transcriber> {
+/** `key`: the model the user asked for, when Whisper stands in for Moonshine. */
+function loadWhisperSize(size: string, key = size): Promise<Transcriber> {
+  // Straight to the GPU when its encoder is already here; otherwise the CPU version first.
+  return gpuCached(size).then((cached) => (cached ? loadGpu(size, key) : loadCpu(size, key)));
+}
+
+/**
+ * Moonshine (English only) on the CPU: it's small, and reads only the audio it's given instead of
+ * a 30 s window, so it doesn't need the GPU to be quick. If it can't load here, the matching
+ * Whisper size takes over for as long as this worker runs.
+ */
+async function loadMoonshine(model: SpeechModel): Promise<Transcriber> {
+  let t: Transcriber | undefined;
+  try {
+    t = (await pipeline("automatic-speech-recognition", SPEECH_MODELS[model].repo, {
+      dtype: "q8",
+      device: "wasm",
+      progress_callback: progress,
+    })) as unknown as Transcriber;
+    moonshines.add(t);
+    // Warm-up run so the first real question isn't slowed by kernel compilation.
+    await t(new Float32Array(16000), { max_new_tokens: moonshineMaxTokens(16000) });
+    post({ type: "progress", progress: 100 });
+    post({ type: "whisper-ready" });
+    return t;
+  } catch (error) {
+    await t?.dispose?.().catch(() => undefined);
+    const size = whisperFor(model);
+    post({ type: "notice", message: `Moonshine couldn't start (${(error as Error).message ?? error}), so Whisper ${size} is used instead.` });
+    // If Whisper can't load either (e.g. offline before either was downloaded), report Moonshine's problem.
+    return loadWhisperSize(size, model).catch(() => Promise.reject(error));
+  }
+}
+
+function progress(info: { status: string; progress?: number; loaded?: number; total?: number }) {
+  if (info.status === "progress_total") post({ type: "progress", progress: info.progress, loaded: info.loaded, total: info.total });
+}
+
+async function loadGpu(size: string, key = size): Promise<Transcriber> {
   try {
     const t = (await pipeline("automatic-speech-recognition", `onnx-community/whisper-${size}`, GPU_OPTIONS as never)) as unknown as Transcriber;
     await warmUp(t);
@@ -102,24 +144,22 @@ async function loadGpu(size: string): Promise<Transcriber> {
     return t;
   } catch {
     gpuFailed = true;
-    return loadCpu(size);
+    return loadCpu(size, key);
   }
 }
 
-function loadCpu(size: string): Promise<Transcriber> {
+function loadCpu(size: string, key = size): Promise<Transcriber> {
   return pipeline("automatic-speech-recognition", `onnx-community/whisper-${size}`, {
     dtype: "q8",
     device: "wasm",
-    progress_callback: (info: { status: string; progress?: number; loaded?: number; total?: number }) => {
-      if (info.status === "progress_total") post({ type: "progress", progress: info.progress, loaded: info.loaded, total: info.total });
-    },
+    progress_callback: progress,
   }).then(async (t) => {
     const transcriber = t as unknown as Transcriber;
     // Warm-up run so the first real question isn't slowed by kernel compilation.
     await warmUp(transcriber);
     post({ type: "progress", progress: 100 });
     post({ type: "whisper-ready" });
-    void upgradeToGpu(size);
+    void upgradeToGpu(size, key);
     return transcriber;
   }) as Promise<Transcriber>;
 }
@@ -130,15 +170,15 @@ function loadCpu(size: string): Promise<Transcriber> {
  * while the CPU version keeps working; the small decoder stays on the CPU, already downloaded.
  * Full precision: on an M1 it ran faster than the 16-bit version.
  */
-async function upgradeToGpu(size: string) {
+async function upgradeToGpu(size: string, key = size) {
   if (gpuFailed || !(await gpuAvailable)) return;
   try {
     const t = (await pipeline("automatic-speech-recognition", `onnx-community/whisper-${size}`, GPU_OPTIONS as never)) as unknown as Transcriber;
     await serial(() => warmUp(t));
     const current = whisper;
-    if (current?.size !== size) return void t.dispose?.();
+    if (current?.size !== key) return void t.dispose?.();
     const old = current.ready;
-    whisper = { size, ready: Promise.resolve(t), gpu: true };
+    whisper = { size: key, ready: Promise.resolve(t), gpu: true };
     // Free the CPU copy once anything already queued on it has run.
     void serial(async () => (await old).dispose?.()).catch(() => undefined);
     post({ type: "whisper-gpu" });
@@ -157,17 +197,30 @@ const SKIPPED = Symbol("skipped");
 async function transcribe(audio: Float32Array, size: string, language: string, id?: number, slot?: string): Promise<string | typeof SKIPPED> {
   if (slot && id !== undefined) newest.set(slot, id);
   const transcriber = await loadWhisper(size);
+  // Whisper may be standing in for Moonshine: go by the model that actually loaded.
+  const moonshine = moonshines.has(transcriber);
   return serial(async () => {
     if (slot && newest.get(slot) !== id) return SKIPPED;
-    const output = await transcriber(audio, {
-      language,
-      task: "transcribe",
-      chunk_length_s: 30,
-      stride_length_s: 5,
-    });
-    const text = (Array.isArray(output) ? output.map((o) => o.text).join(" ") : output.text).trim();
-    // Whisper "hears" these in silence or noise.
-    return /^(\[.*\]|\(.*\)|you|thank you\.?|thanks for watching!?|\.+)$/i.test(text) ? "" : text;
+    let text: string;
+    if (moonshine) {
+      // Any length works, so no 30 s chunking; very long dictation is split in a few pieces.
+      const parts: string[] = [];
+      for (const piece of splitForMoonshine(audio)) {
+        const output = await transcriber(piece, { max_new_tokens: moonshineMaxTokens(piece.length) });
+        parts.push((Array.isArray(output) ? output.map((o) => o.text).join(" ") : output.text).trim());
+      }
+      text = parts.filter(Boolean).join(" ");
+    } else {
+      const output = await transcriber(audio, {
+        language,
+        task: "transcribe",
+        chunk_length_s: 30,
+        stride_length_s: 5,
+      });
+      text = (Array.isArray(output) ? output.map((o) => o.text).join(" ") : output.text).trim();
+    }
+    // Speech models "hear" these in silence or noise.
+    return isNoiseTranscript(text) ? "" : text;
   });
 }
 

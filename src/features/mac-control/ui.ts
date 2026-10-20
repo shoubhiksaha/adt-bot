@@ -81,6 +81,8 @@ function score(e: UiElement, want: string, role?: string): number {
   else if (want.split(" ").every((w) => label.includes(w))) s = 60;
   else if (value === want) s = 50;
   else if (value && want.split(" ").every((w) => value.includes(w))) s = 35;
+  // "text area", "search field": a field without a name is called by its kind (saved recipes do this).
+  else if (normalize(e.role) === want) s = label ? 20 : 40;
   if (!s) return 0;
   // Something you can act on beats plain text with the same words.
   if (TEXT_ROLES.has(e.role)) s -= 25;
@@ -99,11 +101,12 @@ export function pickElement(elements: UiElement[], text: string, role?: string):
     .map((e) => ({ e, s: score(e, want, role) }))
     .filter((r) => r.s > 0)
     .sort((a, b) => b.s - a.s);
-  if (!ranked.length) return { error: `Nothing called ${quoteText(text)}${role ? ` (${role})` : ""} is in the window. Check mac_ui's list, or take a screenshot.` };
+  if (!ranked.length) return { error: `Nothing called ${quoteText(text)}${role ? ` (${role})` : ""} is in the window. Check mac_ui's list; for web pages use mac_browser, and for text accessibility can't see, mac_find_text.` };
   const best = ranked[0];
   const ties = ranked.filter((r) => r.s === best.s && r.e !== best.e);
   // Several different things share the best match: let the model choose rather than guess.
-  if (ties.length && ties.some((t) => normalize(t.e.label ?? "") !== normalize(best.e.label ?? "") || t.e.role !== best.e.role)) {
+  // (Unnamed ones can't be told apart at all.)
+  if (ties.length && (!best.e.label || ties.some((t) => normalize(t.e.label ?? "") !== normalize(best.e.label ?? "") || t.e.role !== best.e.role))) {
     return { error: `Several elements match ${quoteText(text)}; press one by id:\n${[best, ...ties].slice(0, 8).map((r) => formatElement(r.e)).join("\n")}` };
   }
   return { element: best.e, others: ties.map((t) => t.e) };
@@ -112,3 +115,46 @@ export function pickElement(elements: UiElement[], text: string, role?: string):
 /** Labels of buttons that delete, pay, or can't be undone: pressing them always asks first. */
 export const RISKY_LABEL =
   /\b(delete|remove|erase|trash|empty|uninstall|discard|wipe|format|reset|revoke|deactivate|unsubscribe|sign ?out|log ?out|block|report|pay|purchase|buy|checkout|place order|transfer|confirm payment)\b/i;
+
+/** A web page in the user's browser, as electron/features/70-mac-control.cjs reads it. */
+export type PageElement = UiElement & { href?: string; offscreen?: boolean };
+export type PageSnapshot = {
+  browser: string;
+  url: string;
+  title: string;
+  elements: PageElement[];
+  matched: number;
+  scroll?: { y: number; height: number; view: number };
+  text?: string;
+  textLength?: number;
+};
+
+export function formatPage(page: PageSnapshot, offset = 0): string {
+  const head = `${page.browser} — ${page.title ? `${quoteText(page.title)} ` : ""}${page.url}`;
+  const lines = page.elements.map((e) => {
+    const parts = [formatElement({ ...e, at: undefined })];
+    if (e.href && e.role === "link") parts.push(`→ ${e.href}`);
+    if (e.offscreen) parts.push("(scrolled out of view)");
+    return parts.join(" ");
+  });
+  if (!page.elements.length) lines.push("(nothing to click or type into matches)");
+  if (page.matched > page.elements.length) lines.push(`… ${page.matched - page.elements.length} more not shown: pass a query to find something specific.`);
+  const below = page.scroll && page.scroll.height > page.scroll.y + page.scroll.view + 40 ? "There's more of the page below." : "";
+  const text =
+    page.text !== undefined
+      ? `\n\nPage text${offset ? ` from character ${offset}` : ""}${page.textLength !== undefined ? ` (${page.textLength} characters in all)` : ""}:\n${page.text}${
+          page.textLength !== undefined && offset + page.text.length < page.textLength ? `\n… continues: read again with offset ${offset + page.text.length}.` : ""
+        }`
+      : "";
+  return [head, below, ...lines].filter(Boolean).join("\n") + text;
+}
+
+/** Lines of text recognized on screen that contain all the words asked for. */
+export function matchLines<T extends { text: string }>(lines: T[], query: string): T[] {
+  const words = normalize(query).split(" ").filter(Boolean);
+  if (!words.length) return lines;
+  return lines.filter((l) => {
+    const t = normalize(l.text);
+    return words.every((w) => t.includes(w));
+  });
+}

@@ -181,6 +181,9 @@ describe("accessibility elements", () => {
     expect(pickElement(els, "search", "field")).toMatchObject({ element: { id: 2 } });
     expect(pickElement(els, "send")).toMatchObject({ element: { id: 7 } });
     expect(pickElement(els, "nobody")).toMatchObject({ error: expect.stringMatching(/Nothing called/) });
+    // An unnamed field, called by its kind.
+    expect(pickElement([...els, { id: 8, role: "text area", input: true }], "text area")).toMatchObject({ element: { id: 8 } });
+    expect(pickElement([...els, { id: 8, role: "text area" }, { id: 9, role: "text area" }], "text area")).toMatchObject({ error: expect.stringMatching(/Several/) });
   });
 
   it("asks the model to choose when different elements match equally", async () => {
@@ -229,6 +232,138 @@ describe("accessibility elements", () => {
     for (const ok of ["whatsapp://send?phone=919800000000&text=hi", "mailto:a@b.c", "tel:+1555", "spotify:track:1", "https://x.org", "x-apple.systempreferences:com.apple.preference.security"]) expect(mac.APP_LINK.test(ok)).toBe(true);
     for (const bad of ["file:///etc/passwd", "javascript:alert(1)", "vnc://host", "smb://host/share", "/Applications/Terminal.app", "ssh://host"]) expect(mac.APP_LINK.test(bad)).toBe(false);
   });
+});
+
+describe("web pages in the browser", () => {
+  it("builds a page script where the request can only be data", () => {
+    const src: string = mac.pageScript({ op: "type", id: 3, text: "\")});alert(1);//\u2028</script>" });
+    expect(() => new Function(src)).not.toThrow();
+    expect(src).toContain(JSON.stringify("\")});alert(1);//").slice(0, -1));
+    expect(src).not.toMatch(/\u2028/);
+  });
+
+  it("explains how to allow page access in each browser", () => {
+    const off = new Error("Executing JavaScript through AppleScript is turned off. To turn it on, from the menu bar, go to View > Developer > Allow JavaScript from Apple Events.");
+    expect(mac.browserError("Brave Browser", "chromium", off).message).toMatch(/View → Developer → "Allow JavaScript from Apple Events"/);
+    expect(mac.browserError("Safari", "safari", new Error("You must enable 'Allow JavaScript from Apple Events' in the Developer section")).message).toMatch(/Show features for web developers/);
+    expect(mac.browserError("Arc", "chromium", new Error("ADT_NOT_RUNNING")).message).toBe("Arc isn't open. Open it first (mac_open_app).");
+  });
+
+  it("formats pages compactly and pages through long text", async () => {
+    const { formatPage } = await import("./ui");
+    const text = formatPage(
+      {
+        browser: "Brave Browser",
+        url: "https://mail.example.com/",
+        title: "Inbox",
+        elements: [
+          { id: 1, role: "search field", label: "Search mail", input: true, value: "" },
+          { id: 2, role: "link", label: "Next", href: "https://mail.example.com/p2" },
+          { id: 3, role: "button", label: "Far", offscreen: true },
+        ],
+        matched: 5,
+        scroll: { y: 0, height: 3000, view: 800 },
+        text: "Hello world",
+        textLength: 20,
+      },
+      0,
+    );
+    expect(text).toContain('Brave Browser — "Inbox" https://mail.example.com/');
+    expect(text).toContain('[1] search field "Search mail" = ""');
+    expect(text).toContain('[2] link "Next" → https://mail.example.com/p2');
+    expect(text).toContain("(scrolled out of view)");
+    expect(text).toContain("2 more not shown");
+    expect(text).toContain("There's more of the page below.");
+    expect(text).toContain("read again with offset 11");
+  });
+
+  it("reading is free; clicking and typing ask; payments and passwords always ask", async () => {
+    vi.stubGlobal("window", { adtbotDesktop: { platform: "darwin", proxyToken: "", version: "44", invoke: vi.fn() } });
+    const { macTools } = await import("./tools");
+    const browser = macTools.find((t) => t.name === "mac_browser")!;
+    expect(browser.riskFor?.({ action: "read" })).toBe("read");
+    expect(browser.riskFor?.({ action: "tabs" })).toBe("read");
+    expect(browser.riskFor?.({ action: "click", element: "Next" })).toBe("write");
+    expect(browser.riskFor?.({ action: "click", element: "Place order" })).toBe("destructive");
+    expect(browser.riskFor?.({ action: "type", element: "Password", text: "x" })).toBe("destructive");
+    expect(browser.riskFor?.({ action: "open", url: "https://x.org" })).toBe("write");
+    vi.unstubAllGlobals();
+  });
+
+  it("finds recognized screen text by words", async () => {
+    const { matchLines } = await import("./ui");
+    const lines = [{ text: "Play Next Episode" }, { text: "Settings" }, { text: "next\u200e episode" }];
+    expect(matchLines(lines, "next episode")).toHaveLength(2);
+    expect(matchLines(lines, "")).toHaveLength(3);
+  });
+});
+
+describe("recipes", () => {
+  const steps = [
+    { tool: "mac_open_app", args: { app: "WhatsApp" } },
+    { tool: "mac_press", args: { text: "{{contact}}", app: "WhatsApp" } },
+    { tool: "mac_set_text", args: { field: "Type a message", text: "{{message}}", submit: true } },
+  ];
+
+  it("validates: known tools only, names not ids, every placeholder declared", async () => {
+    const { validateRecipe } = await import("./recipes");
+    expect(validateRecipe({ name: "send whatsapp", params: ["contact", "message"], steps }).steps).toHaveLength(3);
+    expect(() => validateRecipe({ name: "x", params: [], steps: [{ tool: "run_command", args: { command: "ls" } }] })).toThrow(/can't be used in a recipe/);
+    expect(() => validateRecipe({ name: "x", params: [], steps: [{ tool: "mac_press", args: { id: 4 } }] })).toThrow(/instead of its id/);
+    expect(() => validateRecipe({ name: "x", params: ["contact"], steps })).toThrow(/\{\{message\}\}, which isn't in params/);
+    expect(() => validateRecipe({ name: "", params: [], steps })).toThrow(/short name/);
+  });
+
+  it("fills placeholders and takes the riskiest step's risk", async () => {
+    const { fill, highestRisk, missingParams } = await import("./recipes");
+    expect(fill(steps[2].args, { message: "on my way 🚗" })).toEqual({ field: "Type a message", text: "on my way 🚗", submit: true });
+    expect(fill({ text: "Hi {{ name }}!" }, { name: "Ma" })).toEqual({ text: "Hi Ma!" });
+    expect(highestRisk(["read", "write", "read"])).toBe("write");
+    expect(highestRisk(["read", "destructive", "write"])).toBe("destructive");
+    expect(missingParams({ name: "r", description: "", params: ["a", "b"], steps: [], createdAt: 0, runs: 0 }, { a: "1", b: " " })).toEqual(["b"]);
+  });
+
+  it("saves, lists in the tool description, runs step by step and stops at a failure", async () => {
+    const invoke = vi.fn();
+    vi.stubGlobal("window", { adtbotDesktop: { platform: "darwin", proxyToken: "", version: "44", invoke } });
+    const { macTools } = await import("./tools");
+    const recipes = macTools.find((t) => t.name === "mac_recipes")!;
+    const run = macTools.find((t) => t.name === "mac_recipe_run")!;
+    await recipes.run({ action: "save", name: "Send WhatsApp", description: "message someone", params: ["contact", "message"], steps }, {} as never);
+    expect(recipes.description).toContain('"Send WhatsApp" (contact, message): message someone');
+    expect(run.riskFor?.({ name: "send whatsapp", values: { contact: "Ma", message: "hi" } })).toBe("write");
+
+    const calls: string[] = [];
+    const els = [
+      { id: 4, role: "button", label: "Ma", at: { x: 1, y: 1 } },
+      { id: 8, role: "text area", label: "Type a message", input: true, at: { x: 1, y: 2 } },
+    ];
+    invoke.mockImplementation(async (channel: string, payload: Record<string, unknown>) => {
+      calls.push(`${channel.replace("adt:mac:", "")}${payload?.element ? `:${payload.element}` : ""}${payload?.text ? `=${payload.text}` : ""}`);
+      if (channel === "adt:mac:open") return { ok: true };
+      if (channel === "adt:mac:ui") return { name: "WhatsApp", bundleId: "", pid: 1, window: "WhatsApp", windows: [], elements: els, matched: 2, truncated: false, frontmost: false };
+      if (channel === "adt:mac:press") return { method: "AXPress" };
+      if (channel === "adt:mac:setText") return { typed: 2, background: "accessibility" };
+      throw new Error("unexpected " + channel);
+    });
+    const ctx = { signal: new AbortController().signal } as never;
+    const out = (await run.run({ name: "send whatsapp", values: { contact: "Ma", message: "hi" } }, ctx)) as { content: string };
+    expect(out.content).toMatch(/^Ran "Send WhatsApp" \(3 steps\)/);
+    expect(calls).toContain("press:4");
+    expect(calls).toContain("setText:8=hi");
+
+    invoke.mockImplementation(async (channel: string) => {
+      if (channel === "adt:mac:open") return { ok: true };
+      if (channel === "adt:mac:ui") return { name: "WhatsApp", bundleId: "", pid: 1, window: "WhatsApp", windows: [], elements: [], matched: 0, truncated: false, frontmost: false };
+      throw new Error("unexpected " + channel);
+    });
+    const failed = (await run.run({ name: "send whatsapp", values: { contact: "Nobody", message: "hi" } }, ctx)) as { content: string };
+    expect(failed.content).toMatch(/stopped at step 2 of 3[\s\S]*Nothing called "Nobody"/);
+    await expect(run.run({ name: "send whatsapp", values: { contact: "Ma" } }, ctx)).rejects.toThrow(/needs: message/);
+    await recipes.run({ action: "delete", name: "Send WhatsApp" }, {} as never);
+    expect(recipes.description).toContain("No recipes are saved yet.");
+    vi.unstubAllGlobals();
+  }, 20_000);
 });
 
 type UiElement = import("./ui").UiElement;

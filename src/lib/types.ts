@@ -1,4 +1,5 @@
 import type { CustomVoice } from "./custom-tts";
+import type { SpeechModel } from "./speech-models";
 import type { VisualizationSpec } from "./agent/vendor/openbot/visualization";
 /** Wire protocol a provider speaks. Almost everything (including local servers) is "openai". */
 /** "cli" = a coding agent CLI on this computer (desktop app), see src/lib/cli-agents. */
@@ -147,8 +148,11 @@ export type Conversation = {
  */
 export type SttEngine = "auto" | "device" | "whisper-local" | "whisper-cloud";
 
-/** "local": Supertonic, a natural voice generated on this device (no key, works offline). */
-export type TtsEngine = "system" | "local" | "openai" | "elevenlabs" | CloudTts | `custom:${string}`;
+/**
+ * Natural voices generated on this device (no key, works offline): "local" is Supertonic, "kokoro"
+ * is Kokoro (more natural, slower to start each sentence).
+ */
+export type TtsEngine = "system" | "local" | "kokoro" | "openai" | "elevenlabs" | CloudTts | `custom:${string}`;
 /** Natural-voice services that only need an API key. */
 export type CloudTts = "fish" | "cartesia" | "deepgram";
 
@@ -157,8 +161,8 @@ export type VoiceSettings = {
   /** Cloud Whisper: provider + model (OpenAI, Groq, LocalAI, speaches…). */
   providerId: string;
   model: string;
-  /** In-app Whisper size. */
-  localModel: "tiny" | "base" | "small";
+  /** In-app speech model: a Whisper size, or Moonshine (English only; Whisper is used for other languages). */
+  localModel: SpeechModel;
   /** Spoken replies: device voice name ("" = best available) and speed. */
   voiceName: string;
   rate: number;
@@ -166,6 +170,8 @@ export type VoiceSettings = {
   tts: TtsEngine;
   /** On-device natural voice (Supertonic): F1–F5, M1–M5. */
   localVoice: string;
+  /** On-device Kokoro voice, e.g. af_heart. */
+  kokoroVoice: string;
   ttsProviderId: string;
   ttsModel: string;
   ttsVoice: string;

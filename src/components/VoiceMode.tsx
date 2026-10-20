@@ -4,7 +4,8 @@ import { desktopInvoke, isDesktop } from "../lib/desktop";
 import { useStore } from "../lib/store";
 import { speakable, speechLevel, ttsLabel } from "../lib/tts";
 import { VoiceSession, type VoiceState } from "../lib/voice-session";
-import { WHISPER_SIZES, whisperDownloaded } from "../lib/whisper";
+import { isMoonshine } from "../lib/speech-models";
+import { localSpeechModel, SPEECH_MODELS, whisperDownloaded } from "../lib/whisper";
 import { Avatar } from "./Avatar";
 import { openSettings } from "./MessageItem";
 
@@ -118,6 +119,7 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
   if (!state || !bot) return null;
   const { phase } = state;
   const callName = bot.nickname?.trim() || bot.name;
+  const speechModel = localSpeechModel(voice.localModel);
 
   const tapLabel =
     phase === "hearing"
@@ -134,7 +136,7 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
     state.download !== null && state.download < 100
       ? cached
         ? "Loading speech model…"
-        : `Downloading speech model, one time (${WHISPER_SIZES[voice.localModel].mb} MB; about 90 MB more follows in the background for speed)… ${state.download}%`
+        : `Downloading speech model, one time (${SPEECH_MODELS[speechModel].mb} MB${isMoonshine(speechModel) ? "" : "; about 90 MB more follows in the background for speed"})… ${state.download}%`
       : phase === "standby"
         ? `Say “Hey ${state.wakeName}” to continue`
         : phase === "thinking" && state.activity

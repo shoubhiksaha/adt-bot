@@ -2,7 +2,7 @@ import { Capacitor } from "@capacitor/core";
 import { describeHttpError, withCustomHeaders } from "./llm";
 import { providerFetch } from "./transport";
 import { audioFromJson, buildCustomRequest } from "./custom-tts";
-import { localVoiceReady, synthesizeLocally } from "./local-tts";
+import { KOKORO_VOICES, localChoice, localVoiceReady, synthesizeLocally } from "./local-tts";
 import type { CloudTts, ProviderConfig, VoiceSettings } from "./types";
 
 export function customVoiceFor(voice: VoiceSettings) {
@@ -181,6 +181,7 @@ export type TtsContext = { voice: VoiceSettings; providers: ProviderConfig[]; us
 
 export function ttsLabel(voice: VoiceSettings): string {
   if (voice.tts === "local") return `On-device voice · ${voice.localVoice || "F1"}`;
+  if (voice.tts === "kokoro") return `Kokoro · ${KOKORO_VOICES.find((v) => v.id === voice.kokoroVoice)?.label.split(" (")[0] ?? "Heart"}`;
   if (voice.tts === "openai") return `${voice.ttsModel || "OpenAI"} · ${voice.ttsVoice || "alloy"}`;
   if (voice.tts === "elevenlabs") return "ElevenLabs";
   if (voice.tts in CLOUD_TTS) return CLOUD_TTS[voice.tts as CloudTts].label;
@@ -210,11 +211,12 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
 
   const fetchAudio = async (text: string): Promise<AudioBuffer | null> => {
     try {
-      if (voice.tts === "local") {
+      const local = localChoice(voice);
+      if (local) {
         // Still loading (or downloading): the device voice speaks this sentence instead.
-        if (!localVoiceReady(voice.localVoice || "F1")) return null;
+        if (!localVoiceReady(local)) return null;
         // Generated on this device as raw samples: no encoding or decoding step.
-        const out = await synthesizeLocally(text, voice.localVoice || "F1", voice.rate, controller.signal);
+        const out = await synthesizeLocally(text, local, voice.rate, controller.signal);
         if (!out || !out.audio.length) return null;
         const buffer = audioOutput().createBuffer(1, out.audio.length, out.sampleRate);
         buffer.copyToChannel(out.audio as Float32Array<ArrayBuffer>, 0);

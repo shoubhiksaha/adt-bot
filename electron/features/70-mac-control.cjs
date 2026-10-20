@@ -528,11 +528,11 @@ async function pressElement({ element, action = "press" } = {}) {
   return helperCall("press", { element: Number(element), action }, { what: "Pressing", timeoutMs: 15_000 });
 }
 
-async function setText({ element, text, replace = true, submit = false } = {}) {
+async function setText({ element, text, replace = true, submit = false, background = true } = {}) {
   const value = String(text ?? "");
   if (value.length > MAX_TEXT) throw new Error(`Text is too long (max ${MAX_TEXT} characters).`);
   await requireAccessibility("Typing");
-  return helperCall("setText", { element: Number(element), text: value, replace: replace !== false, submit: submit === true }, { what: "Typing", timeoutMs: 20_000 + value.length * 30 });
+  return helperCall("setText", { element: Number(element), text: value, replace: replace !== false, submit: submit === true, background: background !== false }, { what: "Typing", timeoutMs: 20_000 + value.length * 30 });
 }
 
 let geometryCache = null;
@@ -824,6 +824,372 @@ async function appleScript({ source, language = "applescript" } = {}) {
   return { ok: true, output };
 }
 
+// ---------------------------------------------------------------------------------------------
+// Web pages in the user's browser, read and used through the page itself (the browser's
+// "execute javascript" scripting command): exact, and it works with the browser in the background,
+// where Safari doesn't expose page contents to accessibility at all. Ghost OS reads pages over the
+// Chrome debugging port instead, but Chrome no longer allows that on the user's own profile.
+
+/** Browser names as in /Applications, and how each is scripted. */
+const BROWSERS = {
+  "Brave Browser": "chromium",
+  "Google Chrome": "chromium",
+  "Google Chrome Beta": "chromium",
+  "Google Chrome Canary": "chromium",
+  "Microsoft Edge": "chromium",
+  Arc: "chromium",
+  Vivaldi: "chromium",
+  Chromium: "chromium",
+  Opera: "chromium",
+  Safari: "safari",
+  "Safari Technology Preview": "safari",
+};
+
+/** argv: browser, operation (js | tabs | open | go | switch), value. */
+const BROWSER_JXA = `function run(argv) {
+  var app = Application(argv[0]);
+  var safari = argv[3] === 'safari';
+  if (!app.running()) throw new Error('ADT_NOT_RUNNING');
+  if (app.windows.length === 0) throw new Error('ADT_NO_WINDOW');
+  var w = app.windows[0];
+  var op = argv[1];
+  if (op === 'js') return safari ? app.doJavaScript(argv[2], { in: w.currentTab }) : w.activeTab.execute({ javascript: argv[2] });
+  if (op === 'tabs') {
+    var tabs = w.tabs();
+    var out = [];
+    for (var i = 0; i < tabs.length && i < 60; i++) out.push({ title: tabs[i].name ? tabs[i].name() : tabs[i].title(), url: tabs[i].url() });
+    var active = safari ? w.currentTab.index() - 1 : w.activeTabIndex() - 1;
+    return JSON.stringify({ active: active, tabs: out });
+  }
+  if (op === 'open') {
+    var tab = app.Tab({ url: argv[2] });
+    w.tabs.push(tab);
+    if (safari) w.currentTab = w.tabs[w.tabs.length - 1];
+    return 'ok';
+  }
+  if (op === 'go') {
+    if (safari) w.currentTab.url = argv[2];
+    else w.activeTab.url = argv[2];
+    return 'ok';
+  }
+  if (op === 'switch') {
+    var n = parseInt(argv[2], 10);
+    if (safari) w.currentTab = w.tabs[n];
+    else w.activeTabIndex = n + 1;
+    return 'ok';
+  }
+  throw new Error('unknown operation');
+}`;
+
+/**
+ * Runs inside the page: lists what can be clicked or typed into (giving each an id that stays the
+ * same while the page lives), clicks, types, scrolls, reads the text. Called with one JSON object.
+ */
+const PAGE_FN = `function (req) {
+  var D = document, W = window;
+  var reg = W.__adtEls || (W.__adtEls = { next: 1, byId: {} });
+  function clean(s, n) { s = String(s == null ? '' : s).replace(/[\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069\\ufeff]/g, '').replace(/\\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '\\u2026' : s; }
+  function box(el) {
+    var r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return null;
+    var st = W.getComputedStyle(el);
+    if (st.visibility === 'hidden' || st.display === 'none' || st.opacity === '0') return null;
+    return r;
+  }
+  function editable(el) { return el.isContentEditable || /^(INPUT|TEXTAREA)$/.test(el.tagName) && !/^(button|submit|reset|checkbox|radio|file|image|range|color)$/i.test(el.type || ''); }
+  function role(el) {
+    var r = el.getAttribute('role');
+    if (r) return r === 'textbox' || r === 'searchbox' ? 'text field' : r;
+    var t = el.tagName;
+    if (t === 'A') return 'link';
+    if (t === 'BUTTON' || t === 'SUMMARY') return 'button';
+    if (t === 'SELECT') return 'pop-up menu';
+    if (t === 'TEXTAREA' || el.isContentEditable) return 'text area';
+    if (t === 'INPUT') {
+      var ty = (el.type || 'text').toLowerCase();
+      if (/^(submit|button|reset|image)$/.test(ty)) return 'button';
+      if (ty === 'checkbox' || ty === 'radio') return ty;
+      if (ty === 'search') return 'search field';
+      if (ty === 'password') return 'password field';
+      return 'text field';
+    }
+    return 'button';
+  }
+  function label(el) {
+    var l = el.getAttribute('aria-label') || '';
+    var by = el.getAttribute('aria-labelledby');
+    if (!l && by) l = by.split(/\\s+/).map(function (id) { var t = D.getElementById(id); return t ? t.textContent : ''; }).join(' ');
+    if (!l && el.labels && el.labels.length) l = el.labels[0].textContent;
+    if (!l && !editable(el) && el.tagName !== 'SELECT') l = el.innerText || el.textContent || '';
+    if (!l) l = el.getAttribute('placeholder') || el.getAttribute('title') || el.getAttribute('alt') || el.getAttribute('data-placeholder') || '';
+    if (!l && el.tagName === 'INPUT' && /^(submit|button|reset)$/i.test(el.type)) l = el.value;
+    if (!l && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) l = el.getAttribute('name') || '';
+    if (!l) { var img = el.querySelector && el.querySelector('img[alt],svg[aria-label]'); if (img) l = img.getAttribute('alt') || img.getAttribute('aria-label'); }
+    return clean(l, 120);
+  }
+  var SEL = 'a[href],button,input:not([type=hidden]),textarea,select,summary,[role=button],[role=link],[role=tab],[role=menuitem],[role=menuitemcheckbox],[role=option],[role=checkbox],[role=radio],[role=switch],[role=combobox],[role=textbox],[role=searchbox],[role=treeitem],[role=gridcell][tabindex],[contenteditable=""],[contenteditable=true],[contenteditable=plaintext-only]';
+  function collect(root, out) {
+    var found = root.querySelectorAll(SEL);
+    for (var i = 0; i < found.length; i++) out.push(found[i]);
+    var all = root.querySelectorAll('*');
+    for (var j = 0; j < all.length; j++) if (all[j].shadowRoot) collect(all[j].shadowRoot, out);
+    return out;
+  }
+  function idOf(el) {
+    if (!el.__adtId) { el.__adtId = reg.next++; reg.byId[el.__adtId] = el; }
+    return el.__adtId;
+  }
+  function find(id) {
+    var el = reg.byId[id];
+    if (!el || !el.isConnected) throw new Error('ADT_STALE');
+    return el;
+  }
+  function snapshot() {
+    var words = clean(req.query || '', 200).toLowerCase().split(' ').filter(Boolean);
+    var max = Math.max(10, Math.min(400, req.max || 150));
+    var vw = W.innerWidth, vh = W.innerHeight;
+    var els = collect(D, []);
+    var out = [], matched = 0;
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (el.closest('[aria-hidden=true],[inert]')) continue;
+      var r = box(el);
+      if (!r) continue;
+      var e = { id: 0, role: role(el), label: label(el) };
+      if (editable(el)) { e.input = true; e.value = clean(el.isContentEditable ? el.innerText : (el.type === 'password' ? (el.value ? '\\u2022\\u2022\\u2022' : '') : el.value), 300); }
+      else if (el.tagName === 'SELECT') e.value = clean(el.options[el.selectedIndex] ? el.options[el.selectedIndex].text : '', 80);
+      if (!e.label && !e.input && e.role !== 'checkbox' && el.tagName !== 'SELECT') continue;
+      if (el.disabled || el.getAttribute('aria-disabled') === 'true') e.disabled = true;
+      if (el.checked || el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-selected') === 'true' || el.getAttribute('aria-pressed') === 'true') e.selected = true;
+      if (D.activeElement === el) e.focused = true;
+      if (r.bottom < 0 || r.top > vh || r.right < 0 || r.left > vw) e.offscreen = true;
+      if (el.tagName === 'A' && el.href && !/^javascript:/i.test(el.getAttribute('href') || '')) e.href = clean(el.href, 200);
+      if (words.length) { var hay = (e.role + ' ' + e.label + ' ' + (e.value || '') + ' ' + (e.href || '')).toLowerCase(); if (!words.every(function (w) { return hay.indexOf(w) >= 0; })) continue; }
+      matched++;
+      if (out.length >= max) continue;
+      e.id = idOf(el);
+      out.push(e);
+    }
+    var result = { url: location.href, title: clean(D.title, 200), elements: out, matched: matched, scroll: { y: Math.round(W.scrollY), height: Math.round(D.documentElement.scrollHeight), view: vh } };
+    if (req.content) {
+      var main = D.querySelector('main,[role=main],article') || D.body;
+      var text = clean(main ? main.innerText : '', 1e6);
+      var from = Math.max(0, req.offset || 0);
+      result.text = text.slice(from, from + (req.chars || 12000));
+      result.textLength = text.length;
+    }
+    return result;
+  }
+  function pointer(el, type) {
+    var r = el.getBoundingClientRect();
+    var o = { bubbles: true, cancelable: true, composed: true, view: W, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0, buttons: type.indexOf('down') >= 0 ? 1 : 0, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+    el.dispatchEvent(type.indexOf('pointer') === 0 && W.PointerEvent ? new PointerEvent(type, o) : new MouseEvent(type, o));
+  }
+  function click(el) {
+    el.scrollIntoView({ block: 'center', inline: 'center' });
+    pointer(el, 'pointerdown'); pointer(el, 'mousedown');
+    if (el.focus) el.focus({ preventScroll: true });
+    pointer(el, 'pointerup'); pointer(el, 'mouseup');
+    el.click();
+    return { ok: true, label: label(el), role: role(el) };
+  }
+  function valueOf(el) { return el.isContentEditable ? el.innerText : el.value; }
+  function key(el, k) {
+    var o = { key: k, code: k, keyCode: k === 'Enter' ? 13 : 0, which: k === 'Enter' ? 13 : 0, bubbles: true, cancelable: true, composed: true };
+    var go = el.dispatchEvent(new KeyboardEvent('keydown', o));
+    el.dispatchEvent(new KeyboardEvent('keypress', o));
+    el.dispatchEvent(new KeyboardEvent('keyup', o));
+    return go;
+  }
+  function type(el) {
+    var text = String(req.text || '');
+    if (el.tagName === 'SELECT') {
+      var want = clean(text, 200).toLowerCase(), hit = -1;
+      for (var i = 0; i < el.options.length; i++) { var t = clean(el.options[i].text, 200).toLowerCase(); if (t === want || el.options[i].value.toLowerCase() === want) { hit = i; break; } if (hit < 0 && t.indexOf(want) >= 0) hit = i; }
+      if (hit < 0) throw new Error('No option "' + text + '"; the options are: ' + Array.prototype.map.call(el.options, function (o) { return o.text; }).slice(0, 30).join(', '));
+      el.selectedIndex = hit;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return { ok: true, value: el.options[hit].text };
+    }
+    if (!editable(el)) throw new Error('ADT_NOT_EDITABLE');
+    el.scrollIntoView({ block: 'center' });
+    el.focus({ preventScroll: true });
+    var before = valueOf(el);
+    if (el.isContentEditable) {
+      var range = D.createRange();
+      range.selectNodeContents(el);
+      if (req.append) range.collapse(false);
+      var sel = W.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+    } else if (req.append) { el.setSelectionRange && el.setSelectionRange(el.value.length, el.value.length); }
+    else if (el.select) el.select();
+    var expected = req.append ? before + text : text;
+    // As if typed: editors (React, Lexical, Draft, ProseMirror) see a normal insert.
+    var ok = text ? D.execCommand('insertText', false, text) : D.execCommand('delete');
+    if (!ok || clean(valueOf(el), 1e6) !== clean(expected, 1e6)) {
+      if (el.isContentEditable) { el.textContent = expected; }
+      else {
+        var proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, expected);
+      }
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+    }
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    var out = { ok: true, value: clean(el.type === 'password' ? '' : valueOf(el), 300) };
+    if (req.submit) {
+      var go = key(el, 'Enter');
+      var form = el.form || el.closest('form');
+      if (go && form && valueOf(el) !== '') { if (form.requestSubmit) form.requestSubmit(); else form.submit(); }
+      out.submitted = true;
+    }
+    return out;
+  }
+  try {
+    var r;
+    if (req.op === 'read') r = snapshot();
+    else if (req.op === 'click') r = click(find(req.id));
+    else if (req.op === 'type') r = type(find(req.id));
+    else if (req.op === 'scroll') { if (req.id) find(req.id).scrollIntoView({ block: 'center' }); else W.scrollBy(0, req.dy || W.innerHeight * 0.8); r = { ok: true, y: Math.round(W.scrollY) }; }
+    else if (req.op === 'back') { history.back(); r = { ok: true }; }
+    else if (req.op === 'forward') { history.forward(); r = { ok: true }; }
+    else if (req.op === 'reload') { location.reload(); r = { ok: true }; }
+    else throw new Error('unknown operation');
+    return JSON.stringify({ result: r });
+  } catch (e) {
+    return JSON.stringify({ error: String(e && e.message || e) });
+  }
+}`;
+
+/** The page script call for one request: the request is JSON, so it can only ever be data. */
+function pageScript(req) {
+  return `(${PAGE_FN})(${JSON.stringify(req).replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029")})`;
+}
+
+function browserError(name, kind, error) {
+  const text = String(error?.message ?? error);
+  if (/ADT_NOT_RUNNING/.test(text)) return new Error(`${name} isn't open. Open it first (mac_open_app).`);
+  if (/ADT_NO_WINDOW/.test(text)) return new Error(`${name} has no open window.`);
+  if (/JavaScript.*(turned off|Apple ?Events)|Allow JavaScript from Apple Events/i.test(text)) {
+    return Object.assign(
+      new Error(
+        kind === "safari"
+          ? `Safari doesn't let apps read pages until it's allowed: Safari → Settings → Advanced → turn on "Show features for web developers", then Develop menu → "Allow JavaScript from Apple Events". Ask the user to do this (or do it with mac_press, menus:true, after they agree), then try again.`
+          : `${name} doesn't let apps read pages until it's allowed: in ${name}'s menu bar, View → Developer → "Allow JavaScript from Apple Events". Ask the user to switch it on (or press it with mac_press after they agree: mac_ui with app "${name}" and menus:true), then try again.`,
+      ),
+      { code: "browser-js-off" },
+    );
+  }
+  return error;
+}
+
+/** Which browser: the one asked for, the one in front, or the first one running. */
+async function pickBrowser(name) {
+  if (name) {
+    const want = String(name).toLowerCase();
+    const known = Object.keys(BROWSERS).find((b) => b.toLowerCase() === want) ?? Object.keys(BROWSERS).find((b) => b.toLowerCase().includes(want));
+    if (!known) throw new Error(`"${name}" isn't a browser ADT Bot can use. Supported: ${Object.keys(BROWSERS).join(", ")}. (Firefox can't be scripted.)`);
+    return known;
+  }
+  const apps = await listApps();
+  const running = apps.filter((a) => BROWSERS[a.name]);
+  const front = running.find((a) => a.active);
+  if (front) return front.name;
+  if (running.length) return running[0].name;
+  throw new Error("No supported browser is open (Safari, Chrome, Brave, Edge, Arc, Vivaldi). Open one first.");
+}
+
+async function browserRun(name, op, value) {
+  const kind = BROWSERS[name];
+  try {
+    return await jxa(BROWSER_JXA, [name, op, value ?? "", kind], `Using ${name}`, 30_000);
+  } catch (error) {
+    throw browserError(name, kind, error);
+  }
+}
+
+async function page(name, req) {
+  const raw = await browserRun(name, "js", pageScript(req));
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`${name} returned nothing from the page (it may still be loading, or it's a built-in page like the new tab page). Try again in a moment.`);
+  }
+  if (parsed.error === "ADT_STALE") throw Object.assign(new Error("That element is gone (the page changed). Read the page again (action read)."), { code: "stale" });
+  if (parsed.error === "ADT_NOT_EDITABLE") throw new Error("That element isn't a text field. Read the page again and pick a field.");
+  if (parsed.error) throw new Error(`The page refused: ${parsed.error}`);
+  return parsed.result;
+}
+
+/** Web addresses only: a file:// page would let the browser read this Mac's files to the bot. */
+const URL_OK = /^https?:\/\/[^\s]/i;
+
+/** One browser action; every call says which browser it used. */
+async function browser({ browser: wanted, action = "read", id, text, submit, append, query, content, offset, url, tab, dy, max } = {}) {
+  ensureMac();
+  const address = String(url ?? "").trim();
+  if ((action === "open" || action === "go") && (!URL_OK.test(address) || address.length > 4000 || /[\0\r\n]/.test(address))) {
+    throw new Error("Give a web address starting with https:// or http://.");
+  }
+  const name = await pickBrowser(wanted);
+  const base = { browser: name };
+  switch (action) {
+    case "read":
+      return { ...base, ...(await page(name, { op: "read", query: query ? String(query).slice(0, 200) : undefined, content: content === true, offset: Number(offset) || 0, max: Number(max) || undefined })) };
+    case "click":
+      return { ...base, ...(await page(name, { op: "click", id: Number(id) })) };
+    case "type": {
+      const value = String(text ?? "");
+      if (value.length > MAX_TEXT) throw new Error(`Text is too long (max ${MAX_TEXT} characters).`);
+      return { ...base, ...(await page(name, { op: "type", id: Number(id), text: value, submit: submit === true, append: append === true })) };
+    }
+    case "scroll":
+      return { ...base, ...(await page(name, { op: "scroll", id: id === undefined ? undefined : Number(id), dy: Number(dy) || undefined })) };
+    case "back":
+    case "forward":
+    case "reload":
+      return { ...base, ...(await page(name, { op: action })) };
+    case "tabs":
+      return { ...base, ...JSON.parse(await browserRun(name, "tabs")) };
+    case "switch":
+      await browserRun(name, "switch", String(Math.max(0, Math.round(Number(tab) || 0))));
+      return { ...base, ok: true };
+    case "open":
+    case "go":
+      await browserRun(name, action, address);
+      return { ...base, ok: true, url: address };
+    default:
+      throw new Error("action must be read, click, type, scroll, back, forward, reload, tabs, switch, open or go.");
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Text on screen, by Apple's on-device text recognition: for what accessibility can't describe.
+
+async function findText({ fast } = {}) {
+  ensureMac();
+  await ensureUnlocked("Reading text on screen");
+  if (!hasHelper()) throw new Error("Reading text on screen needs ADT Bot's Mac helper, which this build lacks.");
+  const geo = await geometry();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "adt-ocr-"));
+  const raw = path.join(dir, "raw.png");
+  try {
+    await exec(SCREENCAPTURE, ["-x", "-t", "png", raw], { what: "Reading text on screen" }).catch((error) => {
+      throw /screencapture/.test(error.message) && !detectPermission(error.message) ? permissionError("screen-recording", "Reading text on screen") : error;
+    });
+    if (!fs.existsSync(raw) || fs.statSync(raw).size < SUSPICIOUS_BYTES) throw permissionError("screen-recording", "Reading text on screen");
+    const found = await helperCall("ocr", { path: raw, fast: fast === true }, { what: "Reading text on screen", timeoutMs: 30_000 });
+    const frame = await currentFrame();
+    const lines = (found.lines ?? []).map((l) => {
+      const centre = { x: geo.width * (l.x + l.w / 2), y: geo.height * (l.y + l.h / 2) };
+      return { text: l.text, confidence: l.confidence, at: toImagePoint(frame, centre.x, centre.y), screen: { x: Math.round(centre.x), y: Math.round(centre.y) } };
+    });
+    return { lines, screen: { width: geo.width, height: geo.height } };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 exports.register = ({ app, ipcMain, shell, access, onStopAll }) => {
   // "Stop all bots": a typing or pressing helper stops at once.
   onStopAll?.(stopHelper);
@@ -878,6 +1244,8 @@ exports.register = ({ app, ipcMain, shell, access, onStopAll }) => {
   act("ui", ui);
   act("press", pressElement);
   act("setText", setText);
+  act("browser", browser);
+  handle("findText", findText);
   handle("helper", () => ({ available: hasHelper() }));
   app?.on?.("will-quit", stopHelper);
 };
@@ -907,6 +1275,9 @@ exports._test = {
   listApps,
   frontmost,
   APP_LINK,
+  BROWSERS,
+  pageScript,
+  browserError,
   helperPath,
   helperCall,
   stopHelper,

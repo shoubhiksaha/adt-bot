@@ -1,7 +1,8 @@
-import { type AgentTool, num, registerTool, registerToolGroup, str, type ToolContext } from "../../lib/agent/tools";
+import { type AgentTool, getTool, num, registerTool, registerToolGroup, str, type ToolContext, type ToolRisk, toResult } from "../../lib/agent/tools";
 import { type MacApp, type MacFrontmost, type MacScreenshot, mac } from "./api";
+import { deleteRecipe, fill, findRecipe, highestRisk, markRun, missingParams, recipeLine, saveRecipe, useRecipes, validateRecipe } from "./recipes";
 import { isMacDesktop, useMacControl, whileControlling } from "./store";
-import { formatUi, normalize, pickElement, RISKY_LABEL, type UiElement, type UiSnapshot } from "./ui";
+import { formatPage, formatUi, matchLines, normalize, type PageSnapshot, pickElement, RISKY_LABEL, type UiElement, type UiSnapshot } from "./ui";
 
 /**
  * Computer use on the user's Mac. Off until the user switches on "Allow bots to control this Mac"
@@ -52,17 +53,19 @@ async function after(app: string | undefined, note: string): Promise<string> {
 }
 
 /** Finds the element an id or a name refers to, reading the window when needed. */
-async function target(args: Record<string, unknown>, roleHint?: string): Promise<{ element: UiElement | { id: number; label: string; role: string }; app?: string; extra: string }> {
+async function target(args: Record<string, unknown>, nameKey: "text" | "field"): Promise<{ element: UiElement | { id: number; label: string; role: string }; app?: string; extra: string }> {
   const id = num(args, "id", NaN);
   const app = str(args, "app") || undefined;
   if (Number.isFinite(id)) {
     const k = known.get(id);
     return { element: { id, label: k?.label ?? "", role: k?.role ?? "element" }, app: app ?? k?.app, extra: "" };
   }
-  const text = str(args, "text") || str(args, "field");
-  if (!text) throw new Error("Give the element's id from mac_ui, or its text.");
+  // mac_press names the element in text; mac_set_text in field (its text is what to type).
+  const text = str(args, nameKey);
+  if (!text) throw new Error(nameKey === "field" ? "Give the field's id from mac_ui, or its label in field." : "Give the element's id from mac_ui, or its text.");
   const snap = await readUi({ app, query: undefined, max: 600 });
-  const pick = pickElement(snap.elements, text, str(args, "role") || roleHint);
+  const pool = nameKey === "field" ? snap.elements.filter((e) => e.input) : snap.elements;
+  const pick = pickElement(pool.length ? pool : snap.elements, text, str(args, "role") || undefined);
   if ("error" in pick) throw new Error(`${pick.error}\n\n${formatUi(snap, 60)}`);
   const extra = pick.others.length ? ` (also matched ${pick.others.map((o) => `[${o.id}]`).join(", ")})` : "";
   return { element: pick.element, app: snap.name, extra };
@@ -175,7 +178,7 @@ export const macTools: AgentTool[] = [
       },
     },
     async run(args) {
-      const { element, app, extra } = await target(args);
+      const { element, app, extra } = await target(args, "text");
       const action = str(args, "action", "press");
       const done = await mac<{ method: string }>("press", { element: element.id, action });
       const how = done.method === "click" ? "Clicked" : done.method === "select" ? "Selected" : done.method === "focus" ? "Focused" : "Pressed";
@@ -203,12 +206,23 @@ export const macTools: AgentTool[] = [
       required: ["text"],
     },
     async run(args) {
-      const { element, app, extra } = await target(args, undefined);
+      const { element, app, extra } = await target(args, "field");
       const text = str(args, "text");
-      const done = await mac<{ typed: number; value?: string }>("setText", { element: element.id, text, replace: args.append !== true, submit: args.submit === true });
-      const check = done.value !== undefined && text && !normalize(done.value).includes(normalize(text).slice(0, 40)) ? ` The field now shows "${done.value}" — check it.` : "";
+      const done = await mac<{ typed: number; value?: string; background?: string; partial?: boolean; submitted?: string }>("setText", {
+        element: element.id,
+        text,
+        replace: args.append !== true,
+        submit: args.submit === true,
+      });
+      const check = done.partial
+        ? ` Only part of it went in: the field shows "${done.value}". Fix it rather than typing it all again.`
+        : done.value !== undefined && text && !normalize(done.value).includes(normalize(text).slice(0, 40))
+          ? ` The field now shows "${done.value}" — check it.`
+          : "";
+      const where = done.background ? " (in the background; the user's window stayed in front)" : "";
+      const sent = args.submit === true ? (done.submitted === "unconfirmed" ? " and pressed Return, but the text is still there: check whether it was sent" : " and pressed Return") : "";
       return {
-        content: await after(app ?? lastApp, `Typed ${done.typed} characters into ${describe(element)}${extra}${args.submit === true ? " and pressed Return" : ""}.${check}`),
+        content: await after(app ?? lastApp, `Typed ${done.typed} characters into ${describe(element)}${extra}${where}${sent}.${check}`),
         untrustedSource: "the screen of this Mac",
       };
     },
@@ -348,5 +362,269 @@ export const macTools: AgentTool[] = [
     },
   }),
 ];
+
+/** The latest page elements per browser, so clicks by id know what they press. */
+const pageKnown = new Map<number, { label: string; role: string }>();
+
+function rememberPage(page: PageSnapshot) {
+  if (pageKnown.size > 4000) pageKnown.clear();
+  for (const e of page.elements) pageKnown.set(e.id, { label: e.label ?? "", role: e.role });
+}
+
+const BROWSER_READS = new Set(["read", "tabs", "scroll"]);
+
+function browserRisk(args: Record<string, unknown>): ToolRisk {
+  const action = str(args, "action", "read");
+  if (BROWSER_READS.has(action)) return "read";
+  if (action === "click") {
+    const id = num(args, "id", NaN);
+    const label = Number.isFinite(id) ? (pageKnown.get(id)?.label ?? "") : str(args, "element");
+    return RISKY_LABEL.test(label) ? "destructive" : "write";
+  }
+  if (action === "type") {
+    const id = num(args, "id", NaN);
+    const role = Number.isFinite(id) ? pageKnown.get(id)?.role : undefined;
+    return role === "password field" || /password/i.test(str(args, "element")) ? "destructive" : "write";
+  }
+  return "write";
+}
+
+async function readPage(args: Record<string, unknown>, extra: Record<string, unknown> = {}): Promise<PageSnapshot> {
+  const page = await mac<PageSnapshot>("browser", { browser: str(args, "browser") || undefined, action: "read", ...extra });
+  rememberPage(page);
+  return page;
+}
+
+/** An element on the page by id, or by its text (reading the page to find it). */
+async function pageTarget(args: Record<string, unknown>, wantInput: boolean): Promise<{ id: number; label: string; role: string; extra: string }> {
+  const id = num(args, "id", NaN);
+  if (Number.isFinite(id)) {
+    const k = pageKnown.get(id);
+    return { id, label: k?.label ?? "", role: k?.role ?? "element", extra: "" };
+  }
+  const name = str(args, "element");
+  if (!name) throw new Error("Say which element: its [id] from action read, or its text in element.");
+  const page = await readPage(args, { max: 400 });
+  const pool = wantInput ? page.elements.filter((e) => e.input || e.role === "pop-up menu") : page.elements;
+  const pick = pickElement(pool, name);
+  if ("error" in pick) throw new Error(`${pick.error}\n\n${formatPage({ ...page, elements: page.elements.slice(0, 60) })}`);
+  const e = pick.element;
+  return { id: e.id, label: e.label ?? "", role: e.role, extra: pick.others.length ? ` (also matched ${pick.others.map((o) => `[${o.id}]`).join(", ")})` : "" };
+}
+
+/** The page after an action: navigation can take a moment. */
+async function pageAfter(args: Record<string, unknown>, note: string): Promise<string> {
+  for (const wait of [700, 1200]) {
+    await pause(wait);
+    try {
+      return `${note}\n\nNow:\n${formatPage(await readPage(args, { max: 80 }))}`;
+    } catch {
+      // Still loading.
+    }
+  }
+  return `${note} (The page is still loading; read it again in a moment.)`;
+}
+
+const browserTool = macTool({
+  name: "mac_browser",
+  risk: "write",
+  riskFor: browserRisk,
+  timeoutMs: 60_000,
+  description:
+    "Use web pages in the user's own browser (Safari, Chrome, Brave, Edge, Arc, Vivaldi), signed in as them, even with the browser in the background. " +
+    "action read: the page's links, buttons and fields with [id]s (content:true adds the page's text; query filters). click: by id or element text. type: into a field by id or element (its label/placeholder), " +
+    "text = what to type, submit:true presses Enter; also picks options in drop-downs. scroll, back, forward, reload. tabs: list tabs; switch: tab index; open: a url in a new tab; go: a url in this tab. " +
+    "Prefer this over mac_ui/screenshots for anything inside a web page. Defaults to the browser in front.",
+  parameters: {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ["read", "click", "type", "scroll", "back", "forward", "reload", "tabs", "switch", "open", "go"], description: "Default read" },
+      browser: { type: "string", description: 'e.g. "Safari", "Brave Browser", "Google Chrome" (default: the one in front, or the one open)' },
+      id: { type: "number", description: "Element id from the latest read" },
+      element: { type: "string", description: "Or: the element's text, label or placeholder" },
+      text: { type: "string", description: "type: what to type (or the option to pick)" },
+      submit: { type: "boolean", description: "type: press Enter afterwards" },
+      append: { type: "boolean", description: "type: add to what's there instead of replacing it" },
+      query: { type: "string", description: "read: only elements containing these words" },
+      content: { type: "boolean", description: "read: include the page's text" },
+      offset: { type: "number", description: "read with content: where to continue a long page" },
+      url: { type: "string", description: "open/go: the address" },
+      tab: { type: "number", description: "switch: tab index from tabs (0 = first)" },
+      dy: { type: "number", description: "scroll: pixels down (negative = up; default one screen)" },
+    },
+  },
+  async run(args) {
+    const action = str(args, "action", "read");
+    const source = { untrustedSource: "a web page in the browser" };
+    if (action === "read") {
+      const offset = num(args, "offset", 0);
+      const page = await readPage(args, { query: str(args, "query") || undefined, content: args.content === true, offset, max: num(args, "max", 150) });
+      return { content: formatPage(page, offset), ...source };
+    }
+    if (action === "click") {
+      const t = await pageTarget(args, false);
+      const done = await mac<{ browser: string }>("browser", { browser: str(args, "browser") || undefined, action: "click", id: t.id });
+      return { content: await pageAfter(args, `Clicked ${describe(t)}${t.extra} in ${done.browser}.`), ...source };
+    }
+    if (action === "type") {
+      const t = await pageTarget(args, true);
+      const text = str(args, "text");
+      const done = await mac<{ browser: string; value?: string; submitted?: boolean }>("browser", {
+        browser: str(args, "browser") || undefined,
+        action: "type",
+        id: t.id,
+        text,
+        submit: args.submit === true,
+        append: args.append === true,
+      });
+      const check = done.value !== undefined && text && t.role !== "pop-up menu" && t.role !== "password field" && !normalize(done.value).includes(normalize(text).slice(0, 40)) ? ` The field now shows "${done.value}" — check it.` : "";
+      const note = `${t.role === "pop-up menu" ? `Picked "${done.value}" in` : `Typed into`} ${describe(t)}${t.extra}${done.submitted ? " and pressed Enter" : ""}.${check}`;
+      return { content: args.submit === true ? await pageAfter(args, note) : note, ...source };
+    }
+    if (action === "tabs") {
+      const t = await mac<{ browser: string; active: number; tabs: { title: string; url: string }[] }>("browser", { browser: str(args, "browser") || undefined, action: "tabs" });
+      return { content: `${t.browser} tabs:\n${t.tabs.map((x, i) => `${i}. ${x.title || "(untitled)"} — ${x.url}${i === t.active ? " (showing)" : ""}`).join("\n")}`, ...source };
+    }
+    const done = await mac<{ browser: string; y?: number }>("browser", {
+      browser: str(args, "browser") || undefined,
+      action,
+      id: Number.isFinite(num(args, "id", NaN)) ? num(args, "id", NaN) : undefined,
+      url: str(args, "url") || undefined,
+      tab: num(args, "tab", 0),
+      dy: num(args, "dy", 0) || undefined,
+    });
+    const what =
+      action === "scroll" ? `Scrolled ${done.browser}'s page.` : action === "open" ? `Opened ${str(args, "url")} in a new ${done.browser} tab.` : action === "go" ? `Went to ${str(args, "url")}.` : action === "switch" ? `Switched to tab ${num(args, "tab", 0)}.` : `Done (${action}).`;
+    return { content: await pageAfter(args, what), ...source };
+  },
+});
+
+const findTextTool = macTool({
+  name: "mac_find_text",
+  risk: "read",
+  timeoutMs: 60_000,
+  description:
+    "Read the text visible on this Mac's main display with on-device text recognition, each line with its @(x,y) for mac_click. " +
+    "Use it when mac_ui can't see something (canvases, games, remote desktops, images, apps without accessibility) — faster and cheaper than a screenshot. query: only lines containing these words.",
+  parameters: {
+    type: "object",
+    properties: {
+      query: { type: "string", description: "Only lines containing these words" },
+      fast: { type: "boolean", description: "Quicker, less accurate recognition" },
+    },
+  },
+  async run(args) {
+    const found = await mac<{ lines: { text: string; confidence: number; at: { x: number; y: number } }[] }>("findText", { fast: args.fast === true });
+    const lines = matchLines(found.lines, str(args, "query"));
+    const shown = lines.slice(0, 200).map((l) => `${JSON.stringify(l.text)} @(${l.at.x},${l.at.y})${l.confidence < 0.5 ? " (unsure)" : ""}`);
+    const head = str(args, "query") ? `${lines.length} of ${found.lines.length} lines on screen match "${str(args, "query")}"` : `${found.lines.length} lines of text on screen`;
+    return { content: [`${head} (coordinates are for mac_click):`, ...shown, lines.length > 200 ? `… ${lines.length - 200} more: pass a query.` : ""].filter(Boolean).join("\n"), untrustedSource: "the screen of this Mac" };
+  },
+});
+
+const recipesTool = macTool({
+  name: "mac_recipes",
+  risk: "read",
+  riskFor: (args) => (str(args, "action", "list") === "list" ? "read" : "write"),
+  description: "",
+  parameters: {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ["list", "save", "delete"], description: "Default list" },
+      name: { type: "string", description: "save/delete: the recipe's name, e.g. \"send whatsapp message\"" },
+      description: { type: "string", description: "save: what it does, in a few words" },
+      params: { type: "array", items: { type: "string" }, description: 'save: the values that change between runs, e.g. ["contact", "message"]' },
+      steps: {
+        type: "array",
+        description: "save: the steps that worked, in order. Each is {tool, args}; use {{param}} in args for the values that change. Name elements by text (text/field/element), never by id.",
+        items: { type: "object", properties: { tool: { type: "string" }, args: { type: "object" }, note: { type: "string" } }, required: ["tool", "args"] },
+      },
+    },
+  },
+  async run(args) {
+    const action = str(args, "action", "list");
+    if (action === "save") {
+      const recipe = validateRecipe({ name: str(args, "name"), description: str(args, "description"), params: args.params, steps: args.steps });
+      const { replaced } = saveRecipe(recipe);
+      return `${replaced ? "Updated" : "Saved"} the recipe "${recipe.name}" (${recipe.steps.length} steps${recipe.params.length ? `; values: ${recipe.params.join(", ")}` : ""}). Next time, run it with mac_recipe_run.`;
+    }
+    if (action === "delete") return deleteRecipe(str(args, "name")) ? `Deleted "${str(args, "name")}".` : `There's no recipe called "${str(args, "name")}".`;
+    const all = useRecipes.getState().recipes;
+    if (!all.length) return "No recipes saved yet.";
+    return all
+      .map((r) => `${recipeLine(r)}\n${r.steps.map((s, i) => `   ${i + 1}. ${s.tool} ${JSON.stringify(s.args)}${s.note ? ` — ${s.note}` : ""}`).join("\n")}`)
+      .join("\n");
+  },
+});
+// The saved recipes are part of the description, so the model knows them without asking.
+Object.defineProperty(recipesTool, "description", {
+  enumerable: true,
+  get() {
+    const all = useRecipes.getState().recipes;
+    return (
+      "List, save or delete recipes: app tasks that worked, saved as steps so mac_recipe_run can repeat them quickly without working them out again. " +
+      "After finishing a multi-step task in an app that the user is likely to ask for again (sending a message, posting, filing something), save it, with the changing values as params." +
+      (all.length ? `\nSaved recipes:\n${all.slice(-30).map(recipeLine).join("\n")}` : "\nNo recipes are saved yet.")
+    );
+  },
+});
+
+const recipeRunTool = macTool({
+  name: "mac_recipe_run",
+  risk: "write",
+  riskFor: (args) => {
+    const recipe = findRecipe(str(args, "name"));
+    if (!recipe) return "write";
+    const values = (args.values && typeof args.values === "object" ? args.values : {}) as Record<string, string>;
+    return highestRisk(
+      recipe.steps.map((s) => {
+        const tool = getTool(s.tool);
+        if (!tool) return "write";
+        return tool.riskFor?.(fill(s.args, values)) ?? tool.risk;
+      }),
+    );
+  },
+  timeoutMs: 300_000,
+  description:
+    "Run a saved recipe (see mac_recipes) with values for its params, e.g. name \"send whatsapp message\", values {contact: \"Mom\", message: \"on my way\"}. " +
+    "Runs every step in order and stops at the first one that fails, saying where, so you can finish by hand (and fix the recipe).",
+  parameters: {
+    type: "object",
+    properties: {
+      name: { type: "string" },
+      values: { type: "object", description: "A value for each of the recipe's params" },
+    },
+    required: ["name"],
+  },
+  async run(args, ctx) {
+    const recipe = findRecipe(str(args, "name"));
+    if (!recipe) throw new Error(`There's no recipe called "${str(args, "name")}". ${useRecipes.getState().recipes.length ? "Saved: " + useRecipes.getState().recipes.map((r) => r.name).join(", ") : "None are saved yet."}`);
+    const values = Object.fromEntries(Object.entries((args.values && typeof args.values === "object" ? args.values : {}) as Record<string, unknown>).map(([k, v]) => [k, String(v ?? "")]));
+    const missing = missingParams(recipe, values);
+    if (missing.length) throw new Error(`"${recipe.name}" needs: ${missing.join(", ")}.`);
+    const log: string[] = [];
+    let last = "";
+    for (const [i, step] of recipe.steps.entries()) {
+      if (ctx.signal?.aborted) throw new Error("Stopped.");
+      const tool = getTool(step.tool);
+      if (!tool) throw new Error(`Step ${i + 1} uses ${step.tool}, which isn't available now.`);
+      const filled = fill(step.args, values);
+      try {
+        last = toResult(await tool.run(filled, ctx)).content;
+        log.push(`${i + 1}. ${step.tool} ✓`);
+      } catch (error) {
+        log.push(`${i + 1}. ${step.tool} ${JSON.stringify(filled)} ✗ ${(error as Error).message.split("\n")[0]}`);
+        return {
+          content: `The recipe "${recipe.name}" stopped at step ${i + 1} of ${recipe.steps.length}:\n${log.join("\n")}\n\n${(error as Error).message}\n\nFinish the task by hand from here; if the app changed, save the recipe again with steps that work.`,
+          untrustedSource: "apps on this Mac",
+        };
+      }
+    }
+    markRun(recipe.name);
+    return { content: `Ran "${recipe.name}" (${recipe.steps.length} steps):\n${log.join("\n")}\n\nAfter the last step:\n${last}`, untrustedSource: "apps on this Mac" };
+  },
+});
+
+macTools.push(browserTool, findTextTool, recipesTool, recipeRunTool);
 
 for (const tool of macTools) registerTool(tool);
