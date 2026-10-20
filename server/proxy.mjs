@@ -57,9 +57,15 @@ export function isPrivateAddress(address) {
     );
   }
   if (isIP(ip) === 6) {
-    if (ip === "::1") return true;
-    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(ip);
-    if (mapped) return isPrivateAddress(mapped[1]);
+    if (ip === "::1" || ip === "::") return true;
+    // IPv4 inside IPv6 (::ffff:127.0.0.1, which URL() writes as ::ffff:7f00:1; NAT64 64:ff9b::/96).
+    const embedded = /^(?:::ffff:|64:ff9b::|::)(?:(\d+\.\d+\.\d+\.\d+)|([0-9a-f]{1,4}):([0-9a-f]{1,4}))$/.exec(ip);
+    if (embedded) {
+      if (embedded[1]) return isPrivateAddress(embedded[1]);
+      const high = parseInt(embedded[2], 16);
+      const low = parseInt(embedded[3], 16);
+      return isPrivateAddress(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
+    }
     return /^f[cd]/.test(ip) || /^fe[89ab]/.test(ip);
   }
   return false;
@@ -92,6 +98,7 @@ const DROP_REQUEST_HEADERS = new Set([
   "accept-encoding",
   "x-adtbot-target",
   "x-adtbot-token",
+  "x-adtbot-public-only",
 ]);
 
 /**

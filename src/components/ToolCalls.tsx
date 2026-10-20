@@ -23,14 +23,60 @@ const LABELS: Record<string, string> = {
   find_tools: "Looked for tools",
   visualize: "Drew a chart",
   ask_bot: "Asked another bot",
+  mac_ui: "Looked at",
+  mac_press: "Pressed",
+  mac_set_text: "Typed",
+  mac_screenshot: "Took a screenshot",
+  mac_click: "Clicked",
+  mac_type: "Typed",
+  mac_key: "Pressed",
+  mac_scroll: "Scrolled",
+  mac_drag: "Dragged",
+  mac_open_app: "Opened",
+  mac_list_apps: "Checked open apps",
+  mac_applescript: "Ran an AppleScript",
 };
 
+/** What a bot asks to do, for approval cards: "Allow the bot to run a command?" */
+const ASKS: Record<string, string> = {
+  run_command: "run a command",
+  read_file: "read a file",
+  write_file: "write a file",
+  list_files: "look in a folder",
+  read_url: "open a web page",
+  open_on_computer: "open something on your computer",
+  create_image: "create an image",
+  mac_press: "press",
+  mac_set_text: "type into a field",
+  mac_type: "type on your Mac",
+  mac_key: "press keys on your Mac",
+  mac_click: "click on your Mac",
+  mac_scroll: "scroll on your Mac",
+  mac_drag: "drag on your Mac",
+  mac_open_app: "open",
+  mac_applescript: "run an AppleScript",
+  delegate_to_cli_agent: "hand a task to a coding agent",
+  create_routine: "create a routine",
+};
+
+const MAIN_ARGS = ["query", "url", "command", "path", "fact", "expression", "prompt", "target", "task", "app", "text", "field", "combo", "script"];
+
+function mainArg(call: ToolCallRecord): string | undefined {
+  const value = MAIN_ARGS.map((k) => call.args[k]).find((v) => typeof v === "string" && v) as string | undefined;
+  return value && (value.length > 90 ? `${value.slice(0, 90)}…` : value);
+}
+
 function label(call: ToolCallRecord): string {
-  const base = LABELS[call.name] ?? call.name.replace(/[_-]+/g, " ");
-  const main = ["query", "url", "command", "path", "fact", "expression", "prompt", "target", "task"].map((k) => call.args[k]).find((v) => typeof v === "string") as
-    | string
-    | undefined;
-  return main ? `${base}: ${main.length > 90 ? `${main.slice(0, 90)}…` : main}` : base;
+  const base = LABELS[call.name] ?? call.name.replace(/^mcp_/, "").replace(/[_-]+/g, " ");
+  const main = mainArg(call);
+  if (call.name === "mac_press" && !main && typeof call.args.id === "number") return `${base} an element`;
+  return main ? `${base}: ${main}` : base;
+}
+
+function askTitle(call: ToolCallRecord): string {
+  const what = ASKS[call.name] ?? `use “${call.name.replace(/^mcp_/, "").replace(/[_-]+/g, " ")}”`;
+  const main = mainArg(call);
+  return `Allow the bot to ${what}${main ? `: ${main}` : ""}?`;
 }
 
 function StatusIcon({ status }: { status: ToolCallRecord["status"] }) {
@@ -99,8 +145,9 @@ function ToolCallRow({ call }: { call: ToolCallRecord }) {
       {awaiting && call.approval && (
         <div className="approval-card" role="group" aria-label="Approval needed">
           <div className="approval-title">
-            <ShieldAlert size={15} /> Allow {call.approval.summary}?
+            <ShieldAlert size={15} /> {askTitle(call)}
           </div>
+          {/\s/.test(call.approval.reason ?? "") && <div className="small muted approval-reason">Asking because {call.approval.reason}.</div>}
           <pre className="approval-detail">{call.approval.detail}</pre>
           {actionable ? (
             <div className="btn-row">

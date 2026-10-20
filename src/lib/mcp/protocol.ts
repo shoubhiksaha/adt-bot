@@ -218,14 +218,21 @@ export function agentToolName(server: string, tool: string): string {
 }
 
 /**
- * Risk from the server's annotations: readOnlyHint → read (never asks), destructiveHint → destructive
- * (always asks), anything else → external (asks according to the approval policy). A tool claiming
+ * Risk from the server's annotations: destructiveHint → destructive (always asks), anything else →
+ * external (asks according to the approval policy). A server's own readOnlyHint is only a claim (a
+ * compromised server can label a write tool read-only), so it counts as read (never asks) only when
+ * the user marked that tool read-only in Settings → Connectors (`trustedReadOnly`). A tool claiming
  * both read-only and destructive is treated as destructive.
  */
-export function riskFromAnnotations(annotations: McpToolAnnotations | undefined): "read" | "external" | "destructive" {
+export function riskFromAnnotations(annotations: McpToolAnnotations | undefined, trustedReadOnly = false): "read" | "external" | "destructive" {
   if (annotations?.destructiveHint === true) return "destructive";
-  if (annotations?.readOnlyHint === true) return "read";
+  if (trustedReadOnly) return "read";
   return "external";
+}
+
+/** What the server says about a tool, for the Connectors settings ("says it only reads"). */
+export function claimsReadOnly(annotations: McpToolAnnotations | undefined): boolean {
+  return annotations?.readOnlyHint === true && annotations?.destructiveHint !== true;
 }
 
 /** A JSON schema the providers accept: always an object schema. */

@@ -40,6 +40,16 @@ function isInside(dir, file) {
   return file === dir || file.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep);
 }
 
+/** Inside the workspace, by its plain or real path. */
+function inWorkspace(file) {
+  const dir = workspaceDir();
+  let real = path.resolve(file);
+  try {
+    real = path.join(fs.realpathSync(path.dirname(real)), path.basename(real));
+  } catch {}
+  return isInside(dir, path.resolve(file)) || isInside(fs.realpathSync(dir), real);
+}
+
 /**
  * Sandbox mode: the real location (every symlink followed) must be inside the workspace. Parts
  * that don't exist yet are about to be created there. A dangling symlink can't be followed, so
@@ -68,22 +78,29 @@ function confine(file, mode = access.mode) {
 
 /**
  * macOS Seatbelt profile for Sandbox mode. The last matching rule wins.
- * - Files: read and write the workspace; write only there and /private/tmp; nothing else under the
- *   home folder (only the home folder's own metadata, which tools need to resolve paths), shared
- *   folders or other volumes.
+ * - Network: no connections out (not even to this computer's own servers), so nothing in the
+ *   workspace can be sent anywhere. Linux's bwrap --unshare-all does the same.
+ * - Files: read and write the workspace (which holds the sandbox's own $HOME and $TMPDIR); nothing
+ *   else under the home folder (only the home folder's own metadata, which tools need to resolve
+ *   paths), shared or per-user temp folders, shared folders or other volumes.
  * - No way to start programs outside the sandbox or act through other processes: Launch Services,
  *   Apple Events, launchd, the window server (screen and input), the pasteboard, preferences
  *   (cfprefsd reads and writes them on a process's behalf) and Spotlight (lists any file name).
  */
 const MAC_PROFILE = `(version 1)
 (allow default)
+(deny network-outbound (remote ip))
 (deny file-write*)
 (allow file-write*
-  (subpath "/private/tmp")
   (literal "/dev/null") (literal "/dev/zero") (literal "/dev/tty") (literal "/dev/dtracehelper")
   (regex #"^/dev/fd/") (regex #"^/dev/ttys"))
-(deny file-read* file-write* (subpath (param "HOME")) (subpath "/Users/Shared") (subpath "/Volumes"))
+(deny file-read* file-write* (subpath (param "HOME")) (subpath "/Users/Shared") (subpath "/Volumes")
+  (subpath "/private/tmp") (subpath "/private/var/tmp") (subpath "/private/var/folders"))
 (allow file-read-metadata (literal (param "HOME")))
+(allow file-read-metadata (regex #"^/private/var(/folders(/[^/]+(/[^/]+(/[TC])?)?)?)?/?$"))
+(allow file-read* file-write*
+  (regex #"^/private/var/folders/[^/]+/[^/]+/T/(xcrun_db|tmp\\.)[^/]*$")
+  (regex #"^/private/var/folders/[^/]+/[^/]+/C/(clang|org\\.llvm\\.clang|com\\.apple\\.DeveloperTools)(/|$)"))
 (allow file-read* file-write* (subpath (param "WORKSPACE")))
 (deny appleevent-send)
 (deny mach-lookup
@@ -157,20 +174,38 @@ function shellFor(command) {
   return [process.env.SHELL || "/bin/zsh", ["-lc", command]];
 }
 
-/** Ends a sandboxed command and anything it left running in its process group. */
-function killGroup(child) {
+/** Ends a command and anything it left running in its process group. */
+function killGroup(child, signal = "SIGKILL") {
   try {
-    process.kill(-child.pid, "SIGKILL");
+    if (process.platform === "win32") child.kill();
+    else process.kill(-child.pid, signal);
   } catch {}
 }
 
-function exec({ command, cwd, timeoutMs = 120000 }, mode = access.mode) {
+/** Commands running now, by the id the app gave them (for Stop and "Stop all bots"). */
+const running = new Map();
+
+function stopCommand(id) {
+  const child = running.get(id);
+  if (!child) return false;
+  child.stoppedByUser = true;
+  killGroup(child, "SIGTERM");
+  setTimeout(() => killGroup(child), 1500).unref?.();
+  return true;
+}
+
+function stopAllCommands() {
+  for (const id of [...running.keys()]) stopCommand(id);
+}
+
+function exec({ id, command, cwd, timeoutMs = 120000 }, mode = access.mode) {
   return new Promise((resolve) => {
     let bin;
     let args;
     let env = process.env;
     let dir;
     const sandboxed = mode === "sandbox";
+    const limit = Math.max(1000, Math.min(Number(timeoutMs) || 120000, 600000));
     try {
       dir = confine(resolvePath(cwd || "."), mode);
       if (sandboxed) {
@@ -183,8 +218,10 @@ function exec({ command, cwd, timeoutMs = 120000 }, mode = access.mode) {
     } catch (error) {
       return resolve({ code: -1, output: String(error.message) });
     }
-    // Sandboxed: its own process group, so nothing it starts outlives the command.
-    const child = spawn(bin, args, { cwd: dir, env, detached: sandboxed && process.platform !== "win32" });
+    // Its own process group, so Stop and the time limit end everything it started.
+    const child = spawn(bin, args, { cwd: dir, env, detached: process.platform !== "win32" });
+    const key = id ? String(id) : `cmd-${child.pid}-${Date.now()}`;
+    running.set(key, child);
     let output = "";
     const take = (chunk) => {
       if (output.length < MAX_OUTPUT) output += chunk.toString();
@@ -192,17 +229,22 @@ function exec({ command, cwd, timeoutMs = 120000 }, mode = access.mode) {
     child.stdout.on("data", take);
     child.stderr.on("data", take);
     const timer = setTimeout(() => {
-      if (sandboxed) killGroup(child);
-      else child.kill("SIGTERM");
-      output += `\n[stopped after ${Math.round(timeoutMs / 1000)} s]`;
-    }, timeoutMs);
+      killGroup(child, "SIGTERM");
+      setTimeout(() => killGroup(child), 1500).unref?.();
+      output += `\n[stopped after ${Math.round(limit / 1000)} s]`;
+    }, limit);
     child.on("close", (code) => {
       clearTimeout(timer);
+      running.delete(key);
+      // Sandboxed commands can't leave anything behind; elsewhere, servers a command started on
+      // purpose (`npm run dev &`) keep running. Stop and the time limit still end the whole group.
       if (sandboxed) killGroup(child);
+      if (child.stoppedByUser) output += "\n[stopped]";
       resolve({ code, output: output.length >= MAX_OUTPUT ? `${output}\n[output cut]` : output });
     });
     child.on("error", (error) => {
       clearTimeout(timer);
+      running.delete(key);
       resolve({ code: -1, output: String(error.message) });
     });
   });
@@ -267,8 +309,13 @@ async function readFile({ path: p, maxBytes = 400000 } = {}, mode = access.mode)
   return toFile(fs.readFileSync(file), file, maxBytes);
 }
 
-async function writeFile({ path: p, content = "", append = false } = {}, mode = access.mode) {
+async function writeFile({ path: p, content = "", append = false, overwrite = false } = {}, mode = access.mode) {
   const file = confine(resolvePath(p), mode);
+  // Replacing a file outside the workspace is destructive: the app asks first only when the bot
+  // says so (overwrite), so refuse a silent replace here.
+  if (!append && !overwrite && mode !== "sandbox" && !inWorkspace(file) && exists(file)) {
+    throw new Error(`${file} already exists. To replace it, call write_file again with overwrite: true (the user will be asked), or use append.`);
+  }
   if (mode === "sandbox" && canSandbox()) {
     const out = await runSandboxed(WRITE_SCRIPT, [file, append ? "a" : "w"], { input: String(content) });
     return { path: file, size: Number(out.toString().trim()) || 0 };
@@ -344,10 +391,13 @@ exports.register = (ctx) => {
     access: access.mode,
   }));
   ipcMain.handle("adt:system:exec", (_e, payload) => exec(payload ?? {}));
+  ipcMain.handle("adt:system:cancel", (_e, { id } = {}) => stopCommand(String(id ?? "")));
+  ctx.onStopAll?.(stopAllCommands);
   ipcMain.handle("adt:system:read", (_e, payload) => readFile(payload ?? {}));
   ipcMain.handle("adt:system:write", (_e, payload) => writeFile(payload ?? {}));
   ipcMain.handle("adt:system:list", (_e, payload) => listFiles(payload ?? {}));
   ipcMain.handle("adt:system:open", (_e, { target } = {}) => openTarget(shell, target));
 };
 
-exports._test = { resolvePath, exec, workspaceDir, confine, sandboxCommand, openTarget, readFile, writeFile, listFiles, MAC_PROFILE };
+exports.stopAllCommands = stopAllCommands;
+exports._test = { resolvePath, exec, stopCommand, stopAllCommands, workspaceDir, confine, sandboxCommand, openTarget, readFile, writeFile, listFiles, MAC_PROFILE };

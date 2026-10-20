@@ -24,7 +24,8 @@ const post = (message: Record<string, unknown>, transfer: Transferable[] = []) =
 
 let transcriber: Worker | null = null;
 let nextJob = 0;
-const jobs = new Map<number, { resolve: (text: string) => void; reject: (error: Error) => void }>();
+/** Resolves with the text, or null when the job was skipped because a newer one in its slot replaced it. */
+const jobs = new Map<number, { resolve: (text: string | null) => void; reject: (error: Error) => void }>();
 
 function getTranscriber(): Worker {
   if (transcriber) return transcriber;
@@ -40,6 +41,7 @@ function getTranscriber(): Worker {
     if (!job) return;
     jobs.delete(data.id);
     if (data.type === "done") job.resolve(data.text);
+    else if (data.type === "skipped") job.resolve(null);
     else job.reject(new Error(data.message));
   };
   // A crash (e.g. out of memory) fails what's in flight; the next request starts a fresh one.
@@ -54,7 +56,7 @@ function getTranscriber(): Worker {
   return worker;
 }
 
-function whisperCall(message: Record<string, unknown>): Promise<string> {
+function whisperCall(message: Record<string, unknown>): Promise<string | null> {
   const id = ++nextJob;
   return new Promise((resolve, reject) => {
     jobs.set(id, { resolve, reject });
@@ -66,7 +68,9 @@ let language = "en";
 let size = "base";
 
 const loadWhisper = (modelSize: string) => whisperCall({ type: "load", size: modelSize });
-const transcribe = (audio: Float32Array) => whisperCall({ type: "transcribe", size, language, audio });
+/** `slot`: speculative and caption runs; a newer run in the same slot replaces one still waiting. */
+const transcribe = (audio: Float32Array, slot?: "speculative" | "partial") => whisperCall({ type: "transcribe", size, language, audio, slot });
+const cancelSlot = (slot: "speculative" | "partial") => transcriber?.postMessage({ type: "cancel", slot });
 
 // VAD -----------------------------------------------------------------------
 
@@ -143,7 +147,7 @@ let mode: "local" | "cloud" = "local";
 let partials = false;
 let muted = false;
 const segmenter = new Segmenter({ endSilenceMs: 700 });
-let speculative: { version: number; text: Promise<string> } | null = null;
+let speculative: { version: number; text: Promise<string | null> } | null = null;
 let partialBusy = false;
 /** When the last caption finished, and how much audio it covered. */
 let partialAt = 0;
@@ -153,12 +157,27 @@ let partialSamples = 0;
  * skip short questions, where a caption would only delay the real transcription queued behind it.
  */
 const PARTIAL_GAP_MS = 700;
-const PARTIAL_MIN_SAMPLES = 14000;
+/**
+ * Only caption speech longer than 2 s: a caption run still going when a short question ends
+ * delays its transcription and the turn model (measured: 2.3 s → 6.6 s to the first word).
+ */
+const PARTIAL_MIN_SAMPLES = 32000;
 const PARTIAL_NEW_SAMPLES = 8000;
+/**
+ * How long to wait when the turn model thinks the speaker is mid-thought, following the user's
+ * "end of turn" setting (quick 450 ms → 1.2 s, normal 700 ms → 1.6 s, patient 1.2 s → 2.5 s).
+ */
+const patientFor = (endSilenceMs: number) => Math.round(Math.min(2500, Math.max(1200, endSilenceMs * 2.2)));
 let levelTick = 0;
 const frames: Float32Array[] = [];
 let pumping = false;
 let port: MessagePort | null = null;
+/**
+ * The listener that owns the microphone feed. Live events carry its id, and settings from any
+ * other (older) listener are ignored, so closing one listener can't mute or reconfigure another.
+ */
+let owner: number | undefined;
+const live = (message: Record<string, unknown>, transfer: Transferable[] = [], listener = owner) => post({ ...message, listener }, transfer);
 
 async function pump() {
   if (pumping || !vad) return;
@@ -170,10 +189,14 @@ async function pump() {
       if (++levelTick % 2 === 0) {
         let sum = 0;
         for (const s of frame) sum += s * s;
-        post({ type: "level", level: Math.min(1, Math.sqrt(sum / frame.length) * 8), probability });
+        live({ type: "level", level: Math.min(1, Math.sqrt(sum / frame.length) * 8), probability });
       }
       for (const event of segmenter.push(frame, probability)) handle(event);
     }
+  } catch (error) {
+    // Without this the detector would stop silently and voice mode would listen forever.
+    frames.length = 0;
+    live({ type: "error", message: `The voice detector stopped: ${(error as Error).message ?? error}` });
   } finally {
     pumping = false;
   }
@@ -182,19 +205,22 @@ async function pump() {
 function handle(event: SegmentEvent) {
   if (event.type === "start" || event.type === "speech" || event.type === "discard") {
     if (event.type === "start") partialSamples = 0;
-    post({ type: event.type });
+    live({ type: event.type });
   } else if (event.type === "pause" && mode === "local") {
     // Start transcribing as soon as the speaker pauses; if they carry on, this is discarded.
-    speculative = { version: event.version, text: transcribe(event.audio) };
+    speculative = { version: event.version, text: transcribe(event.audio, "speculative") };
   } else if (event.type === "silence") {
     const { version, audio } = event;
     void turnFinished(audio).then(({ probability, ms }) => {
       if (probability === null) return;
       segmenter.decide(version, probability > 0.5);
-      post({ type: "turn", probability: Math.round(probability * 100) / 100, ms });
+      live({ type: "turn", probability: Math.round(probability * 100) / 100, ms });
     });
   } else if (event.type === "resume") {
-    if (speculative?.version === event.version) speculative = null;
+    if (speculative?.version === event.version) {
+      speculative = null;
+      cancelSlot("speculative");
+    }
   } else if (
     event.type === "progress" &&
     partials &&
@@ -208,8 +234,9 @@ function handle(event: SegmentEvent) {
   ) {
     partialBusy = true;
     partialSamples = event.audio.length;
-    transcribe(event.audio)
-      .then((text) => text && partials && post({ type: "partial", text }))
+    transcribe(event.audio, "partial")
+      .then((text) => text && partials && live({ type: "partial", text }))
+      .catch(() => undefined)
       .finally(() => {
         partialBusy = false;
         partialAt = performance.now();
@@ -220,18 +247,24 @@ function handle(event: SegmentEvent) {
 }
 
 async function finish(event: Extract<SegmentEvent, { type: "end" }>) {
-  post({ type: "transcribing" });
+  // The listener that heard it gets the result, even if another takes the microphone meanwhile.
+  const listener = owner;
+  live({ type: "transcribing" });
   if (mode === "cloud") {
-    post({ type: "utterance", audio: event.audio }, [event.audio.buffer]);
+    live({ type: "utterance", audio: event.audio }, [event.audio.buffer]);
     return;
   }
   const started = performance.now();
+  // The turn is over: captions still waiting would only delay the real transcription.
+  cancelSlot("partial");
+  const guess = speculative?.version === event.version ? speculative.text : null;
+  if (!guess) cancelSlot("speculative");
+  speculative = null;
   try {
-    const text = speculative?.version === event.version ? await speculative.text : await transcribe(event.audio);
-    speculative = null;
-    post({ type: "utterance", text, ms: Math.round(performance.now() - started) });
+    const text = (guess && (await guess.catch(() => null))) ?? (await transcribe(event.audio)) ?? "";
+    live({ type: "utterance", text, ms: Math.round(performance.now() - started), waitMs: event.silenceMs ?? 0 }, [], listener);
   } catch (error) {
-    post({ type: "error", message: `Speech recognition failed: ${(error as Error).message}` });
+    live({ type: "error", message: `Speech recognition failed: ${(error as Error).message}` }, [], listener);
   }
 }
 
@@ -240,6 +273,7 @@ self.onmessage = async (event: MessageEvent) => {
   try {
     if (data.type === "start") {
       // A new listener takes over: unmute, and drop anything left from the previous one.
+      owner = data.listener;
       muted = false;
       frames.length = 0;
       speculative = null;
@@ -247,7 +281,7 @@ self.onmessage = async (event: MessageEvent) => {
       size = data.size ?? size;
       language = data.language ?? language;
       partials = Boolean(data.partials);
-      segmenter.configure({ endSilenceMs: data.endSilenceMs ?? 700, startThreshold: 0.6 });
+      segmenter.configure({ endSilenceMs: data.endSilenceMs ?? 700, patientEndMs: patientFor(data.endSilenceMs ?? 700), startThreshold: 0.6 });
       segmenter.reset();
       // Only the newest microphone feeds the detector; two interleaved streams would garble both.
       port?.close();
@@ -264,10 +298,12 @@ self.onmessage = async (event: MessageEvent) => {
         if (frames.length > 100) frames.splice(0, frames.length - 100);
         void pump();
       };
-      post({ type: "ready" });
+      live({ type: "ready" });
     } else if (data.type === "configure") {
+      // Settings from a listener that no longer owns the microphone (e.g. closing late) don't apply.
+      if (data.listener !== undefined && data.listener !== owner) return;
       if (data.startThreshold !== undefined) segmenter.configure({ startThreshold: data.startThreshold });
-      if (data.endSilenceMs !== undefined) segmenter.configure({ endSilenceMs: data.endSilenceMs });
+      if (data.endSilenceMs !== undefined) segmenter.configure({ endSilenceMs: data.endSilenceMs, patientEndMs: patientFor(data.endSilenceMs) });
       if (data.partials !== undefined) partials = data.partials;
       if (data.muted !== undefined) {
         muted = data.muted;
@@ -277,6 +313,7 @@ self.onmessage = async (event: MessageEvent) => {
         }
       }
     } else if (data.type === "flush") {
+      if (data.listener !== undefined && data.listener !== owner) return;
       frames.length && (await pump());
       for (const e of segmenter.flush()) handle(e);
     } else if (data.type === "load") {
@@ -287,9 +324,9 @@ self.onmessage = async (event: MessageEvent) => {
     } else if (data.type === "transcribe") {
       size = data.size ?? size;
       language = data.language ?? language;
-      post({ id: data.id, type: "done", text: await transcribe(data.audio) });
+      post({ id: data.id, type: "done", text: (await transcribe(data.audio)) ?? "" });
     }
   } catch (error) {
-    post({ id: data.id, type: "error", message: (error as Error).message ?? String(error) });
+    post({ id: data.id, type: "error", message: (error as Error).message ?? String(error), listener: data.listener });
   }
 };

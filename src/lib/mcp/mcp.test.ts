@@ -216,7 +216,10 @@ describe("names, risk and results", () => {
   });
 
   it("maps annotations to risk", () => {
-    expect(riskFromAnnotations({ readOnlyHint: true })).toBe("read");
+    // The server's read-only claim isn't trusted on its own; the user marking it read-only is.
+    expect(riskFromAnnotations({ readOnlyHint: true })).toBe("external");
+    expect(riskFromAnnotations({ readOnlyHint: true }, true)).toBe("read");
+    expect(riskFromAnnotations({ destructiveHint: true }, true)).toBe("destructive");
     expect(riskFromAnnotations({ destructiveHint: true })).toBe("destructive");
     expect(riskFromAnnotations({ readOnlyHint: true, destructiveHint: true })).toBe("destructive");
     expect(riskFromAnnotations({ readOnlyHint: false })).toBe("external");
@@ -376,7 +379,7 @@ describe("connector manager and agent tools", () => {
     expect(names).not.toContain("mcp_test_server_slow");
     expect(names.some((n) => n.startsWith("mcp_test_server_weird_tool_name_"))).toBe(true);
     const echo = getTool("mcp_test_server_echo")!;
-    expect(echo).toMatchObject({ group: "connectors", kind: "mcp", risk: "read" });
+    expect(echo).toMatchObject({ group: "connectors", kind: "mcp", risk: "external" }); // the server says read-only; not trusted until the user marks it
     expect(getTool("mcp_test_server_delete_everything")?.risk).toBe("destructive");
     expect(getTool("mcp_test_server_fail")?.risk).toBe("external");
 
@@ -508,7 +511,7 @@ describe("stdio servers through the Electron feature", () => {
     expect((await manager.callTool(config, "echo", { text: "back" })).content?.[0]).toEqual({ type: "text", text: "stdio: back hello" });
 
     const tool = buildAgentTools([{ ...config, tools }], manager, () => config).find((t) => t.name === "mcp_echo_echo");
-    expect(tool).toMatchObject({ platforms: ["desktop"], risk: "read" });
+    expect(tool).toMatchObject({ platforms: ["desktop"], risk: "external" });
     await manager.disconnectAll();
     await new Promise((r) => setTimeout(r, 50));
     expect(processes.running()).toEqual([]);

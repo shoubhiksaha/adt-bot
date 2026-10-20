@@ -844,7 +844,9 @@ function cancelAll() {
   for (const entry of runs.values()) entry.cancel();
 }
 
-exports.register = ({ app, ipcMain, send, access }) => {
+exports.register = ({ app, ipcMain, send, access, onStopAll }) => {
+  // "Stop all bots" ends every coding agent too.
+  onStopAll?.(cancelAll);
   ipcMain.handle("adt:cli:detect", () => detect());
   ipcMain.handle("adt:cli:run", (_e, payload = {}) => {
     // Coding agents run with your own permissions, outside any sandbox.

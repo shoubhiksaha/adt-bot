@@ -34,11 +34,11 @@ const CLOSING = new RegExp(`</${UNTRUSTED_TAG}`, "gi");
  * A string of outside content, wrapped.
  *
  * A closing tag inside the content is neutralised, so a page cannot end the envelope early and carry
- * on as though what followed were outside it. Wrapping twice is avoided: content that is already an
- * envelope is returned as it is.
+ * on as though what followed were outside it. Content is always wrapped, even when it already looks
+ * like an envelope: outside content could be written to look wrapped (with "user" text in between).
+ * (ADT Bot change: the upstream skipped content that was already an envelope.)
  */
 export function markUntrusted(content: string, source: string): string {
-  if (isMarkedUntrusted(content)) return content;
   const safeSource = source.replace(/["<>\n\r]/g, " ").slice(0, 120);
   return `${untrustedNotice(`${safeSource} content`)}\n<${UNTRUSTED_TAG} source="${safeSource}">\n${content.replace(CLOSING, `<\\/${UNTRUSTED_TAG}`)}\n</${UNTRUSTED_TAG}>`;
 }

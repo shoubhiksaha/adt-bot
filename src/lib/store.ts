@@ -105,6 +105,7 @@ export const defaultSettings: Settings = {
     voiceName: "",
     rate: 1,
     tts: "system",
+    localVoice: "F1",
     ttsProviderId: "",
     ttsModel: "gpt-4o-mini-tts",
     ttsVoice: "alloy",
@@ -374,6 +375,34 @@ export function updateSettings(patch: Partial<Settings>) {
 
 // Backup ------------------------------------------------------------------
 
+/** Header values can be secrets too (Authorization, CF-Access-Client-Secret…). */
+const blankValues = (headers?: Record<string, string>) => (headers ? Object.fromEntries(Object.keys(headers).map((k) => [k, ""])) : headers);
+
+/** "Name: value" lines: values that aren't {{placeholders}} are blanked. */
+const blankHeaderLines = (text: string) =>
+  text
+    .split("\n")
+    .map((line) => {
+      const i = line.indexOf(":");
+      return i > 0 && !line.includes("{{") ? `${line.slice(0, i)}: ` : line;
+    })
+    .join("\n");
+
+/** Settings without any key, token or secret header (for "Export without keys"). */
+export function withoutSecrets(settings: Settings): Settings {
+  const voice = settings.voice;
+  return {
+    ...settings,
+    search: { ...settings.search, apiKey: "" },
+    voice: {
+      ...voice,
+      elevenKey: "",
+      cloudTts: Object.fromEntries(Object.entries(voice.cloudTts ?? {}).map(([id, c]) => [id, { ...c, key: "" }])) as Settings["voice"]["cloudTts"],
+      customVoices: (voice.customVoices ?? []).map((c) => ({ ...c, key: "", headers: blankHeaderLines(c.headers ?? "") })),
+    },
+  };
+}
+
 export function exportData(includeKeys: boolean): string {
   const { providers, bots, conversations, settings } = getState();
   return JSON.stringify(
@@ -381,14 +410,31 @@ export function exportData(includeKeys: boolean): string {
       app: "adt-bot",
       version: 3,
       exportedAt: new Date().toISOString(),
-      providers: includeKeys ? providers : providers.map((p) => ({ ...p, apiKey: "" })),
+      providers: includeKeys ? providers : providers.map((p) => ({ ...p, apiKey: "", headers: blankValues(p.headers) })),
       bots,
       conversations: Object.fromEntries(Object.entries(conversations).filter(([, c]) => !c.temporary)),
-      settings: includeKeys ? settings : { ...settings, search: { ...settings.search, apiKey: "" } },
+      settings: includeKeys ? settings : withoutSecrets(settings),
     },
     null,
     2,
   );
+}
+
+/**
+ * Providers in a backup that would send your chats somewhere new: a provider you already have whose
+ * address changed, or a new one with a key or address filled in. Shown before importing.
+ */
+export function importChanges(json: string): string[] {
+  const data = JSON.parse(json);
+  const current = new Map(getState().providers.map((p) => [p.id, p]));
+  const changes: string[] = [];
+  for (const p of (data?.providers ?? []) as ProviderConfig[]) {
+    const mine = current.get(p.id);
+    if (mine && (mine.baseUrl ?? "") !== (p.baseUrl ?? "")) changes.push(`${p.name || p.id}: ${mine.baseUrl || "(default)"} → ${p.baseUrl || "(default)"}`);
+    else if (mine && JSON.stringify(mine.headers ?? {}) !== JSON.stringify(p.headers ?? {})) changes.push(`${p.name || p.id}: different request headers`);
+    else if (!mine && p.baseUrl) changes.push(`${p.name || p.id} (new): ${p.baseUrl}`);
+  }
+  return changes;
 }
 
 export function importData(json: string) {

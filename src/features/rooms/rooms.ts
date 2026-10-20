@@ -222,6 +222,7 @@ function onMessage(roomId: string, message: RoomMessage) {
           bot,
           transcript: useRooms.getState().live[roomId]?.messages ?? [],
           tools,
+          guest: message.kind === "guest",
           signal,
           onCalls: (calls) => patchLive(roomId, () => ({ calls })),
           onError: (text) => notice(roomId, `${bot.name}: ${text}`),

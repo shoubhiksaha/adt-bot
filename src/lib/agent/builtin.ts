@@ -54,7 +54,28 @@ export function urlNeedsApproval(raw: string): boolean {
     /^(127\.|10\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(host) ||
     /^[\d.]+$/.test(host) ||
     host.includes(":");
-  return privateHost || Boolean(url.username || url.password) || raw.length > 300 || url.search.length > 120;
+  return privateHost || Boolean(url.username || url.password) || raw.length > 200 || url.search.length > 120 || carriesData(url);
+}
+
+/**
+ * Whether a URL looks like it carries encoded data out (a prompt injection's "fetch this badge"):
+ * long base64-like or hex runs, or a path chopped into many pieces.
+ */
+function carriesData(url: URL): boolean {
+  let text: string;
+  try {
+    text = decodeURIComponent(`${url.pathname}${url.search}`);
+  } catch {
+    return true;
+  }
+  const tokens = text.split(/[/?&=.,;:+_-]+/).filter(Boolean);
+  if (url.pathname.split("/").filter(Boolean).length > 10) return true;
+  return tokens.some(
+    (t) =>
+      (t.length >= 24 && /\d/.test(t) && /[a-z]/.test(t) && /[A-Z]/.test(t)) || // base64-like
+      (t.length >= 48 && /^[0-9a-f]+$/i.test(t)) || // long hex
+      (t.length >= 60 && !/[aeiou]{1}.*[aeiou]/i.test(t)),
+  );
 }
 
 registerTool({
@@ -68,7 +89,8 @@ registerTool({
   async run(args, ctx) {
     const url = str(args, "url");
     if (!/^https?:\/\//i.test(url)) throw new Error("Give a full http(s) URL.");
-    const text = await readPage(url, ctx.settings.useProxy, ctx.signal);
+    // A private address was approved by the user; a public one may not redirect to a private one.
+    const text = await readPage(url, ctx.settings.useProxy, ctx.signal, !urlNeedsApproval(url));
     if (!text) throw new Error("Couldn't read that page (blocked, not text, or unreachable).");
     return { content: text, untrustedSource: url };
   },
@@ -148,9 +170,76 @@ registerTool({
 
 // This computer (desktop app) ----------------------------------------------------------
 
-const DANGEROUS = /\b(rm\s+(-\S+\s+)*-[a-z]*[rf]|sudo|mkfs|dd\s+if=|shutdown|reboot|chmod\s+-R|chown\s+-R|kill(all)?\b|launchctl|diskutil\s+erase|(curl|wget)[^|]*\|\s*(ba|z)?sh|>\s*\/dev\/|eval\b|base64\s+(-d|--decode))/i;
+/**
+ * Commands that delete, overwrite, escalate, persist, wipe disks, or run code fetched from the
+ * internet. These always ask (even with Full access). A pattern list can't be complete, so Full
+ * access also asks before any command once the turn has read outside content (see approvals.ts).
+ */
+const DANGEROUS: RegExp[] = [
+  // Deleting: any rm/rmdir/unlink/shred/srm, find -delete or -exec rm, trash.
+  /(^|[\s;&|(`$])(rm|rmdir|unlink|shred|srm|trash)(\s|$)/,
+  /\bfind\b.*\s-(delete|exec(dir)?\s+(rm|shred|unlink|mv))\b/,
+  // Privilege, power, disks.
+  /(^|[\s;&|(`])(sudo|su|doas|pkexec)(\s|$)/,
+  /\b(mkfs|fdisk|gpt|newfs\w*|shutdown|reboot|halt|poweroff)\b/,
+  /\bdd\b.*\b(of|if)=/,
+  /\bdiskutil\s+(\w+\s+)?(erase\w*|delete\w*|partition\w*|zero\w*|reformat|secureerase|unmount\w*)/i,
+  /\btmutil\s+(delete|disable)/,
+  /\bcsrutil\b|\bspctl\s+--?(master-)?disable|\bnvram\b/,
+  // Git history and working-tree destruction.
+  /\bgit\s+(clean\b|reset\s+--hard|checkout\s+(--\s+)?\.(\s|$)|restore\s+(--\S+\s+)*\.(\s|$)|push\s+.*(-f\b|--force)|branch\s+-D|stash\s+(drop|clear)|filter-branch|update-ref\s+-d)/,
+  // Permissions and ownership, recursive or on the home folder.
+  /\b(chmod|chown|chgrp|chflags)\s+(\S+\s+)*(-[a-zA-Z]*R|--recursive)\b/,
+  /\b(chmod|chown|chgrp)\b[^;&|]*\s(~|\$HOME|\/Users|\/System|\/etc|\/usr)(\/|\s|$)/,
+  // Processes and system services, persistence.
+  /\b(kill|killall|pkill)\b/,
+  /\b(launchctl|crontab|systemctl)\s+\S|(^|[;&|]\s*)at\s+\S/,
+  /\bdefaults\s+(delete|write)\b/,
+  /\bsecurity\s+(find-\w+-password|dump-keychain|delete-\w+|export|unlock-keychain)/,
+  /\bosascript\b/,
+  // Code from the internet straight into an interpreter.
+  /\b(curl|wget|fetch)\b[^|;&]*\|\s*(sudo\s+)?(\w*sh|python\d*(\.\d+)?|node|ruby|perl|php|osascript|bun|deno)\b/,
+  /\b(\w*sh|python\d*|node|ruby|perl|bun|deno)\s+(-\S+\s+)*<\(\s*(curl|wget)/,
+  /\$\(\s*(curl|wget)\b/,
+  // Sending local files out.
+  /\b(curl|wget)\b[^;&|]*(\s-T\s|--upload-file|\s-d\s*@|--data[\w-]*\s*@|\s-F\s*\S+=@|--post-file)/,
+  /\b(scp|sftp|rsync)\b[^;&|]*\s\S+:/,
+  /\b(nc|ncat|netcat|socat)\b/,
+  // Inline code that deletes files or runs other programs.
+  /\b(python\d*(\.\d+)?|node|ruby|perl|php|bun|deno)\s+(-\S+\s+)*-[a-zA-Z]*[ce]\b.*\b(rmtree|remove|unlink|rmdir|rmSync|rm_rf|rm_r|truncate|system|popen|subprocess|child_process|exec\w*|spawn\w*|eval|writeFile\w*|open\s*\()/,
+  // Overwriting with a redirect: the home folder, dotfiles, absolute paths (not /dev/null), devices.
+  /(^|[^>&0-9])>\|?\s*(~|\$HOME|\/(?!dev\/null\b)|\.[\w-]+(\/|\s|$)|\/dev\/(?!null\b))/,
+  /\btee\b(\s+-a)?\s+(~|\$HOME|\/|\.\w)/,
+  /\b(truncate|shred)\b|(^|[;&|]\s*):\s*>/,
+  // Hiding what runs: eval, decoding, commands built from variables.
+  /\beval\b|\bbase64\s+(-d|-D|--decode)|\bxxd\s+-r|\bopenssl\s+(enc|base64)\s+.*-d/,
+  /(^|[;&|(`]\s*)\$\{?\w+\}?(\s|$)/,
+  /\$\{?\w+\}?[a-zA-Z]|[a-zA-Z]\$\{?\w+\}?(\s|$)/,
+  /\b(exec|source)\s+<\(|\bcommand\s+-p\b/,
+];
+
 /** Quotes and backslashes are stripped first, so `r''m -rf` or `\\rm` can't hide a command. */
-const isDangerous = (command: string) => DANGEROUS.test(command.replace(/['"\\]/g, ""));
+export const isDangerous = (command: string) => {
+  const plain = command.replace(/['"\\]/g, "");
+  return DANGEROUS.some((pattern) => pattern.test(plain));
+};
+
+/**
+ * Writing these could run code at login, change the shell, or hide a backdoor: always ask. So does
+ * replacing an existing file outside the workspace (the desktop side refuses that without `overwrite`).
+ */
+export function writeRisk(path: string, overwrite = false): ToolRisk {
+  const p = path.trim().replace(/\\/g, "/");
+  if (insideWorkspace(p)) return "write";
+  if (overwrite) return "destructive";
+  if (/(^|\/)\.[^/]+(\/|$)/.test(p)) return "destructive"; // dotfiles and dot-folders (.zshrc, .ssh, .config…)
+  if (/(^|\/)Library\/(LaunchAgents|LaunchDaemons|StartupItems|Scripts|Services|Application Support\/com\.apple)/i.test(p)) return "destructive";
+  if (/^\/(etc|private|System|Library|usr|bin|sbin|var|opt|Applications)(\/|$)/i.test(p)) return "destructive";
+  if (/\.(command|tool|app|plist|sh|zsh|bash|fish|workflow|scpt|applescript|terminal)$/i.test(p)) return "destructive";
+  return "write";
+}
+
+const RUN_TIMEOUT_MS = 300_000;
 
 registerTool({
   name: "run_command",
@@ -168,9 +257,18 @@ registerTool({
   riskFor: (args): ToolRisk => (isDangerous(String(args.command ?? "")) ? "destructive" : "write"),
   // Sandbox mode runs it confined by the OS to the workspace (see electron/features/10-system.cjs).
   sandboxed: (args) => insideWorkspace(String(args.cwd ?? "")),
-  timeoutMs: 300_000,
-  async run(args) {
-    const result = await desktopInvoke<{ code: number; output: string }>("adt:system:exec", { command: str(args, "command"), cwd: str(args, "cwd") || undefined });
+  timeoutMs: RUN_TIMEOUT_MS,
+  async run(args, ctx) {
+    const id = crypto.randomUUID();
+    // Stop (or the loop's time limit) kills the command and everything it started.
+    const cancel = () => void desktopInvoke("adt:system:cancel", { id }).catch(() => undefined);
+    ctx.signal.addEventListener("abort", cancel, { once: true });
+    const result = await desktopInvoke<{ code: number; output: string }>("adt:system:exec", {
+      id,
+      command: str(args, "command"),
+      cwd: str(args, "cwd") || undefined,
+      timeoutMs: RUN_TIMEOUT_MS - 5_000,
+    }).finally(() => ctx.signal.removeEventListener("abort", cancel));
     const text = `${result.output.trim() || "(no output)"}\n[exit code ${result.code}]`;
     return { content: text, display: { kind: "terminal", text: `$ ${str(args, "command")}\n${text}` }, untrustedSource: "command output" };
   },
@@ -203,15 +301,27 @@ registerTool({
   risk: "write",
   kind: "write",
   platforms: ["desktop"],
-  description: "Create or overwrite a text file on this computer (relative paths go in the ADT Bot Workspace folder). Set append to add to the end.",
+  description:
+    "Create or overwrite a text file on this computer (relative paths go in the ADT Bot Workspace folder). Set append to add to the end. Replacing an existing file outside the workspace needs overwrite: true.",
   parameters: {
     type: "object",
-    properties: { path: { type: "string" }, content: { type: "string" }, append: { type: "boolean" } },
+    properties: {
+      path: { type: "string" },
+      content: { type: "string" },
+      append: { type: "boolean" },
+      overwrite: { type: "boolean", description: "Replace a file that already exists outside the workspace (asks the user)" },
+    },
     required: ["path", "content"],
   },
+  riskFor: (args) => writeRisk(String(args.path ?? ""), args.overwrite === true && !args.append),
   sandboxed: (args) => insideWorkspace(String(args.path ?? "")),
   async run(args) {
-    const result = await desktopInvoke<{ path: string; size: number }>("adt:system:write", { path: str(args, "path"), content: str(args, "content"), append: Boolean(args.append) });
+    const result = await desktopInvoke<{ path: string; size: number }>("adt:system:write", {
+      path: str(args, "path"),
+      content: str(args, "content"),
+      append: Boolean(args.append),
+      overwrite: args.overwrite === true,
+    });
     return `Saved ${result.path} (${result.size} bytes).`;
   },
 });

@@ -3,7 +3,7 @@
 // (CoreGraphics JXA scripts, key map, permission detection), reworked so that every user value
 // travels as an argv entry to osascript/JXA: nothing the model sends is ever spliced into script
 // source. Every call is approved in the app first (src/lib/agent/approvals.ts); this side executes.
-const { execFile } = require("node:child_process");
+const { execFile, spawn } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -319,9 +319,11 @@ const KEY_JXA = `function run(argv) {
   return 'ok';
 }`;
 
+// The primary display (menu bar, origin 0,0): the one screencapture captures. mainScreen is
+// whichever display has the key window, which may be another one.
 const GEOMETRY_JXA = `ObjC.import('AppKit');
 function run() {
-  var s = $.NSScreen.mainScreen;
+  var s = $.NSScreen.screens.objectAtIndex(0);
   return JSON.stringify({ width: s.frame.size.width, height: s.frame.size.height, backing: s.backingScaleFactor });
 }`;
 
@@ -403,6 +405,134 @@ function jxa(source, values, what, timeoutMs) {
 
 function ensureMac() {
   if (!SUPPORTED) throw new Error("Mac control only works on macOS.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// The native helper (electron/native/mac-helper.swift): reads apps' accessibility trees, presses
+// elements, clicks and types. One long-lived process, so an action takes milliseconds instead of
+// starting osascript each time. Without it (a build that lacks it), the osascript paths are used.
+
+function helperPath() {
+  const candidates = [path.join(__dirname, "..", "..", "build", "native", "adt-mac-helper")];
+  if (process.resourcesPath) candidates.unshift(path.join(process.resourcesPath, "bin", "adt-mac-helper"));
+  return candidates.find((file) => fs.existsSync(file)) ?? null;
+}
+
+let helper = null;
+/** The helper died before ever answering (bad signature, killed at launch): use osascript instead. */
+let helperBroken = false;
+
+function startHelper() {
+  const file = helperPath();
+  if (!file) return null;
+  const child = spawn(file, [], { stdio: ["pipe", "pipe", "ignore"] });
+  const h = { child, pending: new Map(), buffer: "", next: 1 };
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    h.buffer += chunk;
+    let index;
+    while ((index = h.buffer.indexOf("\n")) !== -1) {
+      const line = h.buffer.slice(0, index);
+      h.buffer = h.buffer.slice(index + 1);
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      h.answered = true;
+      h.pending.get(message.id)?.(message);
+    }
+  });
+  child.stdin.on("error", () => undefined);
+  const gone = () => {
+    if (!h.answered && !h.killed) helperBroken = true;
+    if (helper === h) helper = null;
+    for (const settle of h.pending.values()) settle({ error: "The Mac helper stopped." });
+    h.pending.clear();
+  };
+  child.on("error", gone);
+  child.on("exit", gone);
+  return h;
+}
+
+/** Stops the helper (Stop all, quitting, or a hung call); the next call starts a new one. */
+function stopHelper() {
+  const h = helper;
+  helper = null;
+  if (!h) return;
+  h.killed = true;
+  h.child.kill("SIGKILL");
+}
+
+const hasHelper = () => SUPPORTED && !helperBroken && Boolean(helper || helperPath());
+
+function helperCall(cmd, payload, { what, timeoutMs = 15_000 }) {
+  ensureMac();
+  if (!helper) helper = startHelper();
+  const h = helper;
+  if (!h) return Promise.reject(new Error(`${what}: this build of ADT Bot is missing its Mac helper. Use mac_screenshot and mac_click instead.`));
+  const id = h.next++;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      h.pending.delete(id);
+      // A call that never returns means an app that stopped responding: start over next time.
+      if (helper === h) stopHelper();
+      reject(new Error(`${what} timed out: the app isn't responding.`));
+    }, timeoutMs);
+    h.pending.set(id, (message) => {
+      clearTimeout(timer);
+      h.pending.delete(id);
+      if (message.error === undefined) return resolve(message.result);
+      if (message.code === "accessibility") return reject(permissionError("accessibility", what));
+      reject(Object.assign(new Error(message.error), { code: message.code ?? undefined }));
+    });
+    h.child.stdin.write(`${JSON.stringify({ ...payload, id, cmd })}\n`);
+  });
+}
+
+/** Keys and clicks sent while the Mac is locked would go to the lock screen's password field. */
+async function ensureUnlocked(what) {
+  if (!hasHelper()) return;
+  const state = await helperCall("ping", {}, { what, timeoutMs: 5_000 }).catch(() => null);
+  if (state?.locked) throw new Error(`${what}: this Mac's screen is locked, so apps can't be seen or used. Ask the user to unlock it, then try again.`);
+}
+
+/**
+ * The controls in an app's window (buttons, fields, links, rows, text) from macOS accessibility,
+ * with ids for mac_press / mac_set_text. Each element also gets its centre in screenshot pixels.
+ */
+async function ui({ app: appName, window, query, menus, max } = {}) {
+  await requireAccessibility("Reading the app's controls");
+  const snap = await helperCall(
+    "snapshot",
+    { app: appName ? String(appName).slice(0, 200) : undefined, window: window ? String(window).slice(0, 200) : undefined, query: query ? String(query).slice(0, 200) : undefined, menus: menus === true, max: Number(max) || undefined },
+    { what: "Reading the app's controls", timeoutMs: 20_000 },
+  );
+  const frame = await currentFrame();
+  const width = frame.width * frame.scale;
+  const height = frame.height * frame.scale;
+  for (const e of snap.elements ?? []) {
+    if (!e.frame) continue;
+    const c = toImagePoint(frame, e.frame.x + e.frame.w / 2, e.frame.y + e.frame.h / 2);
+    if (c.x >= 0 && c.y >= 0 && c.x <= width && c.y <= height) e.at = c;
+  }
+  return snap;
+}
+
+const PRESS_ACTIONS = new Set(["press", "click", "double_click", "right_click", "focus"]);
+
+async function pressElement({ element, action = "press" } = {}) {
+  await requireAccessibility("Pressing");
+  if (!PRESS_ACTIONS.has(action)) throw new Error(`action must be one of ${[...PRESS_ACTIONS].join(", ")}.`);
+  return helperCall("press", { element: Number(element), action }, { what: "Pressing", timeoutMs: 15_000 });
+}
+
+async function setText({ element, text, replace = true, submit = false } = {}) {
+  const value = String(text ?? "");
+  if (value.length > MAX_TEXT) throw new Error(`Text is too long (max ${MAX_TEXT} characters).`);
+  await requireAccessibility("Typing");
+  return helperCall("setText", { element: Number(element), text: value, replace: replace !== false, submit: submit === true }, { what: "Typing", timeoutMs: 20_000 + value.length * 30 });
 }
 
 let geometryCache = null;
@@ -522,16 +652,26 @@ async function screenshot({ region, window: frontWindow = false, maxWidth = MAX_
     });
     const stat = fs.existsSync(raw) ? fs.statSync(raw) : null;
     if (!stat || stat.size < SUSPICIOUS_BYTES) throw permissionError("screen-recording", "Taking a screenshot");
-    const captured = await sipsSize(raw);
-    const convert = [];
-    if (captured.width > width) convert.push("--resampleWidth", String(width));
-    if (!png) convert.push("-s", "format", "jpeg", "-s", "formatOptions", "70");
-    if (convert.length) await exec(SIPS, [...convert, raw, "--out", out], { what: "Resizing the screenshot" });
-    else fs.copyFileSync(raw, out);
-    const size = await sipsSize(out);
+    let size;
+    const image = electronApi()?.nativeImage?.createFromPath(raw);
+    if (image && !image.isEmpty()) {
+      // In-process: no sips processes to start.
+      const captured = image.getSize();
+      const resized = captured.width > width ? image.resize({ width, quality: "good" }) : image;
+      fs.writeFileSync(out, png ? resized.toPNG() : resized.toJPEG(70));
+      size = resized.getSize();
+    } else {
+      const captured = await sipsSize(raw);
+      const convert = [];
+      if (captured.width > width) convert.push("--resampleWidth", String(width));
+      if (!png) convert.push("-s", "format", "jpeg", "-s", "formatOptions", "70");
+      if (convert.length) await exec(SIPS, [...convert, raw, "--out", out], { what: "Resizing the screenshot" });
+      else fs.copyFileSync(raw, out);
+      size = await sipsSize(out);
+    }
     const frame = frameFor(rect, size.width);
     lastFrame = frame;
-    const perms = await permissions().catch(() => null);
+    const perms = await permissions({ fresh: false }).catch(() => null);
     if (perms?.screenRecording && perms.screenRecording !== "granted" && perms.screenRecording !== "unknown") {
       note = [note, "Screen Recording permission isn't granted: other apps' windows may be missing (only the desktop shows)."].filter(Boolean).join(" ");
     }
@@ -566,6 +706,7 @@ async function pointFor(x, y, space) {
 async function move({ x, y, space } = {}) {
   ensureMac();
   await requireAccessibility("Moving the pointer");
+  await ensureUnlocked("Moving the pointer");
   const p = await pointFor(x, y, space);
   await jxa(MOVE_JXA, [p.x, p.y], "Moving the pointer");
   return { ok: true, screen: p };
@@ -574,14 +715,18 @@ async function move({ x, y, space } = {}) {
 async function click({ x, y, button = "left", clicks = 1, space } = {}) {
   ensureMac();
   await requireAccessibility("Clicking");
+  await ensureUnlocked("Clicking");
   const p = await pointFor(x, y, space);
-  await jxa(CLICK_JXA, clickArgs(p, button, clicks), "Clicking");
+  const args = clickArgs(p, button, clicks);
+  if (hasHelper()) await helperCall("click", { x: p.x, y: p.y, button, clicks: Number(args[3]) }, { what: "Clicking" }).catch((error) => (helperBroken ? jxa(CLICK_JXA, args, "Clicking") : Promise.reject(error)));
+  else await jxa(CLICK_JXA, args, "Clicking");
   return { ok: true, screen: p };
 }
 
 async function drag({ x, y, toX, toY, space } = {}) {
   ensureMac();
   await requireAccessibility("Dragging");
+  await ensureUnlocked("Dragging");
   const a = await pointFor(x, y, space);
   const b = await pointFor(toX, toY, space);
   await jxa(DRAG_JXA, [a.x, a.y, b.x, b.y], "Dragging", 30_000);
@@ -591,6 +736,7 @@ async function drag({ x, y, toX, toY, space } = {}) {
 async function scroll({ x, y, dx = 0, dy = 0, space } = {}) {
   ensureMac();
   await requireAccessibility("Scrolling");
+  await ensureUnlocked("Scrolling");
   const p = x === undefined || y === undefined ? (await cursor()).screen : await pointFor(x, y, space);
   const sx = Math.max(-5000, Math.min(5000, Math.round(Number(dx) || 0)));
   const sy = Math.max(-5000, Math.min(5000, Math.round(Number(dy) || 0)));
@@ -604,7 +750,11 @@ async function typeText({ text } = {}) {
   if (!value) return { ok: true, typed: 0 };
   if (value.length > MAX_TEXT) throw new Error(`Text is too long (max ${MAX_TEXT} characters).`);
   await requireAccessibility("Typing");
-  await jxa(TYPE_JXA, [value], "Typing", Math.min(180_000, 20_000 + value.length * 60));
+  await ensureUnlocked("Typing");
+  const timeoutMs = Math.min(180_000, 20_000 + value.length * 60);
+  // The helper types any character as a key event, so the clipboard is never touched.
+  if (hasHelper()) await helperCall("type", { text: value }, { what: "Typing", timeoutMs }).catch((error) => (helperBroken ? jxa(TYPE_JXA, [value], "Typing", timeoutMs) : Promise.reject(error)));
+  else await jxa(TYPE_JXA, [value], "Typing", timeoutMs);
   return { ok: true, typed: value.length };
 }
 
@@ -612,6 +762,7 @@ async function key({ combo } = {}) {
   ensureMac();
   const parsed = parseCombo(combo);
   await requireAccessibility(`Pressing ${parsed.label}`);
+  await ensureUnlocked(`Pressing ${parsed.label}`);
   await jxa(KEY_JXA, keyArgs(parsed), `Pressing ${parsed.label}`);
   return { ok: true, label: parsed.label };
 }
@@ -649,9 +800,14 @@ async function quitApp({ name } = {}) {
   return { ok: true, quit };
 }
 
+/** Links that open in an app: web, mail, calls and messages, and apps' own links (e.g. whatsapp://send?phone=…&text=…). */
+const APP_LINK = /^(https?:\/\/|mailto:|tel:|sms:|facetime:|facetime-audio:|imessage:|whatsapp:|tg:|slack:|msteams:|zoommtg:|zoomus:|spotify:|music:|maps:|x-apple\.systempreferences:|notion:|obsidian:|vscode:|discord:)/i;
+
 async function openUrl(shell, { url } = {}) {
   const value = String(url ?? "").trim();
-  if (!/^(https?:\/\/|mailto:)/i.test(value)) throw new Error("Only http(s) and mailto links can be opened.");
+  if (!APP_LINK.test(value) || value.length > 4000 || /[\0\r\n]/.test(value)) {
+    throw new Error("Only web, mail, phone and messaging links, and links for apps like WhatsApp, Slack, Spotify, Zoom or Maps can be opened.");
+  }
   await shell.openExternal(value);
   return { ok: true, url: value };
 }
@@ -661,13 +817,16 @@ async function appleScript({ source, language = "applescript" } = {}) {
   const code = String(source ?? "");
   if (!code.trim()) throw new Error("Give the script to run.");
   if (code.length > MAX_SCRIPT) throw new Error("The script is too long.");
+  await ensureUnlocked("Running the script");
   // The script itself is the user's (approved) input here; it's the only thing in the source position.
   const lang = language === "javascript" ? "JavaScript" : "AppleScript";
   const output = await exec(OSASCRIPT, ["-l", lang, "-e", code], { what: "Running the script", timeoutMs: 60_000 });
   return { ok: true, output };
 }
 
-exports.register = ({ app, ipcMain, shell, access }) => {
+exports.register = ({ app, ipcMain, shell, access, onStopAll }) => {
+  // "Stop all bots": a typing or pressing helper stops at once.
+  onStopAll?.(stopHelper);
   const handle = (name, fn) => ipcMain.handle(`adt:mac:${name}`, (_e, payload) => fn(payload ?? {}));
   /** Anything that acts on the Mac is off in Sandbox mode (looking and permissions still work). */
   const act = (name, fn) =>
@@ -716,7 +875,14 @@ exports.register = ({ app, ipcMain, shell, access }) => {
   act("quit", quitApp);
   act("openUrl", (payload) => openUrl(shell, payload));
   act("applescript", appleScript);
+  act("ui", ui);
+  act("press", pressElement);
+  act("setText", setText);
+  handle("helper", () => ({ available: hasHelper() }));
+  app?.on?.("will-quit", stopHelper);
 };
+
+exports.stopHelper = stopHelper;
 
 exports._test = {
   SUPPORTED,
@@ -740,6 +906,11 @@ exports._test = {
   move,
   listApps,
   frontmost,
+  APP_LINK,
+  helperPath,
+  helperCall,
+  stopHelper,
+  ui,
   resetFrame: () => {
     lastFrame = null;
   },

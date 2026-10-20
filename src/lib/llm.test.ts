@@ -238,10 +238,10 @@ describe("proxy", () => {
   });
 
   it("recognises private networks", async () => {
-    for (const ip of ["10.0.0.5", "172.20.1.1", "192.168.1.50", "100.101.102.103", "127.0.0.1", "fd12::1", "::ffff:192.168.0.2"]) {
+    for (const ip of ["10.0.0.5", "172.20.1.1", "192.168.1.50", "100.101.102.103", "127.0.0.1", "fd12::1", "::ffff:192.168.0.2", "::ffff:7f00:1", "::ffff:a9fe:a9fe", "64:ff9b::7f00:1", "::"]) {
       expect(isPrivateAddress(ip), ip).toBe(true);
     }
-    for (const ip of ["8.8.8.8", "172.32.0.1", "100.128.0.1", "2001:4860::8888"]) {
+    for (const ip of ["8.8.8.8", "172.32.0.1", "100.128.0.1", "2001:4860::8888", "::ffff:808:808"]) {
       expect(isPrivateAddress(ip), ip).toBe(false);
     }
     expect(await isPrivateHost("gpu-box")).toBe(true);
@@ -282,5 +282,21 @@ describe("presets", () => {
     const ids = PROVIDER_PRESETS.map((p) => p.id);
     expect(new Set(ids).size).toBe(ids.length);
     expect(PROVIDER_PRESETS.every((p) => ["cloud", "local", "private", "cli"].includes(p.group))).toBe(true);
+  });
+});
+
+describe("retrying failed requests", () => {
+  it("retries busy services and dropped connections, not bad requests or exhausted credit", async () => {
+    const { ProviderError, retryDelay } = await import("./llm");
+    expect(retryDelay(new ProviderError("529 overloaded", 529), 0)).toBeGreaterThan(0);
+    expect(retryDelay(new ProviderError("503", 503), 2)).toBeGreaterThan(0);
+    expect(retryDelay(new ProviderError("503", 503), 3)).toBeNull();
+    expect(retryDelay(new ProviderError("429 rate limited", 429, 2000), 0)).toBe(2000);
+    expect(retryDelay(new ProviderError("429 rate limited", 429, 120_000), 0)).toBeNull();
+    expect(retryDelay(new ProviderError("429: You exceeded your current quota", 429), 0)).toBeNull();
+    expect(retryDelay(new ProviderError("400 bad request", 400), 0)).toBeNull();
+    expect(retryDelay(new ProviderError("401", 401), 0)).toBeNull();
+    expect(retryDelay(new TypeError("fetch failed"), 0)).toBeGreaterThan(0);
+    expect(retryDelay(Object.assign(new Error("Stopped"), { name: "AbortError" }), 0)).toBeNull();
   });
 });

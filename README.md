@@ -59,12 +59,16 @@ Bots can do things as well as talk. Turn it on or off, and choose what needs you
   "find tools" search, so long catalogs don't confuse them.
 - **Approvals**: reading never asks; changes ask the first time (or always, or never, as you choose), with
   **Allow once / Always allow / Deny** in the chat; destructive actions always ask. A deny list blocks commands
-  such as `rm -rf /` and `sudo`. Content from the web, files and connectors is marked untrusted so a page can't
-  give the bot orders. Every action is in the activity log.
+  such as `rm -rf /` and `sudo`. Content from the web, files, connectors and room guests is marked as untrusted
+  data and kept out of the system prompt. Models can still be fooled by it, so once a reply has read outside
+  content, commands, file changes and new routines ask first, even with Full access. Images in replies load only
+  when you click them. **⌘⇧⎋** (Ctrl+Alt+Shift+Esc elsewhere) stops every bot from any app. Every action is in
+  the activity log.
 - **Computer access** (desktop): three levels in **Settings → Tools & safety**.
   - **Sandbox**: bots only use the `~/ADT Bot Workspace` folder. Commands run there under an OS sandbox: macOS
     `sandbox-exec`, or `bubblewrap` on Linux (not yet on Windows). The sandbox can't read the rest of your home
-    folder or launch apps, and screen control is off.
+    folder or shared temp folders, launch apps or connect to the network, and screen control is off. Connectors
+    (MCP servers) you add run as you configured them, outside the sandbox.
   - **Restrictive** (default): the whole computer, with approvals as above.
   - **Full access**: bots control the whole computer without asking: commands, files, apps, screen, mouse and
     keyboard. Destructive actions still ask unless you turn that off, and the deny list still applies. Shared
@@ -80,13 +84,25 @@ Bots can do things as well as talk. Turn it on or off, and choose what needs you
 - **Bots working together**: a bot can hand a task to another bot (`ask_bot`) and gets back a short report.
   Loop guards stop bots passing work back and forth.
 - **Connectors (MCP)**: add any MCP server (remote URL with a token, or a local command on desktop) in
-  **Settings → Connectors**; its tools become bot tools.
+  **Settings → Connectors**; its tools become bot tools, and screenshots they return are shown to the model.
+  One-click setups for open-source Mac-control servers: [Peekaboo](https://github.com/openclaw/Peekaboo),
+  [Ghost OS](https://github.com/ghostwright/ghost-os) and
+  [macOS Computer Use Kit](https://github.com/Sur-Cai/macos-computer-use-kit) (all MIT; install once with the shown
+  command). Mark a connector "Controls this computer" and it follows Computer access. Tools ask before running
+  unless you mark them read-only (servers' own read-only claims aren't trusted).
 - **Coding agents** (desktop): bots can hand work to Claude Code, Codex, Gemini CLI, OpenCode or Aider in a
   folder you choose, and you can watch the live transcript. Claude Code (and the others) can also be picked
   as a bot's model.
-- **Control your Mac** (desktop, macOS, off by default; on with Full access): screenshots the bot can see, clicking, typing, keys,
-  scrolling, opening apps and AppleScript, with a "Stop" banner while it works. Needs Accessibility and Screen
-  Recording permission (**Settings → Computer control** links to the right System Settings pages).
+- **Control your Mac** (desktop, macOS, off by default; on with Full access). Bots use apps by name, the way
+  [Ghost OS](https://github.com/ghostwright/ghost-os) does: a small built-in helper reads each app's controls from
+  macOS accessibility (buttons, fields, chat lists, dialogs, and web pages in Chrome, Brave or Electron apps), presses
+  them even when the app is behind other windows, and types any language or emoji without touching the clipboard.
+  Each action returns the updated window, so a task like "send Mom 'on my way' on WhatsApp" takes a few steps
+  instead of a screenshot-and-click loop. App links (`whatsapp://send?…`, `mailto:`, Spotify, Maps, Zoom…) open
+  directly. Screenshots, clicks, keys, scrolling and AppleScript are there for everything else. Buttons such as
+  Delete, Pay or Sign out always ask. A "Stop" banner shows while it works, and nothing is typed while the Mac is
+  locked. Needs Accessibility and Screen Recording permission (**Settings → Computer control** links to the right
+  System Settings pages).
 - **Each bot's own computer** (desktop): a Docker container per bot with a persistent `/workspace`,
   resource limits, and an optional "no network" switch. See **Computers** in the sidebar.
 - **Rooms** (desktop): people on your network chat with each other and your bots from any browser by
@@ -119,7 +135,12 @@ Click the **sound-wave button** next to the mic for a hands-free conversation:
 | Android | Android speech recognition | Android voices, or a natural voice |
 | Desktop app, Firefox | Whisper on your device (77 MB once, then offline and private) | Device voice, or a natural voice |
 
-**Natural voices** (Settings → Voice → Reply voice): any OpenAI-compatible `/audio/speech` server (OpenAI
+**Natural voice on this device** (Settings → Voice → Reply voice): [Supertonic](https://huggingface.co/onnx-community/Supertonic-TTS-ONNX)
+runs offline in the app (a 262 MB download once, 10 voices). It starts speaking in about 0.2–0.6 s per
+sentence, much faster than the macOS voice, and you can interrupt it by talking. Kokoro's browser package wasn't
+used because it bundles GPL-licensed code.
+
+**Natural voices online** (Settings → Voice → Reply voice): any OpenAI-compatible `/audio/speech` server (OpenAI
 `gpt-4o-mini-tts`, or a free self-hosted [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI) server added as a
 private server), ElevenLabs, Fish Audio, Cartesia or Deepgram Aura, each with your own API key. Choose
 **＋ Add a voice provider…** to use any other text-to-speech API: templates fill in Sarvam AI (Indian languages),

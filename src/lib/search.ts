@@ -1,4 +1,5 @@
 import { providerFetch } from "./transport";
+import { markUntrusted } from "./agent/vendor/copilotkit/untrusted-content";
 import type { Settings, Source } from "./types";
 
 export const SEARCH_ENGINES: { id: Settings["search"]["engine"]; name: string; needs: "none" | "key" | "url"; help: string }[] = [
@@ -79,7 +80,7 @@ export async function webSearch(
   if (search.readPages) {
     // Read the top pages for real substance, not just two-line snippets. Failures are fine.
     const pages = await Promise.allSettled(
-      results.slice(0, 3).map((r) => (r.content ? Promise.resolve(r.content) : readPage(r.url, useProxy, signal))),
+      results.slice(0, 3).map((r) => (r.content ? Promise.resolve(r.content) : readPage(r.url, useProxy, signal, true))),
     );
     pages.forEach((page, i) => {
       if (page.status === "fulfilled" && page.value) results[i] = { ...results[i], content: page.value };
@@ -121,14 +122,17 @@ async function freeFallback(query: string, useProxy: boolean, signal: AbortSigna
 }
 
 /** Fetches a web page and returns its readable text (or null when it can't be read). */
-export async function readPage(url: string, useProxy: boolean, signal?: AbortSignal): Promise<string | null> {
+/**
+ * Reads a page's text. `publicOnly` (bots reading on their own): the desktop relay checks every
+ * redirect hop and refuses private-network addresses, so a public link can't reach local servers.
+ */
+export async function readPage(url: string, useProxy: boolean, signal?: AbortSignal, publicOnly = false): Promise<string | null> {
   try {
-    const timeout = AbortSignal.timeout(7000);
-    const res = await providerFetch(
-      url,
-      { method: "GET", headers: { accept: "text/html,text/plain,application/json;q=0.9,*/*;q=0.5" }, signal: signal ? AbortSignal.any([signal, timeout]) : timeout },
-      useProxy,
-    );
+    const timeout = AbortSignal.timeout(publicOnly ? 10000 : 7000);
+    const headers: Record<string, string> = { accept: "text/html,text/plain,application/json;q=0.9,*/*;q=0.5" };
+    // Only the app's relay understands this; sent straight to a website it would trigger a CORS preflight.
+    if (publicOnly && useProxy) headers["x-adtbot-public-only"] = "1";
+    const res = await providerFetch(url, { method: "GET", headers, signal: signal ? AbortSignal.any([signal, timeout]) : timeout }, useProxy);
     if (!res.ok) return null;
     const type = res.headers.get("content-type") ?? "";
     if (!/text|json|xml/.test(type) && type) return null;
@@ -219,13 +223,16 @@ async function ensureOk(res: Response, engine: string) {
   throw new Error(`${engine} search failed (${res.status}).${hint}`);
 }
 
-/** Context block that grounds the answer in the results and asks for [n] citations. */
+/**
+ * Context block that grounds the answer in the results and asks for [n] citations. The pages and
+ * results are outside content, so they're wrapped as untrusted data; only the citation request is ours.
+ */
 export function sourcesPrompt(query: string, sources: Source[], pages: { url: string; text: string }[]): string {
   const parts: string[] = [];
   if (pages.length) {
     parts.push(
-      "The user linked these pages. Their content:\n\n" +
-        pages.map((p) => `<page url="${p.url}">\n${p.text}\n</page>`).join("\n\n"),
+      "The user linked these pages:\n\n" +
+        markUntrusted(pages.map((p) => `<page url="${p.url.replace(/["<>\s]/g, "")}">\n${p.text}\n</page>`).join("\n\n"), "web pages the user linked"),
     );
   }
   if (sources.length) {
@@ -233,7 +240,7 @@ export function sourcesPrompt(query: string, sources: Source[], pages: { url: st
       .map((s, i) => `[${i + 1}] ${s.title}\nURL: ${s.url}\n${(s.content ?? s.snippet).slice(0, PAGE_CHARS)}`)
       .join("\n\n");
     parts.push(
-      `Fresh web search results for "${query}" (retrieved ${new Date().toUTCString()}):\n\n${list}\n\n` +
+      `Fresh web search results for "${query.replace(/["\n]/g, " ")}" (retrieved ${new Date().toUTCString()}):\n\n${markUntrusted(list, "web search results")}\n\n` +
         "Answer using these results. Cite them inline as [1], [2] right after the facts they support. " +
         "If they don't cover the question, say so and answer from your own knowledge.",
     );

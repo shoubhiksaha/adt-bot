@@ -7,6 +7,11 @@ export type SegmenterOptions = {
   endSilenceMs: number;
   /** Silence after which the audio is offered to a turn model ("silence" event). */
   settleMs?: number;
+  /**
+   * Silence before a speculative transcription starts ("pause" event). Silero often dips for a
+   * frame between words; each pause costs a full Whisper run, so wait for a real gap.
+   */
+  pauseMs?: number;
   /** Silence that ends a turn the turn model judged unfinished (the speaker is mid-thought). */
   patientEndMs?: number;
   /** Speech shorter than this is treated as a noise blip. */
@@ -30,7 +35,8 @@ export type SegmentEvent =
   | { type: "pause"; audio: Float32Array; version: number }
   /** Speech continued, so any speculative transcription for `version` is stale. */
   | { type: "resume"; version: number }
-  | { type: "end"; audio: Float32Array; version: number }
+  /** `silenceMs`: how long the speaker had been quiet when the turn was judged over. */
+  | { type: "end"; audio: Float32Array; version: number; silenceMs?: number }
   /** Speech so far, for live captions while the user is still talking. */
   | { type: "progress"; audio: Float32Array }
   /** `settleMs` of silence: ask the turn model whether the speaker has finished (see `decide`). */
@@ -61,6 +67,7 @@ export class Segmenter {
       startThreshold: 0.6,
       endThreshold: 0.35,
       settleMs: 200,
+      pauseMs: 128,
       patientEndMs: 2000,
       ...options,
     };
@@ -141,13 +148,13 @@ export class Segmenter {
       if (this.state === "speech") {
         this.state = "trailing";
         this.silence = 0;
-        if (this.speechFrames >= frames(o.minSpeechMs)) {
-          events.push({ type: "pause", audio: concat(this.frames), version: this.version });
-        }
       }
       this.silence++;
     } else if (this.state === "trailing") {
       this.silence++;
+    }
+    if (this.state === "trailing" && this.silence === frames(o.pauseMs) && this.speechFrames >= frames(o.minSpeechMs)) {
+      events.push({ type: "pause", audio: concat(this.frames), version: this.version });
     }
 
     if (this.state === "speech" && ++this.sinceProgress >= frames(600)) {
@@ -168,8 +175,9 @@ export class Segmenter {
       const keep = ended ? this.frames.length - Math.max(0, this.silence - frames(100)) : this.frames.length;
       const audio = concat(this.frames.slice(0, keep));
       const version = this.version;
+      const silenceMs = ended ? Math.round(this.silence * FRAME_MS) : 0;
       this.reset();
-      events.push(long ? { type: "end", audio, version } : { type: "discard" });
+      events.push(long ? { type: "end", audio, version, silenceMs } : { type: "discard" });
     }
     return events;
   }

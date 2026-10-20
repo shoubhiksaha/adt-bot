@@ -147,7 +147,8 @@ export type Conversation = {
  */
 export type SttEngine = "auto" | "device" | "whisper-local" | "whisper-cloud";
 
-export type TtsEngine = "system" | "openai" | "elevenlabs" | CloudTts | `custom:${string}`;
+/** "local": Supertonic, a natural voice generated on this device (no key, works offline). */
+export type TtsEngine = "system" | "local" | "openai" | "elevenlabs" | CloudTts | `custom:${string}`;
 /** Natural-voice services that only need an API key. */
 export type CloudTts = "fish" | "cartesia" | "deepgram";
 
@@ -163,6 +164,8 @@ export type VoiceSettings = {
   rate: number;
   /** Reply voice engine: device voices, any OpenAI-compatible /audio/speech server, or ElevenLabs. */
   tts: TtsEngine;
+  /** On-device natural voice (Supertonic): F1–F5, M1–M5. */
+  localVoice: string;
   ttsProviderId: string;
   ttsModel: string;
   ttsVoice: string;

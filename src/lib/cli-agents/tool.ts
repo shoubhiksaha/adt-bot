@@ -12,7 +12,9 @@ const PERMISSIONS: CliPermission[] = ["plan", "default", "edit", "bypass"];
 
 /** Exported for tests: bypassing the CLI's own permission checks always needs a fresh approval. */
 export function delegateRisk(args: Record<string, unknown>): ToolRisk {
-  return args.permission === "bypass" ? "destructive" : "external";
+  // Aider has no "edit files only" mode: edit runs it with --yes-always, which says yes to everything.
+  if (args.permission === "bypass" || (args.agent === "aider" && args.permission === "edit")) return "destructive";
+  return "external";
 }
 
 registerTool({

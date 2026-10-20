@@ -4,7 +4,7 @@ import { canImagine, IMAGE_MODEL_SUGGESTIONS, resolveImageModel } from "../lib/i
 import { MOD } from "../lib/keys";
 import { formatHeaders, parseHeaders } from "../lib/providers";
 import { SEARCH_ENGINES, webSearch } from "../lib/search";
-import { exportData, importData, removeProvider, updateProvider, updateSettings, useStore } from "../lib/store";
+import { exportData, importChanges, importData, removeProvider, updateProvider, updateSettings, useStore } from "../lib/store";
 import { detectEnv, type Platform } from "../lib/transport";
 import { Dialog } from "./Dialog";
 import { ProviderSetup } from "./ProviderSetup";
@@ -334,7 +334,20 @@ function DataTab() {
               const file = e.target.files?.[0];
               if (!file) return;
               try {
-                importData(await file.text());
+                const text = await file.text();
+                // A backup from someone else could point your providers at their server.
+                const changes = importChanges(text);
+                if (
+                  changes.length &&
+                  !window.confirm(
+                    `This backup sends your chats to these addresses:\n\n${changes.slice(0, 8).join("\n")}\n\nOnly import backups you made yourself. Import anyway?`,
+                  )
+                ) {
+                  setMessage("Import cancelled.");
+                  e.target.value = "";
+                  return;
+                }
+                importData(text);
                 setMessage("Backup imported.");
               } catch (error) {
                 setMessage((error as Error).message);

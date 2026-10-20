@@ -33,7 +33,17 @@ export type ToolContext = {
   unattended?: boolean;
   /** The request came from people other than the owner (a chat room): Full access doesn't apply. */
   shared?: boolean;
+  /** Outside content this turn has taken in (shared by every step of one turn). */
+  taint?: TurnTaint;
 };
+
+/**
+ * What outside content a turn has read so far (web pages, search results, connector answers, files
+ * from outside the workspace, messages from other people). Once there is any, Full access stops
+ * running commands and file changes unasked for the rest of the turn: an injected instruction can't
+ * turn into an unapproved command.
+ */
+export type TurnTaint = { sources: Set<string> };
 
 export type ToolResult =
   | string
@@ -53,6 +63,8 @@ export type AgentTool = ToolSchema & {
   risk: ToolRisk;
   /** Approval-card category (shell, write, fetch, computer, mcp). */
   kind?: "shell" | "write" | "edit" | "fetch" | "computer" | "mcp";
+  /** Acts on this computer although it isn't one of the built-in computer groups (e.g. a Mac-control connector). */
+  controlsComputer?: boolean;
   /** Platforms where this tool can run (default: everywhere). */
   platforms?: Platform[];
   /** Extra runtime check, e.g. "Docker is running" or "an image model is configured". */

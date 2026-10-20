@@ -1,4 +1,4 @@
-import { memo, useMemo, type ReactNode } from "react";
+import { memo, useMemo, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
@@ -35,11 +35,37 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   );
 }
 
+/** Images the app made itself (attachments, generated images) load straight away. */
+const LOCAL_IMAGE = /^(data:image\/|blob:|app:\/\/adtbot\/|\.\/|\/(?!\/))/i;
+
+/**
+ * A remote image in a reply loads only when the user asks: fetching it would send its URL (which
+ * an injected page can fill with data from the conversation) to that server.
+ */
+function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
+  const [load, setLoad] = useState(false);
+  if (!src) return null;
+  if (LOCAL_IMAGE.test(src) || load) return <img src={src} alt={alt ?? ""} loading="lazy" className="md-image" />;
+  let host = "";
+  try {
+    host = new URL(src).host;
+  } catch {
+    return null;
+  }
+  if (!/^https:\/\//i.test(src)) return <span className="md-image-blocked">[image: {alt || host}]</span>;
+  return (
+    <button type="button" className="md-image-placeholder" onClick={() => setLoad(true)} title={src}>
+      <span aria-hidden="true">🖼</span> {alt ? `${alt} · ` : ""}Load image from {host}
+    </button>
+  );
+}
+
 const remarkPlugins = [remarkGfm];
 // Only highlight labelled code: guessing the language runs every grammar and is slow.
 const rehypePlugins = [[rehypeHighlight, { detect: false, ignoreMissing: true }]] as never;
 const components = {
   pre: CodeBlock,
+  img: MarkdownImage,
   a: ({ href, title, children }: { href?: string; title?: string; children?: ReactNode }) => {
     const citation = typeof children === "string" && /^\d{1,2}$/.test(children) ? children : null;
     return (

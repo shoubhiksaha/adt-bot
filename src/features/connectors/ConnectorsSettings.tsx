@@ -3,9 +3,9 @@ import { useState } from "react";
 import { Section } from "../../components/settings/controls";
 import { isDesktop } from "../../lib/desktop";
 import type { ConnectorConfig, ConnectorStatus } from "../../lib/mcp/connectors";
-import { agentToolName, riskFromAnnotations } from "../../lib/mcp/protocol";
+import { agentToolName, claimsReadOnly, riskFromAnnotations } from "../../lib/mcp/protocol";
 import { addServer, connectorManager, removeServer, setServerEnabled, testServer, updateServer, useConnectors } from "../../lib/mcp/store";
-import { configFromDraft, type Draft, draftFrom, emptyDraft, PRESETS } from "./form";
+import { COMPUTER_PRESETS, configFromDraft, type Draft, draftFrom, emptyDraft, PRESETS } from "./form";
 import "./connectors.css";
 
 export function ConnectorsSettings() {
@@ -141,7 +141,9 @@ function ConnectorCard({ server, status, desktop, onEdit }: { server: ConnectorC
           {open && (
             <ul>
               {tools.map((tool) => {
-                const risk = riskFromAnnotations(tool.annotations);
+                const trusted = server.readOnlyTools?.includes(tool.name) ?? false;
+                const risk = riskFromAnnotations(tool.annotations, trusted);
+                const claims = claimsReadOnly(tool.annotations);
                 return (
                   <li key={tool.name}>
                     <label>
@@ -153,6 +155,24 @@ function ConnectorCard({ server, status, desktop, onEdit }: { server: ConnectorC
                         <span className="small muted connector-tool-desc">as {agentToolName(server.name, tool.name)}</span>
                       </span>
                     </label>
+                    {risk !== "destructive" && (
+                      <label className="toggle compact connector-readonly">
+                        <input
+                          type="checkbox"
+                          checked={trusted}
+                          onChange={(e) =>
+                            updateServer(server.id, {
+                              readOnlyTools: e.target.checked
+                                ? [...new Set([...(server.readOnlyTools ?? []), tool.name])]
+                                : (server.readOnlyTools ?? []).filter((n) => n !== tool.name),
+                            })
+                          }
+                        />
+                        <span className="small muted">
+                          Only reads: runs without asking{claims && !trusted ? " (the server says it only reads; tick to trust that)" : ""}
+                        </span>
+                      </label>
+                    )}
                   </li>
                 );
               })}
@@ -168,8 +188,10 @@ function ConnectorForm({ initial, desktop, onDone, existing }: { initial: Draft;
   const [draft, setDraft] = useState<Draft>(initial);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [install, setInstall] = useState<(typeof COMPUTER_PRESETS)[number] | null>(null);
   const set = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
   const presets = PRESETS.filter((p) => desktop || !p.desktopOnly);
+  const mac = desktop && window.adtbotDesktop?.platform === "darwin";
 
   const save = async () => {
     const parsed = configFromDraft(draft);
@@ -197,10 +219,49 @@ function ConnectorForm({ initial, desktop, onDone, existing }: { initial: Draft;
         <div className="connector-presets">
           <span className="small muted">Examples:</span>
           {presets.map((p) => (
-            <button key={p.label} type="button" className="btn" title={p.hint} onClick={() => setDraft({ ...emptyDraft(), ...p.draft })}>
+            <button
+              key={p.label}
+              type="button"
+              className="btn"
+              title={p.hint}
+              onClick={() => {
+                setInstall(null);
+                setDraft({ ...emptyDraft(), ...p.draft });
+              }}
+            >
               {p.label}
             </button>
           ))}
+        </div>
+      )}
+      {!existing && mac && (
+        <div className="connector-presets">
+          <span className="small muted">Control this Mac:</span>
+          {COMPUTER_PRESETS.map((p) => (
+            <button
+              key={p.label}
+              type="button"
+              className={`btn${install?.label === p.label ? " active" : ""}`}
+              title={p.hint}
+              onClick={() => {
+                setInstall(p);
+                setDraft({ ...emptyDraft(), ...p.draft });
+              }}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+      )}
+      {install && (
+        <div className="connector-install">
+          <p className="small">
+            <strong>{install.label}</strong> ({install.license}, <a href={install.url} target="_blank" rel="noreferrer">source</a>): {install.hint}
+          </p>
+          <p className="small">
+            Install it once in Terminal: <code>{install.install}</code>
+          </p>
+          <p className="small muted">ADT Bot already uses Mac apps by name on its own; add this for its extra tools.</p>
         </div>
       )}
 
@@ -299,6 +360,12 @@ function ConnectorForm({ initial, desktop, onDone, existing }: { initial: Draft;
             </div>
             <TimeoutField draft={draft} set={set} />
           </details>
+          <label className="toggle compact">
+            <input type="checkbox" checked={draft.controlsComputer} onChange={(e) => set({ controlsComputer: e.target.checked })} />
+            <span className="small">
+              Controls this computer (screen, apps or files): follows Computer access. Off in Sandbox; with Full access its tools run without asking.
+            </span>
+          </label>
           <span className="small muted">
             The command runs on this computer with your permissions, through your login shell (so <code>npx</code>, <code>uvx</code> and{" "}
             <code>docker</code> are found). Only add servers you trust.

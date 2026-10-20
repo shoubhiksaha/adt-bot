@@ -42,6 +42,10 @@ export type ConnectorConfig = {
   timeoutSec?: number;
   /** Tool names (as the server calls them) the user switched off. */
   disabledTools: string[];
+  /** Tools (server names) the user marked read-only; servers' own read-only claims aren't trusted. */
+  readOnlyTools?: string[];
+  /** The server acts on this computer (screen, apps, files): Computer access applies to its tools. */
+  controlsComputer?: boolean;
   /** Last tool list, so tools are available at start-up before the server is reached. */
   tools?: McpTool[];
 };
@@ -235,8 +239,9 @@ export function buildAgentTools(configs: ConnectorConfig[], manager: ConnectorMa
         description,
         parameters: toolParameters(tool.inputSchema) as AgentTool["parameters"],
         group: CONNECTORS_GROUP,
-        risk: riskFromAnnotations(tool.annotations),
+        risk: riskFromAnnotations(tool.annotations, config.readOnlyTools?.includes(tool.name)),
         kind: "mcp",
+        controlsComputer: config.controlsComputer === true,
         platforms: config.transport === "stdio" ? ["desktop"] : undefined,
         timeoutMs: (config.timeoutSec ?? CALL_TIMEOUT_MS / 1000) * 1000 + LIST_TIMEOUT_MS * 2,
         available: () => {
@@ -251,7 +256,12 @@ export function buildAgentTools(configs: ConnectorConfig[], manager: ConnectorMa
           const { text, display } = convertResult(result);
           const source = `the "${now.name}" connector (MCP tool ${tool.name})`;
           if (result.isError) return { content: `The tool reported an error:\n${text}`, untrustedSource: source };
-          return { content: text, display, untrustedSource: source };
+          // Screenshots and other images go to the model too, not just to the chat.
+          const picture = (Array.isArray(result.content) ? result.content : []).find(
+            (p): p is { type: "image"; data: string; mimeType?: string } => (p as { type?: string })?.type === "image" && typeof (p as { data?: unknown }).data === "string",
+          );
+          const image = picture ? { mediaType: picture.mimeType ?? "image/png", data: picture.data } : undefined;
+          return { content: image ? text.replace("— shown to the user", "— attached") : text, display, image, untrustedSource: source };
         },
       });
     }
@@ -273,7 +283,7 @@ export function syncAgentTools(tools: AgentTool[]): string[] {
     }
   }
   for (const tool of tools) {
-    const signature = JSON.stringify([tool.description, tool.parameters, tool.risk, tool.platforms, tool.timeoutMs]);
+    const signature = JSON.stringify([tool.description, tool.parameters, tool.risk, tool.platforms, tool.timeoutMs, tool.controlsComputer]);
     if (registered.has(tool.name) && signatures.get(tool.name) === signature) continue;
     registerTool(tool);
     registered.add(tool.name);

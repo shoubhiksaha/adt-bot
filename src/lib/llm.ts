@@ -91,13 +91,82 @@ export type ChatRequest = {
   signal?: AbortSignal;
 };
 
-/** Stream a reply from any supported provider as text and reasoning deltas. */
+/** An HTTP error from a provider, with what's needed to decide whether to try again. */
+export class ProviderError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly retryAfterMs?: number,
+  ) {
+    super(message);
+  }
+}
+
+async function providerError(res: Response): Promise<ProviderError> {
+  const header = res.headers.get("retry-after");
+  const seconds = header ? Number(header) : NaN;
+  const at = header && !Number.isFinite(seconds) ? Date.parse(header) - Date.now() : NaN;
+  const retryAfterMs = Number.isFinite(seconds) ? seconds * 1000 : Number.isFinite(at) ? Math.max(0, at) : undefined;
+  return new ProviderError(await describeHttpError(res), res.status, retryAfterMs);
+}
+
+const RETRY_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529]);
+const MAX_RETRIES = 3;
+
+/**
+ * How long to wait before trying a failed request again, or null when it shouldn't be retried:
+ * busy or briefly failing services and dropped connections are retried; bad keys, bad requests and
+ * exhausted credit are not.
+ */
+export function retryDelay(error: unknown, attempt: number): number | null {
+  if (attempt >= MAX_RETRIES) return null;
+  const e = error as Partial<ProviderError> & Error;
+  if ((e as Error)?.name === "AbortError") return null;
+  const message = String(e?.message ?? "");
+  const network = !e?.status && /fetch failed|network|ECONNRESET|ETIMEDOUT|socket hang up|Failed to fetch|Load failed|terminated/i.test(message);
+  const overloaded = /overloaded/i.test(message);
+  if (!network && !overloaded && !(e?.status && RETRY_STATUS.has(e.status))) return null;
+  if (/insufficient_quota|credit balance|billing|exceeded your current quota/i.test(message)) return null;
+  if (e?.retryAfterMs !== undefined) return e.retryAfterMs <= 30_000 ? e.retryAfterMs : null;
+  return 800 * 2 ** attempt + Math.round(Math.random() * 400);
+}
+
+function sleep(ms: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) return reject(new DOMException("Stopped", "AbortError"));
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => (clearTimeout(timer), reject(new DOMException("Stopped", "AbortError"))), { once: true });
+  });
+}
+
+/**
+ * Stream a reply from any supported provider as text and reasoning deltas. A request that fails
+ * before anything arrived (busy service, rate limit, dropped connection) is tried again.
+ */
 export async function* streamChat(req: ChatRequest): AsyncGenerator<StreamEvent> {
   if (req.provider.kind === "cli") return yield* streamCliChat(req);
+  for (let attempt = 0; ; attempt++) {
+    let started = false;
+    try {
+      for await (const event of streamOnce(req)) {
+        started = true;
+        yield event;
+      }
+      return;
+    } catch (error) {
+      const wait = started || req.signal?.aborted ? null : retryDelay(error, attempt);
+      if (wait === null) throw error;
+      yield { type: "status", text: attempt ? `The service is busy. Trying again (${attempt + 1})…` : "The service is busy. Trying again…" };
+      await sleep(wait, req.signal);
+    }
+  }
+}
+
+async function* streamOnce(req: ChatRequest): AsyncGenerator<StreamEvent> {
   const { url, init } = buildRequest(req);
   init.headers = withCustomHeaders(init.headers, req.provider.headers);
   const res = await providerFetch(url, { ...init, signal: req.signal }, req.useProxy);
-  if (!res.ok) throw new Error(await describeHttpError(res));
+  if (!res.ok) throw await providerError(res);
 
   const parser = createParser(req.provider, req);
   const prompted = req.toolMode === "prompted" && req.tools?.length ? new PromptedFilter() : null;
@@ -124,7 +193,11 @@ export async function* streamChat(req: ChatRequest): AsyncGenerator<StreamEvent>
     } catch {
       continue;
     }
-    if (json.error || json.type === "error") throw new Error(errorText(json.error ?? json));
+    if (json.error || json.type === "error") {
+      const error = json.error ?? json;
+      const type = String(error?.type ?? error?.error?.type ?? "");
+      throw new ProviderError(errorText(error), /overloaded/.test(type) ? 529 : /rate_limit/.test(type) ? 429 : /api_error/.test(type) ? 500 : 0);
+    }
     for (const event of parser.parse(json)) yield* route(event);
   }
   for (const event of parser.finish()) yield* route(event);
@@ -229,6 +302,10 @@ function buildRequest(original: ChatRequest): { url: string; init: FetchInit } {
     } else if (req.fast) {
       // Current Claude models think by default; low effort answers much sooner.
       body.output_config = { effort: "low" };
+    } else if (thinksByDefault(req.model) && req.tools?.some((t) => t.name.startsWith("mac_"))) {
+      // Thinking "off" with screen control: each step is a small decision, and the default (high)
+      // effort makes every click wait. Same for every step of the turn.
+      body.output_config = { effort: "medium" };
     }
     if (provider.presetId === "anthropic") {
       // Cache the system prompt and history so long chats and knowledge files are cheaper and faster.
@@ -450,6 +527,7 @@ function createParser(provider: ProviderConfig, req: ChatRequest): Parser {
     // The full assistant turn, block by block, so a tool step can be replayed exactly.
     const blocks: Record<string, any>[] = [];
     const partialJson = new Map<number, string>();
+    let cutOff = false;
     let text = "";
     const parse = function* (json: any): Generator<StreamEvent> {
       if (json.type === "content_block_start") {
@@ -487,6 +565,10 @@ function createParser(provider: ProviderConfig, req: ChatRequest): Parser {
         yield { type: "text", text: ` ${marks}` };
       } else if (json.type === "message_delta" && json.delta?.stop_reason === "refusal") {
         yield { type: "text", text: "\n\n_The model declined to answer this request._" };
+      } else if (json.type === "message_delta" && json.delta?.stop_reason === "max_tokens") {
+        cutOff = true;
+      } else if (json.type === "message_delta" && json.delta?.stop_reason === "pause_turn") {
+        yield { type: "text", text: "\n\n_The web search took too long to finish. Ask again to continue._" };
       }
       if (json.type === "content_block_stop" && partialJson.has(json.index)) {
         blocks[json.index].input = parseToolArgs(partialJson.get(json.index) ?? "");
@@ -495,6 +577,12 @@ function createParser(provider: ProviderConfig, req: ChatRequest): Parser {
     };
     const finish = function* (): Generator<StreamEvent> {
       const calls = blocks.filter((b) => b?.type === "tool_use").map((b) => ({ id: b.id, name: b.name, args: b.input ?? {} }));
+      if (cutOff) {
+        // A tool call cut off mid-way has incomplete arguments: never run it.
+        if (calls.length) throw new Error("The reply hit the model's output limit while asking to use a tool. Try again, or raise the output limit in the bot's settings.");
+        yield { type: "text", text: "\n\n_(Cut off at the output limit.)_" };
+        return;
+      }
       if (!native || !calls.length) return;
       // Citations aren't needed on replay and some fields aren't accepted back.
       const raw = blocks.filter(Boolean).map((b) => {

@@ -1,6 +1,6 @@
 import { MousePointer2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { stopStreaming } from "../../lib/chat";
+import { stopEverything } from "../../lib/chat";
 import { useStore } from "../../lib/store";
 import { useMacControl } from "./store";
 
@@ -26,7 +26,8 @@ export function MacControlBanner() {
     <div className="mac-control-banner" role="status" aria-live="polite">
       <MousePointer2 size={15} aria-hidden />
       <span>{appName} is controlling your Mac</span>
-      <button type="button" onClick={() => stopStreaming()}>
+      <kbd className="mac-control-kbd" title="Stops every bot, from any app">⌘⇧⎋</kbd>
+      <button type="button" onClick={() => stopEverything()}>
         Stop
       </button>
     </div>

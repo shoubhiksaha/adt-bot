@@ -119,6 +119,37 @@ function validateSharedFolder(folder) {
   if (/[,\n\r\0"]/.test(folder)) return "The shared folder's path can't contain commas, quotes or line breaks.";
   const resolved = path.resolve(folder);
   if (resolved === path.parse(resolved).root || resolved === os.homedir()) return "Share a specific folder, not the whole disk or home folder.";
+  // Folders that hold keys, app data or every user's files: a bot in the container could read or change them.
+  const home = os.homedir();
+  if (resolved === path.dirname(home)) return "Share a specific folder, not every user's home folder.";
+  const sensitive = [
+    path.join(home, "Library"),
+    path.join(home, ".ssh"),
+    path.join(home, ".aws"),
+    path.join(home, ".gnupg"),
+    path.join(home, ".config"),
+    path.join(home, ".kube"),
+    path.join(home, ".docker"),
+    path.join(home, "AppData"),
+    "/etc",
+    "/var",
+    "/private",
+    "/System",
+    "/Library",
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/root",
+    "/Applications",
+  ];
+  const lower = (p) => (process.platform === "linux" ? p : p.toLowerCase());
+  // iCloud Drive lives under ~/Library but holds ordinary documents.
+  const icloud = path.join(home, "Library", "Mobile Documents");
+  if (lower(resolved).startsWith(lower(icloud) + path.sep) && !path.basename(resolved).startsWith(".")) return null;
+  for (const dir of sensitive) {
+    if (lower(resolved) === lower(dir) || lower(resolved).startsWith(lower(dir) + path.sep)) return `Don't share ${dir} (it holds keys, settings or system files). Pick a project folder.`;
+  }
+  if (path.basename(resolved).startsWith(".")) return "Don't share a hidden folder (they hold keys and settings). Pick a project folder.";
   return null;
 }
 

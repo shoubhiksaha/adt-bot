@@ -1,5 +1,6 @@
 import { Mic, MicOff, Settings2, X, Zap } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { desktopInvoke, isDesktop } from "../lib/desktop";
 import { useStore } from "../lib/store";
 import { speakable, speechLevel, ttsLabel } from "../lib/tts";
 import { VoiceSession, type VoiceState } from "../lib/voice-session";
@@ -35,29 +36,62 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
     session.current = s;
     setState(s.state);
     void s.start();
+    if (isDesktop()) void desktopInvoke("adt:voice:active", { active: true }).catch(() => undefined);
     // Unmounting already removes the UI, so don't call onClose again (StrictMode mounts twice in dev).
-    return () => s.close(false);
+    return () => {
+      s.close(false);
+      if (isDesktop()) void desktopInvoke("adt:voice:active", { active: false }).catch(() => undefined);
+    };
     // One session per opening.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // The orb follows the actual sound every frame: the microphone while listening, the bot's voice
-  // while it speaks. Written straight to a CSS variable, so it doesn't re-render the screen.
+  // while it speaks. Written straight to a CSS variable, so it doesn't re-render the screen; the
+  // glow it drives is animated with transform and opacity only (see .orb::before).
   const orb = useRef<HTMLButtonElement>(null);
   useEffect(() => {
+    const still = window.matchMedia?.("(prefers-reduced-motion: reduce)");
     let frame = 0;
     let level = 0;
+    let written = "";
     const tick = () => {
       const s = session.current;
-      const target = s ? (s.state.phase === "speaking" ? speechLevel() : s.inputLevel()) : 0;
+      const phase = s?.state.phase;
+      const quiet = !s || still?.matches || phase === "muted" || phase === "error" || phase === "loading";
+      const target = quiet ? 0 : phase === "speaking" ? speechLevel() : s.inputLevel();
       // Rise fast, fall slower, like a VU meter.
       level += (target - level) * (target > level ? 0.45 : 0.12);
-      orb.current?.style.setProperty("--level", level.toFixed(3));
+      const value = level < 0.004 ? "0" : level.toFixed(2);
+      if (value !== written) {
+        written = value;
+        orb.current?.style.setProperty("--level", value);
+      }
       frame = requestAnimationFrame(tick);
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
   }, []);
+
+  // A modal screen: the app behind it can't be focused or clicked, and doesn't spend time on
+  // layout and paint while replies stream in underneath.
+  const root = useRef<HTMLDivElement>(null);
+  const shown = state !== null && Boolean(bot);
+  useEffect(() => {
+    const el = root.current;
+    if (!shown || !el?.parentElement) return;
+    const behind = [...el.parentElement.children].filter((c): c is HTMLElement => c !== el && c instanceof HTMLElement && !c.inert);
+    behind.forEach((c) => {
+      c.inert = true;
+      c.classList.add("under-voice");
+    });
+    el.querySelector<HTMLElement>(".voice-primary")?.focus();
+    return () =>
+      behind.forEach((c) => {
+        c.inert = false;
+        c.classList.remove("under-voice");
+      });
+  }, [shown]);
 
   // Space = talk / interrupt, M = mute, Esc = end.
   useEffect(() => {
@@ -68,6 +102,14 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
         session.current?.tap();
       } else if (e.key.toLowerCase() === "m") session.current?.toggleMute();
       else if (e.key === "Escape") session.current?.close();
+      else if (e.key === "Tab" && root.current) {
+        // Keep keyboard focus inside the voice screen.
+        const items = [...root.current.querySelectorAll<HTMLElement>("button:not([disabled])")];
+        const index = items.indexOf(document.activeElement as HTMLElement);
+        if (!items.length) return;
+        e.preventDefault();
+        items[(index + (e.shiftKey ? -1 : 1) + items.length) % items.length].focus();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -92,7 +134,7 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
     state.download !== null && state.download < 100
       ? cached
         ? "Loading speech model…"
-        : `Downloading speech model (${WHISPER_SIZES[voice.localModel].mb} MB, one time)… ${state.download}%`
+        : `Downloading speech model, one time (${WHISPER_SIZES[voice.localModel].mb} MB; about 90 MB more follows in the background for speed)… ${state.download}%`
       : phase === "standby"
         ? `Say “Hey ${state.wakeName}” to continue`
         : phase === "thinking" && state.activity
@@ -102,7 +144,7 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
   const reply = speakable(state.reply);
 
   return (
-    <div className={`voice-mode phase-${phase}`} role="dialog" aria-label="Voice mode">
+    <div ref={root} className={`voice-mode phase-${phase}`} role="dialog" aria-modal="true" aria-label="Voice mode">
       <div className="voice-top">
         <span className="voice-bot">
           <Avatar value={bot.avatar} /> {bot.name}
@@ -115,7 +157,7 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
               className="latency"
               title={
                 state.timing
-                  ? `You stopped talking → first word: understanding speech ${(state.timing.stt / 1000).toFixed(1)}s, model ${(state.timing.model / 1000).toFixed(1)}s, voice ${(state.timing.speech / 1000).toFixed(1)}s`
+                  ? `You stopped talking → first word: waiting for you to finish ${(state.timing.turn / 1000).toFixed(1)}s, understanding speech ${(state.timing.stt / 1000).toFixed(1)}s, model ${(state.timing.model / 1000).toFixed(1)}s, voice ${(state.timing.speech / 1000).toFixed(1)}s`
                   : "From when you stopped talking to the first spoken word"
               }
             >
@@ -138,10 +180,16 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
         >
           {(phase === "standby" || phase === "muted") && (phase === "muted" ? <MicOff size={34} /> : <Mic size={34} />)}
         </button>
-        <div className="voice-status" aria-live="polite">
-          {status}
+        <div className="voice-status">{status}</div>
+        {state.error && (
+          <div className="voice-error" role="alert">
+            {state.error}
+          </div>
+        )}
+        {/* Screen readers hear each finished answer once, not every word as it's spoken. */}
+        <div className="sr-only" aria-live="polite">
+          {phase === "listening" ? reply : ""}
         </div>
-        {state.error && <div className="voice-error">{state.error}</div>}
 
         <div className="captions">
           {(state.partial || state.heard) && (

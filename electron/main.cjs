@@ -2,15 +2,27 @@
 // The UI is served from a private app:// origin (so saved chats survive restarts), and
 // app://adtbot/api/proxy relays provider calls outside the page, which avoids CORS for every
 // cloud provider, local LLM server and private model server.
-const { app, BrowserWindow, ipcMain, Menu, net, protocol, session, shell, systemPreferences } = require("electron");
+const { app, BrowserWindow, globalShortcut, ipcMain, Menu, Notification, net, protocol, session, shell, systemPreferences } = require("electron");
+const { lookup } = require("node:dns/promises");
 const fs = require("node:fs");
+const { isIP } = require("node:net");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 
 const DEV = process.argv.includes("--dev");
 const DIST = path.join(__dirname, "..", "dist");
 const DEV_ORIGIN = "http://localhost:5173";
-const DROP_HEADERS = new Set(["host", "origin", "referer", "cookie", "content-length", "x-adtbot-target", "x-adtbot-token", "anthropic-dangerous-direct-browser-access"]);
+const DROP_HEADERS = new Set([
+  "host",
+  "origin",
+  "referer",
+  "cookie",
+  "content-length",
+  "x-adtbot-target",
+  "x-adtbot-token",
+  "x-adtbot-public-only",
+  "anthropic-dangerous-direct-browser-access",
+]);
 
 // Present as plain Chrome: search engines and some sites block "Electron" user agents.
 app.userAgentFallback = app.userAgentFallback.replace(/ (Electron|adt-?bot|ADT ?Bot)\/[^ ]+/gi, "");
@@ -18,6 +30,103 @@ app.userAgentFallback = app.userAgentFallback.replace(/ (Electron|adt-?bot|ADT ?
 protocol.registerSchemesAsPrivileged([
   { scheme: "app", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true } },
 ]);
+
+const LOOPBACK_NAMES = new Set(["localhost", "127.0.0.1", "::1", "host.docker.internal"]);
+const PRIVATE_SUFFIXES = [".localhost", ".local", ".lan", ".home", ".internal", ".intranet", ".corp", ".home.arpa", ".ts.net"];
+
+/** Loopback, LAN, link-local, CGNAT/Tailscale, unspecified and IPv6 unique-local addresses (as server/proxy.mjs). */
+function isPrivateAddress(address) {
+  const ip = String(address).replace(/^\[|\]$/g, "").toLowerCase();
+  if (isIP(ip) === 4) {
+    const [a, b] = ip.split(".").map(Number);
+    return a === 0 || a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127);
+  }
+  if (isIP(ip) === 6) {
+    if (ip === "::1" || ip === "::") return true;
+    // IPv4 inside IPv6 (::ffff:127.0.0.1, which URL() writes as ::ffff:7f00:1; NAT64 64:ff9b::/96;
+    // the deprecated ::a.b.c.d): judge the IPv4 address.
+    const embedded = /^(?:::ffff:|64:ff9b::|::)(?:(\d+\.\d+\.\d+\.\d+)|([0-9a-f]{1,4}):([0-9a-f]{1,4}))$/.exec(ip);
+    if (embedded) {
+      if (embedded[1]) return isPrivateAddress(embedded[1]);
+      const high = parseInt(embedded[2], 16);
+      const low = parseInt(embedded[3], 16);
+      return isPrivateAddress(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
+    }
+    return /^f[cd]/.test(ip) || /^fe[89ab]/.test(ip);
+  }
+  return false;
+}
+
+/** A private IP literal, a LAN-style name, or a name whose DNS answers include a private address. */
+async function isPrivateHost(hostname) {
+  const host = String(hostname).replace(/^\[|\]$/g, "").toLowerCase();
+  if (LOOPBACK_NAMES.has(host)) return true;
+  if (isIP(host)) return isPrivateAddress(host);
+  if (!host.includes(".") || PRIVATE_SUFFIXES.some((suffix) => host.endsWith(suffix))) return true;
+  try {
+    const records = await lookup(host, { all: true });
+    return records.some((r) => isPrivateAddress(r.address));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * GET a public web page for a bot (read_url): every hop of a redirect is checked, so a public link
+ * can't bounce the request to the router, a local server or cloud metadata.
+ */
+const MAX_PAGE_BYTES = 8 * 1024 * 1024;
+
+async function fetchPublic(url, headers) {
+  let current = url;
+  for (let hop = 0; hop <= 5; hop++) {
+    const target = new URL(current);
+    if (!/^https?:$/.test(target.protocol)) throw new Error("only http(s) pages can be read");
+    if (await isPrivateHost(target.hostname)) throw new Error(`${target.host} is on a private network; the page can only be read with your approval`);
+    const result = await new Promise((resolve, reject) => {
+      const request = net.request({ url: target.toString(), method: "GET", redirect: "manual", headers });
+      // A page that never finishes (or never starts) mustn't tie up the app.
+      const timer = setTimeout(() => {
+        request.abort();
+        reject(new Error("the page took too long"));
+      }, 20_000);
+      const settle = (fn) => (value) => {
+        clearTimeout(timer);
+        fn(value);
+      };
+      request.on("redirect", (_status, _method, location) => {
+        request.abort();
+        settle(resolve)({ location: new URL(location, target).toString() });
+      });
+      request.on("response", (response) => {
+        const chunks = [];
+        let size = 0;
+        response.on("data", (chunk) => {
+          size += chunk.length;
+          if (size <= MAX_PAGE_BYTES) return void chunks.push(chunk);
+          // Enough of the page: stop downloading.
+          request.abort();
+          settle(resolve)({ response, body: Buffer.concat(chunks) });
+        });
+        response.on("end", () => settle(resolve)({ response, body: Buffer.concat(chunks) }));
+        response.on("error", settle(reject));
+      });
+      request.on("error", settle(reject));
+      request.end();
+    });
+    if (result.location) {
+      current = result.location;
+      continue;
+    }
+    const type = result.response.headers["content-type"];
+    const empty = [101, 204, 205, 304].includes(result.response.statusCode);
+    return new Response(empty ? null : result.body, {
+      status: result.response.statusCode,
+      headers: { "cache-control": "no-cache", ...(type ? { "content-type": Array.isArray(type) ? type[0] : type } : {}) },
+    });
+  }
+  throw new Error("too many redirects");
+}
 
 async function relay(request) {
   let target;
@@ -32,6 +141,13 @@ async function relay(request) {
   const headers = {};
   for (const [key, value] of request.headers) if (!DROP_HEADERS.has(key.toLowerCase())) headers[key] = value;
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
+  if (request.headers.get("x-adtbot-public-only") === "1") {
+    try {
+      return await fetchPublic(target.toString(), headers);
+    } catch (error) {
+      return Response.json({ error: { message: `Could not read ${target.host}: ${error?.message ?? error}` } }, { status: 403 });
+    }
+  }
   try {
     // Chromium's network stack: honours the OS trust store (company CAs), system proxies and VPN DNS.
     const upstream = await net.fetch(target.toString(), {
@@ -74,7 +190,8 @@ const CSP = [
   "worker-src 'self' blob:",
   "style-src 'self' 'unsafe-inline'",
   "font-src 'self' data:",
-  "img-src * data: blob:",
+  // https only (no plain http, ws or file); images in replies load only on a click (Markdown.tsx).
+  "img-src 'self' data: blob: https:",
   "media-src * data: blob:",
   "connect-src 'self' * data: blob: ws: wss:",
   "frame-src 'none'",
@@ -96,6 +213,29 @@ async function serveFile(pathname) {
 }
 
 let mainWindow = null;
+
+// "Stop all bots" -----------------------------------------------------------------------------
+// One shortcut that works from any app (the bot is usually driving another app, with ADT Bot behind
+// it): ends every reply in the app (on screen and in the background) and every command, script,
+// coding agent and screen action the desktop side is running.
+
+const STOP_SHORTCUT = process.platform === "darwin" ? "Command+Shift+Escape" : "Control+Alt+Shift+Escape";
+const STOP_LABEL = process.platform === "darwin" ? "⌘⇧⎋" : "Ctrl+Alt+Shift+Esc";
+const stopAllHandlers = new Set();
+
+function stopAllBots(source = "shortcut") {
+  for (const handler of stopAllHandlers) {
+    try {
+      handler();
+    } catch (error) {
+      console.error("Stop all:", error);
+    }
+  }
+  mainWindow?.webContents.send("adt:stop-all", { source });
+  if (source !== "app" && Notification.isSupported()) {
+    new Notification({ title: "Stopped all bots", body: "Every running bot, command and screen action was stopped.", silent: true }).show();
+  }
+}
 
 /** Only the app's own pages may use the window, IPC and permissions; never a page navigated to by mistake. */
 function trustedUrl(url) {
@@ -139,6 +279,8 @@ function loadFeatures() {
      * arrives, assume the strictest mode.
      */
     access: { mode: "sandbox" },
+    /** Register cleanup for "Stop all bots" (kill commands, helpers, agents). */
+    onStopAll: (handler) => stopAllHandlers.add(handler),
   };
   for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".cjs")).sort()) {
     try {
@@ -217,13 +359,29 @@ app.whenReady().then(() => {
     return serveFile(pathname);
   });
 
+  const botsMenu = {
+    label: "Bots",
+    submenu: [{ label: `Stop All Bots (${STOP_LABEL} from any app)`, accelerator: STOP_SHORTCUT, click: () => stopAllBots("menu") }],
+  };
   if (process.platform === "darwin") {
     Menu.setApplicationMenu(
-      Menu.buildFromTemplate([{ role: "appMenu" }, { role: "editMenu" }, { role: "viewMenu" }, { role: "windowMenu" }]),
+      Menu.buildFromTemplate([{ role: "appMenu" }, { role: "editMenu" }, { role: "viewMenu" }, botsMenu, { role: "windowMenu" }]),
     );
   } else {
-    Menu.setApplicationMenu(Menu.buildFromTemplate([{ role: "editMenu" }, { role: "viewMenu" }]));
+    Menu.setApplicationMenu(Menu.buildFromTemplate([{ role: "editMenu" }, { role: "viewMenu" }, botsMenu]));
   }
+  if (!globalShortcut.register(STOP_SHORTCUT, () => stopAllBots("shortcut"))) console.warn(`Couldn't register ${STOP_SHORTCUT} (used by another app).`);
+  // Voice mode keeps its timers and audio at full speed while the bot works in other apps.
+  ipcMain.handle("adt:voice:active", (event, payload) => {
+    if (!trustedUrl(event.senderFrame?.url ?? "")) throw new Error("Blocked adt:voice:active from an untrusted page");
+    event.sender.setBackgroundThrottling(!payload?.active);
+    return true;
+  });
+  ipcMain.handle("adt:stop-all", (event) => {
+    if (!trustedUrl(event.senderFrame?.url ?? "")) throw new Error("Blocked adt:stop-all from an untrusted page");
+    stopAllBots("app");
+    return true;
+  });
 
   loadFeatures();
   createWindow();
@@ -231,6 +389,8 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
+
+app.on("will-quit", () => globalShortcut.unregisterAll());
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();

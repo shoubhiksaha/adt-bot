@@ -2,6 +2,7 @@ import { Capacitor } from "@capacitor/core";
 import { describeHttpError, withCustomHeaders } from "./llm";
 import { providerFetch } from "./transport";
 import { audioFromJson, buildCustomRequest } from "./custom-tts";
+import { localVoiceReady, synthesizeLocally } from "./local-tts";
 import type { CloudTts, ProviderConfig, VoiceSettings } from "./types";
 
 export function customVoiceFor(voice: VoiceSettings) {
@@ -68,10 +69,22 @@ export async function bestVoice(preferred: string): Promise<DeviceVoice | undefi
 let activeUtterance: SpeechSynthesisUtterance | null = null;
 
 let output: AudioContext | null = null;
+let suspendTimer: ReturnType<typeof setTimeout> | null = null;
 function audioOutput(): AudioContext {
+  if (suspendTimer) clearTimeout(suspendTimer);
+  suspendTimer = null;
   if (!output || output.state === "closed") output = new AudioContext();
   if (output.state === "suspended") void output.resume();
   return output;
+}
+
+/** A running audio context keeps the audio hardware (and a CPU thread) busy; let it sleep when quiet. */
+function suspendOutputSoon() {
+  if (suspendTimer) clearTimeout(suspendTimer);
+  suspendTimer = setTimeout(() => {
+    suspendTimer = null;
+    if (output?.state === "running" && !networkPlaying) void output.suspend().catch(() => undefined);
+  }, 10_000);
 }
 
 /** Short cue tones for hands-free use (listening, woke up, error). */
@@ -91,12 +104,13 @@ export function chime(kind: "listen" | "wake" | "error") {
       osc.start(start);
       osc.stop(start + 0.2);
     });
+    suspendOutputSoon();
   } catch {
     // Audio isn't available; cues are optional.
   }
 }
 
-type Clip = { text: string; audio: Promise<AudioBuffer | null> | null };
+type Clip = { text: string; audio: Promise<AudioBuffer | null> | null; started?: boolean };
 
 export type SpeakerHooks = {
   /** A sentence starts sounding (not when it's queued: network audio may still be downloading). */
@@ -127,14 +141,28 @@ export function speechLevel(): number {
   return 0;
 }
 
+let duck: GainNode | null = null;
+
 function outputNode(ctx: AudioContext): AudioNode {
   if (!analyser || analyser.context !== ctx) {
     analyser = ctx.createAnalyser();
     analyser.fftSize = 1024;
-    analyser.connect(ctx.destination);
+    duck = ctx.createGain();
+    analyser.connect(duck).connect(ctx.destination);
     samples = new Float32Array(analyser.fftSize);
   }
   return analyser;
+}
+
+/**
+ * Turns the bot's voice right down while the user may be cutting in, and back up if it was a false
+ * alarm (a cough, the bot's own echo). Only affects voices played by the page.
+ */
+export function duckSpeech(on: boolean) {
+  if (!duck) return;
+  const now = duck.context.currentTime;
+  duck.gain.cancelScheduledValues(now);
+  duck.gain.setTargetAtTime(on ? 0.12 : 1, now, on ? 0.03 : 0.12);
 }
 
 export type Speaker = {
@@ -152,6 +180,7 @@ export type Speaker = {
 export type TtsContext = { voice: VoiceSettings; providers: ProviderConfig[]; useProxy: boolean };
 
 export function ttsLabel(voice: VoiceSettings): string {
+  if (voice.tts === "local") return `On-device voice · ${voice.localVoice || "F1"}`;
   if (voice.tts === "openai") return `${voice.ttsModel || "OpenAI"} · ${voice.ttsVoice || "alloy"}`;
   if (voice.tts === "elevenlabs") return "ElevenLabs";
   if (voice.tts in CLOUD_TTS) return CLOUD_TTS[voice.tts as CloudTts].label;
@@ -175,11 +204,22 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
     if (!busy && !queue.length) {
       waiters.forEach((w) => w());
       waiters = [];
+      suspendOutputSoon();
     }
   };
 
   const fetchAudio = async (text: string): Promise<AudioBuffer | null> => {
     try {
+      if (voice.tts === "local") {
+        // Still loading (or downloading): the device voice speaks this sentence instead.
+        if (!localVoiceReady(voice.localVoice || "F1")) return null;
+        // Generated on this device as raw samples: no encoding or decoding step.
+        const out = await synthesizeLocally(text, voice.localVoice || "F1", voice.rate, controller.signal);
+        if (!out || !out.audio.length) return null;
+        const buffer = audioOutput().createBuffer(1, out.audio.length, out.sampleRate);
+        buffer.copyToChannel(out.audio as Float32Array<ArrayBuffer>, 0);
+        return buffer;
+      }
       const bytes = await synthesize(text, context, controller.signal);
       return await audioOutput().decodeAudioData(bytes);
     } catch (error) {
@@ -230,16 +270,36 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
     });
   };
 
+  let usedDevice = false;
   const speakDevice = async (text: string) => {
+    usedDevice = true;
     const chosen = await bestVoice(voice.voiceName);
+    // Stopped (barge-in) while finding the voice: don't start a sentence after the cancel.
+    if (stopped) return;
     if (Capacitor.isNativePlatform()) {
       const { TextToSpeech } = await import("@capacitor-community/text-to-speech");
       const voices = await listVoices();
       const index = chosen ? voices.findIndex((v) => v.name === chosen.name) : -1;
+      if (stopped) return;
       hooks.onSentence?.(text);
-      await TextToSpeech.speak({ text, lang: chosen?.lang ?? navigator.language, rate: voice.rate, ...(index >= 0 ? { voice: index } : {}) }).catch(
-        (error: Error) => hooks.onError?.(`The device voice failed: ${error.message ?? error}`),
-      );
+      // Android reports no word positions: estimate them, and pulse the orb, from the time spoken.
+      deviceSpeaking = true;
+      const startedAt = performance.now();
+      const perSecond = 14 * Math.max(0.5, voice.rate);
+      const ticker = setInterval(() => {
+        const word = text.lastIndexOf(" ", Math.round(((performance.now() - startedAt) / 1000) * perSecond));
+        if (word > 0) {
+          lastWordAt = performance.now();
+          hooks.onProgress?.(word);
+        }
+      }, 200);
+      await TextToSpeech.speak({ text, lang: chosen?.lang ?? navigator.language, rate: voice.rate, ...(index >= 0 ? { voice: index } : {}) })
+        .catch((error: Error) => hooks.onError?.(`The device voice failed: ${error.message ?? error}`))
+        .finally(() => {
+          clearInterval(ticker);
+          deviceSpeaking = false;
+          hooks.onProgress?.(text.length);
+        });
       return;
     }
     if (!("speechSynthesis" in window)) {
@@ -255,24 +315,42 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
       utterance.rate = voice.rate;
       // About 12 characters a second at normal speed, plus slack; covers a lost "end" event.
       const watchdog = setTimeout(() => finish(), (4000 + (text.length / 12 / Math.max(0.5, voice.rate)) * 1000 * 1.5));
+      let ticker: ReturnType<typeof setInterval> | null = null;
       const finish = () => {
         clearTimeout(watchdog);
+        if (ticker) clearInterval(ticker);
         if (activeUtterance === utterance) activeUtterance = null;
         deviceSpeaking = false;
         hooks.onProgress?.(text.length);
         resolve();
       };
       let started = false;
+      let boundaries = false;
       const start = () => {
         if (started) return;
         started = true;
         deviceSpeaking = true;
         lastWordAt = performance.now();
         hooks.onSentence?.(text);
+        // Some voices never report word boundaries: estimate the position from the time spoken.
+        const startedAt = performance.now();
+        const perSecond = 14 * Math.max(0.5, voice.rate);
+        let reported = 0;
+        ticker = setInterval(() => {
+          if (boundaries) return;
+          const chars = Math.min(text.length, Math.round(((performance.now() - startedAt) / 1000) * perSecond));
+          const word = text.lastIndexOf(" ", chars);
+          if (word > reported) {
+            reported = word;
+            lastWordAt = performance.now();
+            hooks.onProgress?.(word);
+          }
+        }, 150);
       };
       utterance.onstart = start;
       utterance.onboundary = (event) => {
         start();
+        boundaries = true;
         lastWordAt = performance.now();
         if (event.name === "word") hooks.onProgress?.(event.charIndex + (event.charLength || 0));
       };
@@ -281,20 +359,29 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
         if (event.error !== "interrupted" && event.error !== "canceled") hooks.onError?.(`The device voice failed (${event.error}).`);
         finish();
       };
+      if (stopped) return finish();
       speechSynthesis.speak(utterance);
     });
   };
 
+  let deviceStandIn = false;
   const pump = async () => {
     if (busy) return;
     busy = true;
     while (queue.length && !stopped) {
       prefetch();
-      const clip = queue.shift()!;
+      const clip = queue[0];
+      clip.started = true;
+      queue.shift();
       spoken += `${clip.text} `;
       if (network) {
         const buffer = await (clip.audio ?? fetchAudio(clip.text));
         if (buffer && !stopped) await playBuffer(buffer, clip.text);
+        // The voice service failed for this sentence (the error is shown): say it with the device voice.
+        else if (!buffer && !stopped && !controller.signal.aborted) {
+          deviceStandIn = true;
+          await speakDevice(clip.text).finally(() => (deviceStandIn = false));
+        }
       } else {
         await speakDevice(clip.text);
       }
@@ -308,7 +395,11 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
     say(text) {
       const clean = speakable(text);
       if (!clean || stopped) return;
-      queue.push({ text: clean, audio: null });
+      // The device voice takes 1–2.5 s to start each utterance: after the first one, speak in
+      // bigger pieces, joining sentences that arrive while it's still talking.
+      const last = queue.at(-1);
+      if (!network && last && !last.started && last.text.length + clean.length < 400) last.text = `${last.text} ${clean}`;
+      else queue.push({ text: clean, audio: null });
       prefetch();
       void pump();
     },
@@ -327,7 +418,7 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
       }
       if (Capacitor.isNativePlatform()) {
         void import("@capacitor-community/text-to-speech").then(({ TextToSpeech }) => TextToSpeech.stop());
-      } else if (!network && "speechSynthesis" in window) speechSynthesis.cancel();
+      } else if (usedDevice && "speechSynthesis" in window) speechSynthesis.cancel();
       busy = false;
       networkPlaying = false;
       deviceSpeaking = false;
@@ -339,8 +430,9 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
     get spoken() {
       return spoken;
     },
+    /** False while the device voice stands in (it can't be turned down, so cutting in must stop it). */
     get inPageAudio() {
-      return network;
+      return network && !deviceStandIn;
     },
   };
 }
@@ -452,23 +544,46 @@ function clampSpeed(rate: number) {
   return Math.min(1.2, Math.max(0.7, rate));
 }
 
-/** Text as it should be read aloud: no code, links, citations or Markdown symbols. */
+const ORDINALS = ["First", "Second", "Third", "Fourth", "Fifth", "Sixth", "Seventh", "Eighth", "Ninth", "Tenth"];
+
+/** "https://www.example.com/a/b" → "example.com": a voice reading a whole link is just noise. */
+function spokenLink(url: string): string {
+  try {
+    return ` ${new URL(url).hostname.replace(/^www\./, "")} `;
+  } catch {
+    return " a link ";
+  }
+}
+
+/** Text as it should be read aloud: no code, links, citations, emoji or Markdown symbols. */
 export function speakable(text: string): string {
   return text
     .replace(/<think>[\s\S]*?(<\/think>|$)/g, " ")
-    .replace(/```[\s\S]*?(```|$)/g, " (code omitted) ")
+    .replace(/<\/?[a-z][\w-]*[^<>\n]{0,60}$/i, " ") // a tag still streaming in (e.g. "<remem")
+    .replace(/```[\s\S]*?(```|$)/g, " I've put the code in the chat. ")
     .replace(/`([^`]+)`/g, "$1")
     .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
     .replace(/\[(\d{1,2})\](\([^)]*\))?/g, "")
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-    .replace(/https?:\/\/\S+/g, " link ")
+    .replace(/https?:\/\/[^\s)]+/g, spokenLink)
     .replace(/^\s*\|.*\|\s*$/gm, " ")
+    .replace(/^\s*>+\s?/gm, "")
+    .replace(/^\s*(\d{1,2})[.)]\s+/gm, (_m, n: string) => ` ${ORDINALS[Number(n) - 1] ?? n}, `)
+    .replace(/\b([CF])#/g, "$1 sharp")
+    .replace(/\s>=\s/g, " at least ")
+    .replace(/\s<=\s/g, " at most ")
+    .replace(/\s>\s/g, " greater than ")
+    .replace(/\s<\s/g, " less than ")
     .replace(/^#+\s*/gm, "")
     .replace(/[*_~>#|]+/g, " ")
     .replace(/^\s*[-+]\s+/gm, "")
+    .replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}\u{20E3}]/gu, "")
     .replace(/\s+/g, " ")
+    .replace(/\s+([.,!?;:])/g, "$1")
     .trim();
 }
+
+const ABBREVIATION = /(?:^|[\s(])(?:dr|mr|mrs|ms|prof|sr|jr|st|vs|approx|no|fig|e\.g|i\.e|[a-z])\.$/i;
 
 /**
  * Splits finished sentences off the front of streaming text so speech can start before the reply
@@ -481,6 +596,8 @@ export function takeSentences(buffer: string, final: boolean, first = false): { 
   let last = 0;
   let current = "";
   for (let m = boundary.exec(buffer); m; m = boundary.exec(buffer)) {
+    // "Dr. Smith", "e.g. this": not the end of a sentence.
+    if (m[1] === "." && ABBREVIATION.test(buffer.slice(Math.max(0, m.index - 8), m.index + 1))) continue;
     // Keep the whitespace so merged fragments stay separate words.
     current += buffer.slice(last, boundary.lastIndex);
     last = boundary.lastIndex;

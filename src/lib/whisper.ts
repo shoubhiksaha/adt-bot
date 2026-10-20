@@ -13,7 +13,14 @@ let worker: Worker | null = null;
 let nextId = 0;
 const pending = new Map<number, { resolve: (text: string) => void; reject: (error: Error) => void }>();
 const progressListeners = new Set<(p: Progress | null) => void>();
-const liveListeners = new Set<(message: any) => void>();
+/** Live listeners by id; worker events carry the id of the listener they belong to. */
+const liveListeners = new Map<number, (message: any) => void>();
+let nextListener = 0;
+/**
+ * Listeners in the order they started. Only the newest has the microphone; older ones (e.g. the
+ * hands-free wake listener while you dictate) wait and get it back when the newer one closes.
+ */
+const listeners: Listener[] = [];
 
 function getWorker(): Worker {
   if (!worker) {
@@ -32,13 +39,16 @@ function getWorker(): Worker {
         else job.reject(new Error(data.message));
         return;
       }
-      liveListeners.forEach((l) => l(data));
+      if (data.listener !== undefined) liveListeners.get(data.listener)?.(data);
+      else liveListeners.forEach((l) => l(data));
     };
     worker.onerror = (event) => {
       const error = new Error(event.message || "The speech engine crashed");
       for (const job of pending.values()) job.reject(error);
       pending.clear();
       liveListeners.forEach((l) => l({ type: "error", message: error.message }));
+      // Free its models (hundreds of MB); the next request starts a fresh worker.
+      worker?.terminate();
       worker = null;
     };
   }
@@ -47,10 +57,14 @@ function getWorker(): Worker {
 
 function call(message: Record<string, unknown>, transfer: Transferable[] = []): Promise<string> {
   const id = ++nextId;
-  return new Promise((resolve, reject) => {
+  cancelIdleRelease();
+  const result = new Promise<string>((resolve, reject) => {
     pending.set(id, { resolve, reject });
     getWorker().postMessage({ ...message, id }, transfer);
   });
+  // Warm-ups and one-off transcriptions: release the models later if nothing starts listening.
+  void result.catch(() => undefined).finally(() => !liveListeners.size && scheduleIdleRelease());
+  return result;
 }
 
 const language = () => (navigator.language || "en").split("-")[0].toLowerCase();
@@ -110,7 +124,8 @@ export type ListenerEvent =
   | { type: "discard" }
   | { type: "partial"; text: string }
   | { type: "transcribing" }
-  | { type: "utterance"; text?: string; audio?: Float32Array; ms?: number }
+  /** `ms`: transcription time; `waitMs`: silence waited before the turn was judged over. */
+  | { type: "utterance"; text?: string; audio?: Float32Array; ms?: number; waitMs?: number }
   | { type: "error"; message: string }
   /** The microphone delivers pure digital silence: blocked by the OS, muted, or the wrong input. */
   | { type: "silent"; message: string }
@@ -144,11 +159,20 @@ export type ListenerOptions = {
  * straight into the speech worker, which detects turns and transcribes them.
  */
 export class Listener {
+  private readonly id = ++nextListener;
   private stream: MediaStream | null = null;
   private context: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
-  private onMessage: ((message: any) => void) | null = null;
+  private options: ListenerOptions | null = null;
   private closed = false;
+  private muted = false;
+  private reopening = false;
+  /** A newer listener has the microphone. */
+  private suspended = false;
+  /** When the detector last reported a level (every 64 ms while frames flow). */
+  private lastFrameAt = 0;
+  private watchdog: ReturnType<typeof setInterval> | null = null;
+  private onDeviceChange = () => this.reopenSoon();
 
   static async open(options: ListenerOptions): Promise<Listener> {
     const listener = new Listener();
@@ -157,12 +181,47 @@ export class Listener {
   }
 
   private async start(options: ListenerOptions) {
+    this.options = options;
+    listeners.forEach((l) => l.suspend());
+    listeners.push(this);
     try {
       await this.connect(options);
     } catch (error) {
       // Don't leave the microphone or the worker running after a failed start.
       this.close();
       throw error;
+    }
+    if (this.closed) return;
+    cancelIdleRelease();
+    // A microphone that stops delivering audio (unplugged, sleep/wake, another app took it) would
+    // otherwise leave voice mode "listening" forever: reopen it.
+    navigator.mediaDevices.addEventListener?.("devicechange", this.onDeviceChange);
+    this.watchdog = setInterval(() => {
+      if (!this.closed && !this.muted && !this.suspended && !this.reopening && performance.now() - this.lastFrameAt > 2500) this.reopenSoon(0);
+    }, 1000);
+  }
+
+  private reopenTimer: ReturnType<typeof setTimeout> | null = null;
+  private reopenSoon(delay = 600) {
+    if (this.closed || this.suspended || this.reopenTimer) return;
+    this.reopenTimer = setTimeout(() => {
+      this.reopenTimer = null;
+      void this.reopen();
+    }, delay);
+  }
+
+  private async reopen() {
+    if (this.closed || this.reopening || !this.options) return;
+    this.reopening = true;
+    this.release();
+    try {
+      await this.connect(this.options);
+      if (this.muted) this.setMuted(true);
+    } catch (error) {
+      if (!this.closed) this.options.onEvent({ type: "error", message: (error as Error).message });
+    } finally {
+      this.reopening = false;
+      this.lastFrameAt = performance.now();
     }
   }
 
@@ -174,6 +233,8 @@ export class Listener {
     } catch {
       throw new Error("Microphone access was blocked. Allow it in your system or browser settings.");
     }
+    if (this.closed) return this.release();
+    this.stream.getAudioTracks().forEach((t) => t.addEventListener("ended", () => this.reopenSoon()));
     this.context = new AudioContext({ sampleRate: 16000 });
     await this.context.audioWorklet.addModule(workletUrl);
     const source = this.context.createMediaStreamSource(this.stream);
@@ -189,26 +250,29 @@ export class Listener {
 
     let silentReports = 0;
     const ready = new Promise<void>((resolve, reject) => {
-      this.onMessage = (message) => {
+      liveListeners.set(this.id, (message) => {
         if (this.closed) return;
         if (message.type === "ready") resolve();
         if (message.type === "error" && message.id === undefined) reject(new Error(message.message));
-        if (message.type === "level" && silentReports >= 0) {
-          // A blocked microphone delivers exact zeros from the start. Once any sound has come
-          // through, stop checking: some mics gate quiet rooms to zero.
-          silentReports = message.level === 0 ? silentReports + 1 : -1;
-          if (silentReports === SILENT_REPORTS) {
-            // Still nothing by the time the explanation is ready? Then report it.
-            void silentMicMessage().then((text) => !this.closed && silentReports > 0 && options.onEvent({ type: "silent", message: text }));
+        if (message.type === "level") {
+          this.lastFrameAt = performance.now();
+          if (silentReports >= 0) {
+            // A blocked microphone delivers exact zeros from the start. Once any sound has come
+            // through, stop checking: some mics gate quiet rooms to zero.
+            silentReports = message.level === 0 ? silentReports + 1 : -1;
+            if (silentReports === SILENT_REPORTS) {
+              // Still nothing by the time the explanation is ready? Then report it.
+              void silentMicMessage().then((text) => !this.closed && silentReports > 0 && options.onEvent({ type: "silent", message: text }));
+            }
           }
         }
         options.onEvent(message);
-      };
+      });
     });
-    liveListeners.add(this.onMessage!);
     getWorker().postMessage(
       {
         type: "start",
+        listener: this.id,
         mode: options.mode,
         size: options.size,
         language: language(),
@@ -219,35 +283,93 @@ export class Listener {
       [channel.port2],
     );
     await ready;
+    this.lastFrameAt = performance.now();
+  }
+
+  private suspend() {
+    if (this.closed || this.suspended) return;
+    this.suspended = true;
+    this.release();
+  }
+
+  private resume() {
+    if (this.closed || !this.suspended) return;
+    this.suspended = false;
+    void this.reopen();
+  }
+
+  /** Stops this listener's microphone and audio graph (the worker keeps running). */
+  private release() {
+    this.node?.disconnect();
+    this.node = null;
+    this.stream?.getTracks().forEach((t) => t.stop());
+    this.stream = null;
+    void this.context?.close().catch(() => undefined);
+    this.context = null;
+  }
+
+  private configure(message: Record<string, unknown>) {
+    getWorker().postMessage({ type: "configure", listener: this.id, ...message });
   }
 
   /** While the bot talks, require clearer speech to start a turn (ignores most echo). */
   setSensitivity(level: "normal" | "strict") {
-    getWorker().postMessage({ type: "configure", startThreshold: level === "strict" ? 0.85 : 0.6 });
+    this.configure({ startThreshold: level === "strict" ? 0.85 : 0.6 });
   }
 
   setMuted(muted: boolean) {
-    getWorker().postMessage({ type: "configure", muted });
+    this.muted = muted;
+    this.lastFrameAt = performance.now();
+    this.configure({ muted });
   }
 
   setPartials(partials: boolean) {
-    getWorker().postMessage({ type: "configure", partials });
+    this.configure({ partials });
   }
 
   /** Finish the current utterance now. */
   flush() {
-    getWorker().postMessage({ type: "flush" });
+    getWorker().postMessage({ type: "flush", listener: this.id });
   }
 
   close() {
     if (this.closed) return;
     this.closed = true;
-    getWorker().postMessage({ type: "configure", muted: true });
-    if (this.onMessage) liveListeners.delete(this.onMessage);
-    this.node?.disconnect();
-    this.stream?.getTracks().forEach((t) => t.stop());
-    void this.context?.close();
+    if (this.watchdog) clearInterval(this.watchdog);
+    if (this.reopenTimer) clearTimeout(this.reopenTimer);
+    navigator.mediaDevices?.removeEventListener?.("devicechange", this.onDeviceChange);
+    // Only mutes the detector if this listener still owns it (the worker ignores it otherwise).
+    if (worker) this.configure({ muted: true });
+    liveListeners.delete(this.id);
+    this.release();
+    const index = listeners.indexOf(this);
+    if (index >= 0) listeners.splice(index, 1);
+    // Hand the microphone back to the listener this one took it from.
+    if (index === listeners.length) listeners.at(-1)?.resume();
+    if (!listeners.length) scheduleIdleRelease();
   }
+}
+
+// Releasing memory ----------------------------------------------------------------------------
+// The speech models (detector, Whisper on the GPU, turn model) take a few hundred MB. Once nothing
+// has listened for a while, stop the worker; the next use loads them again from the cache.
+
+const IDLE_RELEASE_MS = 3 * 60_000;
+let idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+function cancelIdleRelease() {
+  if (idleTimer) clearTimeout(idleTimer);
+  idleTimer = null;
+}
+
+function scheduleIdleRelease() {
+  cancelIdleRelease();
+  idleTimer = setTimeout(() => {
+    idleTimer = null;
+    if (!worker || liveListeners.size || pending.size) return;
+    worker.terminate();
+    worker = null;
+  }, IDLE_RELEASE_MS);
 }
 
 /** 16 kHz mono samples as a WAV file, for cloud transcription. */

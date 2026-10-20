@@ -15,3 +15,14 @@ ADT Bot includes code adapted from these projects. Their licenses are kept next 
 No code from nightly-labs/openbot (PolyForm Noncommercial) is included; only ideas (for example the
 Status / Result / Evidence / Unblock report format) were re-implemented. If any is added later it must go under
 `src/vendor-nc/` or `electron/features/nc-*` and be removed before commercial use.
+
+## Models downloaded at run time
+
+These aren't bundled with the app; they download on first use and are cached on the device.
+
+| Model | License | Used for |
+| --- | --- | --- |
+| [Supertonic TTS](https://huggingface.co/onnx-community/Supertonic-TTS-ONNX) by Supertone ([source](https://github.com/supertone-inc/supertonic)) | OpenRAIL-M (model; use-based restrictions apply), MIT (sample code) | "Natural, on this device" reply voice (`src/lib/local-tts.worker.ts`) |
+| [Smart Turn v3](https://huggingface.co/pipecat-ai/smart-turn-v3) by Pipecat | BSD-2-Clause | End-of-turn detection in voice mode |
+| [Silero VAD](https://github.com/snakers4/silero-vad) | MIT | Voice activity detection |
+| [Whisper](https://github.com/openai/whisper) (ONNX by onnx-community) | MIT | On-device speech recognition |

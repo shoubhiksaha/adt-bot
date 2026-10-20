@@ -147,9 +147,18 @@ async function upgradeToGpu(size: string) {
   }
 }
 
-async function transcribe(audio: Float32Array, size: string, language: string): Promise<string> {
+/**
+ * Speculative and caption runs are named by a slot. Only the newest job in a slot runs: older ones
+ * still waiting are skipped, so stale guesses never delay the transcription the user is waiting for.
+ */
+const newest = new Map<string, number>();
+const SKIPPED = Symbol("skipped");
+
+async function transcribe(audio: Float32Array, size: string, language: string, id?: number, slot?: string): Promise<string | typeof SKIPPED> {
+  if (slot && id !== undefined) newest.set(slot, id);
   const transcriber = await loadWhisper(size);
   return serial(async () => {
+    if (slot && newest.get(slot) !== id) return SKIPPED;
     const output = await transcriber(audio, {
       language,
       task: "transcribe",
@@ -169,11 +178,11 @@ self.onmessage = async (event: MessageEvent) => {
       await loadWhisper(data.size);
       post({ id: data.id, type: "done", text: "" });
     } else if (data.type === "transcribe") {
-      post({
-        id: data.id,
-        type: "done",
-        text: await transcribe(data.audio, data.size, data.language),
-      });
+      const text = await transcribe(data.audio, data.size, data.language, data.id, data.slot);
+      post(text === SKIPPED ? { id: data.id, type: "skipped" } : { id: data.id, type: "done", text });
+    } else if (data.type === "cancel") {
+      // Jobs in this slot that haven't started yet are skipped.
+      newest.set(data.slot, -1);
     }
   } catch (error) {
     post({

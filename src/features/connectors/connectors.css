@@ -147,3 +147,25 @@
     flex: 1 1 auto;
   }
 }
+
+.connector-install {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--secondary);
+}
+.connector-install p {
+  margin: 0 0 4px;
+}
+.connector-install p:last-child {
+  margin-bottom: 0;
+}
+.connector-install code {
+  user-select: all;
+}
+.connector-presets .btn.active {
+  border-color: var(--ring);
+}
+.connector-readonly {
+  margin: 2px 0 6px 24px;
+}

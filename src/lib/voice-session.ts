@@ -1,8 +1,9 @@
 import { sendMessage, setVoiceModeActive, stopStreaming, stripMemoryTags } from "./chat";
 import { splitThink } from "./llm";
 import { selectBot, startNewChat, updateSettings, useStore } from "./store";
-import { chime, createSpeaker, type Speaker, takeSentences } from "./tts";
-import { END_SILENCE_MS, type Engine, ENGINE_LABELS, listen, type ListenSession, resolveEngine, transcribe } from "./voice";
+import { localVoiceReady } from "./local-tts";
+import { chime, createSpeaker, duckSpeech, type Speaker, takeSentences } from "./tts";
+import { END_SILENCE_MS, type Engine, ENGINE_LABELS, listen, type ListenSession, resolveEngine, stopReadAloud, transcribe } from "./voice";
 import { isEcho, isLikelyHallucination, isSubstantial, matchWakeWord, parseVoiceCommand } from "./voice-commands";
 import { Listener, type ListenerEvent, onWhisperProgress, toWav } from "./whisper";
 
@@ -50,12 +51,16 @@ export type VoiceState = {
   /** Time from the end of the user's turn to the first spoken word. */
   latencyMs: number | null;
   /** Where that time went: speech-to-text, waiting for the model's first words, and starting speech. */
-  timing: { stt: number; model: number; speech: number } | null;
+  timing: { turn: number; stt: number; model: number; speech: number } | null;
   engineLabel: string;
   wakeName: string;
 };
 
 const IDLE_TO_STANDBY_MS = 60_000;
+/** Sound starting this soon after the bot stopped talking is checked for being its echo. */
+const ECHO_TAIL_MS = 450;
+/** While tools work silently, say "Still working on it" after this long without speaking. */
+const STILL_WORKING_MS = 8000;
 
 /** Resolves once no reply is streaming (sendMessage ignores new messages until then). */
 function streamStopped(timeoutMs = 5000): Promise<void> {
@@ -86,12 +91,17 @@ export class VoiceSession {
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private lastReply = "";
   private endOfSpeechAt = 0;
-  private sttMs = 0;
+  /** Silence waited before the turn was judged over (Smart Turn / the end-of-turn setting). */
+  private turnMs = 0;
   private offProgress: (() => void) | null = null;
   /** The current speech segment began while the bot was talking, so it may be the bot's own voice. */
   private segmentDuringSpeech = false;
   /** What the bot said last, to recognise its echo arriving just after it stops. */
   private lastSpoken = "";
+  /** When the bot last stopped speaking: sound right after it may be its echo (room, Bluetooth delay). */
+  private speechEndedAt = 0;
+  /** The user may be cutting in: the bot's voice is turned down until we know (see "speech"). */
+  private ducked = false;
 
   constructor(private hooks: { onState: (state: VoiceState) => void; onClose: () => void; initialRequest?: string }) {
     const { settings, providers } = useStore.getState();
@@ -154,6 +164,7 @@ export class VoiceSession {
 
   async start() {
     setVoiceModeActive(true);
+    stopReadAloud();
     // Retrying after an error: release the previous microphone first.
     this.listener?.close();
     this.listener = null;
@@ -181,6 +192,10 @@ export class VoiceSession {
       return;
     }
     if (this.closed) return;
+    // Then the on-device voice (after the speech model, so the two don't load at once on a small
+    // Mac); until it's ready, replies use the device voice.
+    const { voice } = this.context();
+    if (voice.tts === "local") localVoiceReady(voice.localVoice);
     chime("listen");
     if (this.hooks.initialRequest?.trim()) void this.process(this.hooks.initialRequest.trim());
     else this.enterListening();
@@ -195,6 +210,9 @@ export class VoiceSession {
     this.listener?.close();
     this.device?.cancel();
     this.speaker?.stop();
+    // Speech turned down for a cut-in must not stay quiet for read-aloud or the next session.
+    this.ducked = false;
+    duckSpeech(false);
     setVoiceModeActive(false);
     if (notify) this.hooks.onClose();
   }
@@ -236,6 +254,7 @@ export class VoiceSession {
 
   private enterListening() {
     if (this.closed) return;
+    this.unduck();
     this.listener?.setSensitivity("normal");
     this.set({ phase: "listening", partial: "", sentence: "" });
     this.armIdle();
@@ -272,20 +291,27 @@ export class VoiceSession {
     }
     if (event.type === "start") {
       this.clearIdle();
-      this.segmentDuringSpeech = phase === "speaking" || phase === "thinking";
+      this.segmentDuringSpeech = phase === "speaking" || phase === "thinking" || performance.now() - this.speechEndedAt < ECHO_TAIL_MS;
       if (phase === "listening") this.set({ phase: "hearing", partial: "" });
       return;
     }
     if (event.type === "speech") {
-      // A quarter second of clear speech (not a cough or click): cut in right away on echo-free audio.
+      // A quarter second of clear speech (not a cough or click): the user may be cutting in.
       if (phase === "speaking" && this.bargeMode() === "instant") {
-        this.interrupt();
-        this.segmentDuringSpeech = false;
-        this.set({ phase: "hearing", partial: "" });
+        if (this.speaker?.inPageAudio) {
+          // Turn the bot right down now; stop it once the words show it isn't our own echo.
+          this.ducked = true;
+          duckSpeech(true);
+        } else {
+          // The device voice can't be turned down: stop it (its echo is still checked below).
+          this.interrupt();
+          this.set({ phase: "hearing", partial: "" });
+        }
       }
       return;
     }
     if (event.type === "discard") {
+      this.unduck();
       // Too short to be speech: back to listening rather than showing "Listening…" forever.
       if (phase === "hearing") this.enterListening();
       return;
@@ -303,8 +329,8 @@ export class VoiceSession {
       return;
     }
     if (event.type === "utterance") {
-      this.endOfSpeechAt = performance.now() - (event.ms ?? 0);
-      this.sttMs = event.ms ?? 0;
+      this.turnMs = event.waitMs ?? 0;
+      this.endOfSpeechAt = performance.now() - (event.ms ?? 0) - this.turnMs;
       let text = event.text ?? "";
       if (event.audio) {
         const { voice, providers, useProxy } = this.context();
@@ -357,6 +383,7 @@ export class VoiceSession {
           continue;
         }
         empty = 0;
+        this.turnMs = 0;
         this.endOfSpeechAt = performance.now();
         // Runs the whole turn, including speaking; the loop then keeps listening.
         await this.onUtterance(text);
@@ -366,11 +393,18 @@ export class VoiceSession {
     }
   }
 
+  private unduck() {
+    if (!this.ducked) return;
+    this.ducked = false;
+    duckSpeech(false);
+  }
+
   private async onUtterance(text: string) {
     const { phase } = this.state;
     const duringSpeech = this.segmentDuringSpeech;
     this.segmentDuringSpeech = false;
     if (!text || isLikelyHallucination(text)) {
+      this.unduck();
       if (phase === "hearing") this.enterListening();
       return;
     }
@@ -381,7 +415,10 @@ export class VoiceSession {
     }
     // While the bot thinks or talks, only a command ("stop") or a real sentence cuts in;
     // a stray word is usually noise, echo or Whisper guessing.
-    if ((phase === "speaking" || phase === "thinking") && !isSubstantial(text) && !parseVoiceCommand(text, useStore.getState().bots)) return;
+    if ((phase === "speaking" || phase === "thinking") && !isSubstantial(text) && !parseVoiceCommand(text, useStore.getState().bots)) {
+      this.unduck();
+      return;
+    }
     if (phase === "standby") {
       const wake = this.matchWake(text);
       if (!wake) return;
@@ -392,7 +429,10 @@ export class VoiceSession {
     }
     if (phase === "speaking") {
       // Heard during our own speech: ignore it if it's just our voice coming back.
-      if (this.bargeMode() === "off" || isEcho(text, this.speaker?.spoken ?? "")) return;
+      if (this.bargeMode() === "off" || isEcho(text, this.speaker?.spoken ?? "")) {
+        this.unduck();
+        return;
+      }
       this.interrupt();
     } else if (phase === "thinking") {
       this.interrupt();
@@ -439,34 +479,29 @@ export class VoiceSession {
         this.close();
         return;
       case "standby":
-        await this.say(`Okay. Say "hey ${this.wakeNames()[0] ?? "ADT"}" when you need me.`);
-        this.enterStandby();
+        if (await this.say(`Okay. Say "hey ${this.wakeNames()[0] ?? "ADT"}" when you need me.`)) this.enterStandby();
         return;
       case "newChat": {
         const id = useStore.getState().activeBotId;
         if (id) startNewChat(id);
-        await this.say("Okay, new chat.");
-        this.enterListening();
+        if (await this.say("Okay, new chat.")) this.enterListening();
         return;
       }
       case "switchBot": {
         selectBot(command.botId);
         const bot = useStore.getState().bots.find((b) => b.id === command.botId);
-        await this.say(`Switched to ${bot?.nickname || bot?.name}.`);
-        this.enterListening();
+        if (await this.say(`Switched to ${bot?.nickname || bot?.name}.`)) this.enterListening();
         return;
       }
       case "repeat":
-        await this.say(this.lastReply || "I haven't said anything yet.");
-        this.enterListening();
+        if (await this.say(this.lastReply || "I haven't said anything yet.")) this.enterListening();
         return;
       case "slower":
       case "faster": {
         const { voice } = this.context();
         const rate = Math.min(1.8, Math.max(0.6, voice.rate + (command.type === "faster" ? 0.15 : -0.15)));
         updateSettings({ voice: { ...voice, rate: Math.round(rate * 100) / 100 } });
-        await this.say(command.type === "faster" ? "Okay, faster." : "Okay, slower.");
-        this.enterListening();
+        if (await this.say(command.type === "faster" ? "Okay, faster." : "Okay, slower.")) this.enterListening();
         return;
       }
       case "search":
@@ -480,36 +515,45 @@ export class VoiceSession {
     }
   }
 
-  /** Speaks a short line (acknowledgements, commands). */
-  private async say(text: string) {
+  /** Speaks a short line (acknowledgements, commands). False when the user cut in meanwhile. */
+  private async say(text: string): Promise<boolean> {
+    const turn = ++this.turn;
     this.clearIdle();
+    this.unduck();
     const speaker = createSpeaker(this.context(), { onError: (message) => this.set({ error: message }) });
     this.speaker = speaker;
-    this.set({ phase: "speaking", sentence: text });
+    this.set({ phase: "speaking", sentence: text, spokenChars: 0, error: null });
     speaker.say(text);
     await speaker.idle();
     this.lastSpoken = speaker.spoken;
+    this.speechEndedAt = performance.now();
+    return turn === this.turn && !this.closed;
   }
 
   private async ask(text: string, options: { search?: boolean; imagine?: boolean } = {}) {
     const turn = ++this.turn;
     this.clearIdle();
+    this.unduck();
     this.listener?.setSensitivity("strict");
-    this.set({ phase: "thinking", reply: "", sentence: "", spokenChars: 0, activity: "", latencyMs: null, timing: null });
+    this.set({ phase: "thinking", reply: "", sentence: "", spokenChars: 0, activity: "", latencyMs: null, timing: null, error: null });
     const startedAt = Date.now();
     const askedAt = performance.now();
     let firstTextAt = 0;
     let spokenAny = false;
+    /** Last time the bot made a sound in this turn (for "Still working on it"). */
+    let lastSoundAt = performance.now();
     const speaker = createSpeaker(this.context(), {
       onSentence: (sentence) => {
         if (turn !== this.turn) return;
+        lastSoundAt = performance.now();
         if (!spokenAny) {
           spokenAny = true;
           const now = performance.now();
           this.set({
             latencyMs: Math.round(now - this.endOfSpeechAt),
             timing: {
-              stt: Math.round(this.sttMs + (askedAt - this.endOfSpeechAt - this.sttMs)),
+              turn: Math.round(this.turnMs),
+              stt: Math.round(askedAt - this.endOfSpeechAt - this.turnMs),
               model: Math.round((firstTextAt || now) - askedAt),
               speech: Math.round(now - (firstTextAt || now)),
             },
@@ -518,63 +562,105 @@ export class VoiceSession {
         this.set({ phase: "speaking", sentence, spokenChars: 0 });
       },
       onProgress: (chars) => {
+        lastSoundAt = performance.now();
         if (turn === this.turn && chars !== this.state.spokenChars) this.set({ spokenChars: chars });
       },
       onError: (message) => this.set({ error: message }),
     });
     this.speaker = speaker;
 
-    let consumed = 0;
-    let buffer = "";
-    let first = true;
     const latest = () => {
       const s = useStore.getState();
       const last = s.activeConversationId ? s.conversations[s.activeConversationId]?.messages.at(-1) : undefined;
       return last?.role === "assistant" && last.createdAt >= startedAt ? last : undefined;
     };
+
+    // The reply is spoken step by step. Text written before a tool call is narration ("First I'll
+    // open WhatsApp…"): only the opening line of the first step is spoken. Later sentences are held
+    // back until it's clear they're the answer (more than a short preamble, or the reply ended),
+    // and dropped if a tool call follows them.
+    const HOLD = 2;
+    let steps = 0;
+    let regionStart = 0;
+    let consumed = 0;
+    let buffer = "";
+    let held: string[] = [];
+    let released = false;
+    let opened = false;
+    const speak = (sentence: string) => {
+      lastSoundAt = performance.now();
+      speaker.say(sentence);
+    };
+    const release = () => {
+      released = true;
+      held.forEach(speak);
+      held = [];
+    };
     const feed = (final: boolean) => {
       if (turn !== this.turn) return;
       const message = latest();
       if (!message) return;
-      if (message.toolCalls?.length) {
-        // Working with tools: only the opening line was spoken. Show what it's doing; speak just
-        // the answer that follows the last step, once the reply is complete.
-        const running = message.toolCalls.find((c) => c.status === "running" || c.status === "pending" || c.status === "awaiting");
-        const activity = running ? activityFor(running.name) : "";
-        if (activity !== this.state.activity) this.set({ activity });
-        if (this.state.phase === "speaking" && !speaker.speaking) this.set({ phase: "thinking" });
-        if (!final) return;
-        const answer = stripMemoryTags(splitThink(message.content.slice(message.narrationEnd ?? 0)).text);
-        if (answer && !firstTextAt) firstTextAt = performance.now();
-        this.set({ reply: answer, activity: "" });
+      const calls = message.toolCalls ?? [];
+      if (calls.length !== steps) {
+        // A tool step: what was written before it was narration. The answer comes after the last step.
+        steps = calls.length;
+        held = [];
         buffer = "";
-        for (const sentence of takeSentences(answer, true, first).sentences) speaker.say(sentence);
-        return;
+        consumed = 0;
+        released = false;
+        regionStart = message.narrationEnd ?? message.content.length;
       }
-      const visible = stripMemoryTags(splitThink(message.content).text);
+      const running = calls.find((c) => c.status === "running" || c.status === "pending" || c.status === "awaiting");
+      const activity = running ? activityFor(running.name) : "";
+      if (activity !== this.state.activity) this.set({ activity });
+      if (steps && this.state.phase === "speaking" && !speaker.speaking) this.set({ phase: "thinking" });
+      const visible = stripMemoryTags(splitThink(message.content.slice(regionStart)).text);
       if (visible && !firstTextAt) firstTextAt = performance.now();
       if (visible !== this.state.reply) this.set({ reply: visible });
-      if (visible.length > consumed) {
-        buffer += visible.slice(consumed);
-        consumed = visible.length;
-      }
-      const { sentences, rest } = takeSentences(buffer, final, first);
+      if (visible.length > consumed) buffer += visible.slice(consumed);
+      consumed = visible.length;
+      const opening = !steps && !opened;
+      const { sentences, rest } = takeSentences(buffer, final, opening);
       buffer = rest;
       for (const sentence of sentences) {
-        first = false;
-        speaker.say(sentence);
+        if (!steps && !opened) {
+          opened = true;
+          speak(sentence);
+        } else if (released) {
+          speak(sentence);
+        } else {
+          held.push(sentence);
+          if (held.length > HOLD) release();
+        }
       }
+      if (final) release();
     };
+
+    // While tools work silently, let the user know the bot is still on it (at most twice).
+    let reminders = 0;
+    const ticker = setInterval(() => {
+      if (turn !== this.turn || this.closed) return;
+      if (steps && this.state.phase === "speaking" && !speaker.speaking) this.set({ phase: "thinking" });
+      if (steps && this.state.phase === "thinking" && !speaker.speaking && reminders < 2 && performance.now() - lastSoundAt > STILL_WORKING_MS) {
+        reminders++;
+        speak(reminders === 1 ? "Still working on it." : "Almost there.");
+      }
+    }, 1000);
 
     // After a barge-in the previous reply may still be winding down; wait so this question isn't dropped.
     await streamStopped();
-    if (turn !== this.turn || this.closed) return;
+    if (useStore.getState().streamingId) {
+      stopStreaming();
+      await streamStopped(10_000);
+    }
+    if (turn !== this.turn || this.closed) return clearInterval(ticker);
     const unsubscribe = useStore.subscribe(() => feed(false));
     const modes = useStore.getState().settings.modes;
     try {
       await sendMessage(text, [], { search: options.search ?? modes.search, think: modes.think, imagine: options.imagine, voice: true });
     } finally {
       unsubscribe();
+      clearInterval(ticker);
     }
     if (turn !== this.turn) return;
     feed(true);
@@ -586,6 +672,7 @@ export class VoiceSession {
     }
     await speaker.idle();
     this.lastSpoken = speaker.spoken;
+    this.speechEndedAt = performance.now();
     if (turn !== this.turn || this.closed) return;
     this.lastReply = this.state.reply;
     this.enterListening();
@@ -593,9 +680,13 @@ export class VoiceSession {
 
   private interrupt() {
     this.turn++;
-    if (this.speaker) this.lastSpoken = this.speaker.spoken;
+    if (this.speaker) {
+      this.lastSpoken = this.speaker.spoken;
+      if (this.speaker.speaking) this.speechEndedAt = performance.now();
+    }
     this.speaker?.stop();
     this.speaker = null;
+    this.unduck();
     if (useStore.getState().streamingId) stopStreaming();
   }
 

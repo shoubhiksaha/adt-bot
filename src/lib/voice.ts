@@ -3,6 +3,7 @@ import { describeHttpError, withCustomHeaders } from "./llm";
 import { providerFetch } from "./transport";
 import { createSpeaker, type Speaker, speakable, takeSentences } from "./tts";
 import type { ProviderConfig, VoiceSettings } from "./types";
+import { localVoiceDownloaded, preloadLocalVoice } from "./local-tts";
 import { Listener, preloadWhisper, toWav, whisperDownloaded } from "./whisper";
 
 export { speakable, takeSentences };
@@ -51,6 +52,11 @@ export function markDeviceRecognizerBroken() {
 /** Picks the recognizer for this device and settings. */
 /** Loads the on-device speech engine ahead of voice mode, so it opens listening. Never starts a download. */
 export function warmVoice(voice: VoiceSettings, providers: ProviderConfig[]) {
+  if (voice.tts === "local") {
+    void localVoiceDownloaded()
+      .then((downloaded) => (downloaded ? preloadLocalVoice(voice.localVoice) : undefined))
+      .catch(() => undefined);
+  }
   if (resolveEngine(voice, providers) !== "whisper-local") return;
   void whisperDownloaded(voice.localModel)
     .then((downloaded) => (downloaded ? preloadWhisper(voice.localModel) : undefined))
@@ -308,14 +314,24 @@ export async function transcribe(audio: Blob, provider: ProviderConfig, model: s
 // Read aloud ------------------------------------------------------------------------
 
 let readAloud: Speaker | null = null;
+let readAloudText = "";
+
+/** Stops "Read aloud" (e.g. when voice mode opens and starts talking itself). */
+export function stopReadAloud() {
+  readAloud?.stop();
+  readAloud = null;
+  readAloudText = "";
+}
 
 /** Read a reply aloud with the configured voice. Calling again while it is speaking stops it. */
 export function speak(text: string, context: ListenContext, onError?: (message: string) => void): boolean {
   if (readAloud?.speaking) {
-    readAloud.stop();
-    readAloud = null;
-    return false;
+    const same = readAloudText === text;
+    stopReadAloud();
+    // Pressing the same message again stops it; another message starts reading that one instead.
+    if (same) return false;
   }
+  readAloudText = text;
   readAloud = createSpeaker(context, { onError });
   for (const sentence of takeSentences(text, true).sentences) readAloud.say(sentence);
   return true;

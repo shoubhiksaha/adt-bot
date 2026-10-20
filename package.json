@@ -17,15 +17,16 @@
     "icons": "node scripts/icons.mjs",
     "desktop": "npm run build && electron .",
     "desktop:dev": "electron . --dev",
-    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:mac": "npm run native:mac && npm run build && electron-builder --mac",
     "dist:win": "npm run build && electron-builder --win",
     "dist:linux": "npm run build && electron-builder --linux",
-    "dist:all": "npm run build && electron-builder --mac --win --linux",
+    "dist:all": "npm run native:mac && npm run build && electron-builder --mac --win --linux",
     "cap:sync": "npm run build && cap sync",
     "android": "npm run cap:sync && cap open android",
     "ios": "npm run cap:sync && cap open ios",
     "android:apk": "npm run cap:sync && cd android && ./gradlew assembleDebug",
-    "brand": "node scripts/brand.mjs"
+    "brand": "node scripts/brand.mjs",
+    "native:mac": "sh scripts/build-mac-helper.sh"
   },
   "build": {
     "appId": "app.adtbot.desktop",
@@ -55,7 +56,13 @@
       },
       "hardenedRuntime": true,
       "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist"
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extraResources": [
+        {
+          "from": "build/native/adt-mac-helper",
+          "to": "bin/adt-mac-helper"
+        }
+      ]
     },
     "win": {
       "target": [
@@ -76,7 +83,11 @@
     "electronFuses": {
       "runAsNode": false,
       "enableNodeOptionsEnvironmentVariable": false,
-      "enableNodeCliInspectArguments": false
+      "enableNodeCliInspectArguments": false,
+      "onlyLoadAppFromAsar": true,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "enableCookieEncryption": true,
+      "grantFileProtocolExtraPrivileges": false
     }
   },
   "devDependencies": {

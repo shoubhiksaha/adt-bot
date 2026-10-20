@@ -41,7 +41,17 @@ describe("speaking", () => {
   });
   it("reads Markdown naturally", () => {
     expect(speakable("## Answer\n**Paris** is the capital [1]. See [docs](https://x.com).\n```js\ncode()\n```")).toBe(
-      "Answer Paris is the capital . See docs. (code omitted)",
+      "Answer Paris is the capital. See docs. I've put the code in the chat.",
     );
+  });
+  it("says links, lists, symbols and emoji the way a person would", () => {
+    expect(speakable("Read https://www.example.com/a/b?c=1 for more 🎉")).toBe("Read example.com for more");
+    expect(speakable("Steps:\n1. Open it\n2. Click Send")).toBe("Steps: First, Open it Second, Click Send");
+    expect(speakable("Use C# when x > 5")).toBe("Use C sharp when x greater than 5");
+    expect(speakable("Sure, I'll note that <remem")).toBe("Sure, I'll note that");
+  });
+  it("doesn't split sentences at abbreviations", () => {
+    const out = takeSentences("I spoke with Dr. Smith about it today. Then e.g. this other thing happened later. More", false);
+    expect(out.sentences).toEqual(["I spoke with Dr. Smith about it today.", "Then e.g. this other thing happened later."]);
   });
 });

@@ -32,6 +32,12 @@ describe("turn detection", () => {
     expect(end.version).not.toBe(firstPause.version);
   });
 
+  it("doesn't start a speculative transcription on a dip between words", () => {
+    // Silero often drops below the end threshold for a frame or two mid-sentence; each pause costs a Whisper run.
+    const events = run([...voice(20), ...quiet(2), ...voice(20), ...quiet(30)]).filter((e) => e.type === "pause");
+    expect(events.length).toBe(1);
+  });
+
   it("ignores clicks and short blips", () => {
     expect(run([...quiet(10), 0.9, ...quiet(10), ...voice(4), ...quiet(40)]).filter((e) => e.type === "end")).toEqual([]);
   });

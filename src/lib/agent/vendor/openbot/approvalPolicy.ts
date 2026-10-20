@@ -163,7 +163,7 @@ export function evaluate(
   }
 
   if (force) {
-    return { outcome: 'ask', reason: 'this action is always confirmed' }
+    return { outcome: 'ask', reason: "this could delete or change something that can't easily be undone" }
   }
 
   const policy: ApprovalPolicy = settings.approvalPolicy ?? 'ask-every-time'
@@ -212,6 +212,9 @@ export function evaluate(
  * screen, permanently, across every session. There is no honest pattern for "this click",
  * so there is no rule.
  */
+const NO_GENERALISE =
+  /^(python\d*(\.\d+)?|node|nodejs|deno|bun|ruby|perl|php|lua|osascript|swift|npx|bunx|pnpx|uvx|pipx|env|xargs|exec|eval|source|command|nohup|time|sudo|doas|\w*sh|curl|wget|nc|ncat|socat|scp|sftp|rsync|ssh|ftp|tftp|telnet|open|find|awk|gawk|sed|dd|tar|security|defaults|launchctl|crontab|chmod|chown|mv|cp|rm|ln|tee|install)$/i
+
 export function derivePattern(
   kind: ApprovalKind,
   toolName: string,
@@ -225,6 +228,9 @@ export function derivePattern(
   const tokens = shellTokens(target)
   if (tokens.length === 0) return target
   const verb = tokens[0]
+  // ADT Bot: interpreters, network and shell tools can do anything with other arguments
+  // (`python -c …`, `curl -T ~/.ssh/id_rsa …`, `bash -c …`): only this exact command is allowed.
+  if (NO_GENERALISE.test(verb.replace(/^.*\//, ''))) return target
   const sub = tokens[1]
   if (sub && !sub.startsWith('-') && !sub.includes('/') && /^[a-z0-9:_-]+$/i.test(sub)) {
     return `${verb} ${sub} *`

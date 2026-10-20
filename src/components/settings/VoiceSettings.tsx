@@ -5,6 +5,7 @@ import { CUSTOM_VOICE_TEMPLATES, type CustomVoice, newCustomVoice } from "../../
 import { bestVoice, CLOUD_TTS, customVoiceFor, type DeviceVoice, listVoices, OPENAI_TTS_VOICES, rankVoice } from "../../lib/tts";
 import type { CloudTts, VoiceSettings } from "../../lib/types";
 import { ENGINE_LABELS, resolveEngine, speak, TRANSCRIBE_MODEL_SUGGESTIONS } from "../../lib/voice";
+import { LOCAL_VOICE_MB, LOCAL_VOICES, localVoiceDownloaded, onLocalVoiceProgress, preloadLocalVoice } from "../../lib/local-tts";
 import { onWhisperProgress, preloadWhisper, WHISPER_SIZES, whisperDownloaded } from "../../lib/whisper";
 import { ModelInput, Section, Toggle } from "./controls";
 
@@ -66,6 +67,7 @@ export function VoiceSettings() {
             }}
           >
             <option value="system">Device voice (free, instant)</option>
+            <option value="local">Natural, on this device (free, private, works offline)</option>
             <option value="openai">Natural: OpenAI-compatible (OpenAI, or a self-hosted Kokoro/LocalAI server)</option>
             <option value="elevenlabs">Natural: ElevenLabs</option>
             <option value="fish">Natural: Fish Audio</option>
@@ -97,6 +99,8 @@ export function VoiceSettings() {
             </span>
           </div>
         )}
+
+        {voice.tts === "local" && <LocalVoiceFields voice={voice} set={set} />}
 
         {voice.tts === "openai" && (
           <>
@@ -428,5 +432,54 @@ function CustomVoiceFields({ voice, set }: { voice: VoiceSettings; set: (patch: 
       </div>
       <span className="small muted">Keys stay on this device. Use Test voice below to check it.</span>
     </div>
+  );
+}
+
+/** The on-device natural voice (Supertonic): voice choice and a one-time download. */
+function LocalVoiceFields({ voice, set }: { voice: VoiceSettings; set: (patch: Partial<VoiceSettings>) => void }) {
+  const [downloaded, setDownloaded] = useState<boolean | null>(null);
+  const [progress, setProgress] = useState<number | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    void localVoiceDownloaded().then(setDownloaded);
+  }, []);
+  useEffect(() => onLocalVoiceProgress(setProgress), []);
+  const download = () => {
+    setError("");
+    setProgress(0);
+    preloadLocalVoice(voice.localVoice)
+      .then(() => setDownloaded(true))
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setProgress(null));
+  };
+  return (
+    <>
+      <div className="field">
+        <label htmlFor="local-voice">Voice</label>
+        <select id="local-voice" className="select" value={voice.localVoice || "F1"} onChange={(e) => set({ localVoice: e.target.value })}>
+          {LOCAL_VOICES.map((v) => (
+            <option key={v.id} value={v.id}>
+              {v.label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="field">
+        <div className="btn-row">
+          {downloaded ? (
+            <span className="small muted">Downloaded: works offline. Speech is generated on this computer; nothing is sent anywhere.</span>
+          ) : (
+            <>
+              <button type="button" className="btn" onClick={download} disabled={progress !== null}>
+                {progress !== null ? `Downloading… ${progress}%` : `Download voice (${LOCAL_VOICE_MB} MB, one time)`}
+              </button>
+              <span className="small muted">Until it's downloaded, replies use the device voice.</span>
+            </>
+          )}
+        </div>
+        {error && <span className="small error-text">{error}</span>}
+        <span className="small muted">English only. Uses the Supertonic model by Supertone (OpenRAIL-M licence).</span>
+      </div>
+    </>
   );
 }

@@ -161,4 +161,76 @@ describe("renderer tools", () => {
   });
 });
 
+describe("accessibility elements", () => {
+  const snap = (elements: UiElement[]): UiSnapshot => ({ name: "WhatsApp", bundleId: "net.whatsapp.WhatsApp", pid: 1, window: "WhatsApp", windows: ["WhatsApp"], elements, matched: elements.length, truncated: false, frontmost: false });
+  const els: UiElement[] = [
+    { id: 1, role: "button", label: "Chats", at: { x: 10, y: 10 } },
+    { id: 2, role: "search field", label: "Search", input: true, at: { x: 100, y: 40 } },
+    { id: 3, role: "button", label: "Ma", value: "Your message, 5:58 AM", at: { x: 100, y: 90 } },
+    { id: 4, role: "button", label: "Mansi", value: "See you", at: { x: 100, y: 130 } },
+    { id: 5, role: "text", label: "Chats" },
+    { id: 6, role: "button", label: "Send", disabled: true },
+    { id: 7, role: "link", label: "Send" },
+  ];
+
+  it("picks the element a name means, preferring exact, actionable and enabled matches", async () => {
+    const { pickElement } = await import("./ui");
+    expect(pickElement(els, "chats")).toMatchObject({ element: { id: 1 } });
+    expect(pickElement(els, "\u200eMa")).toMatchObject({ element: { id: 3 } });
+    expect(pickElement(els, "mans")).toMatchObject({ element: { id: 4 } });
+    expect(pickElement(els, "search", "field")).toMatchObject({ element: { id: 2 } });
+    expect(pickElement(els, "send")).toMatchObject({ element: { id: 7 } });
+    expect(pickElement(els, "nobody")).toMatchObject({ error: expect.stringMatching(/Nothing called/) });
+  });
+
+  it("asks the model to choose when different elements match equally", async () => {
+    const { pickElement } = await import("./ui");
+    const twin: UiElement[] = [
+      { id: 1, role: "button", label: "Open", at: { x: 1, y: 1 } },
+      { id: 2, role: "link", label: "Open", at: { x: 1, y: 2 } },
+    ];
+    const pick = pickElement(twin, "open");
+    expect("error" in pick && pick.error).toMatch(/Several elements match[\s\S]*\[1\][\s\S]*\[2\]/);
+  });
+
+  it("formats a compact list with ids, values and positions", async () => {
+    const { formatUi } = await import("./ui");
+    const text = formatUi(snap(els.slice(0, 3)));
+    expect(text.split("\n")[0]).toBe('WhatsApp — window "WhatsApp" (in the background)');
+    expect(text).toContain('[2] search field "Search" = "" @(100,40)');
+    expect(text).toContain('[3] button "Ma" — "Your message, 5:58 AM" @(100,90)');
+    expect(formatUi({ ...snap(els), matched: 50 }, 2)).toMatch(/48 more not shown/);
+  });
+
+  it("presses by text, then shows the window again; risky buttons always ask", async () => {
+    const invoke = vi.fn();
+    vi.stubGlobal("window", { adtbotDesktop: { platform: "darwin", proxyToken: "", version: "44", invoke } });
+    const calls: string[] = [];
+    invoke.mockImplementation(async (channel: string, payload: { element?: number }) => {
+      calls.push(`${channel.replace("adt:mac:", "")}${payload?.element ? `:${payload.element}` : ""}`);
+      if (channel === "adt:mac:ui") return snap([...els, { id: 9, role: "button", label: "Delete chat" }]);
+      if (channel === "adt:mac:press") return { method: "AXPress" };
+      throw new Error("unexpected " + channel);
+    });
+    const { macTools } = await import("./tools");
+    const press = macTools.find((t) => t.name === "mac_press")!;
+    const out = (await press.run({ text: "Mansi", app: "WhatsApp" }, {} as never)) as { content: string };
+    expect(calls).toEqual(["ui", "press:4", "ui"]);
+    expect(out.content).toMatch(/^Pressed button "Mansi" \[4\]\.\n\nNow:\nWhatsApp/);
+    expect(press.riskFor?.({ id: 9 })).toBe("destructive");
+    expect(press.riskFor?.({ id: 4 })).toBe("write");
+    expect(press.riskFor?.({ text: "Remove member" })).toBe("destructive");
+    const setText = macTools.find((t) => t.name === "mac_set_text")!;
+    expect(setText.riskFor?.({ app: "Terminal", field: "x", text: "rm -rf ~" })).toBe("destructive");
+    vi.unstubAllGlobals();
+  });
+
+  it("opens app links (WhatsApp, mail, Maps…) but nothing that runs code or files", () => {
+    for (const ok of ["whatsapp://send?phone=919800000000&text=hi", "mailto:a@b.c", "tel:+1555", "spotify:track:1", "https://x.org", "x-apple.systempreferences:com.apple.preference.security"]) expect(mac.APP_LINK.test(ok)).toBe(true);
+    for (const bad of ["file:///etc/passwd", "javascript:alert(1)", "vnc://host", "smb://host/share", "/Applications/Terminal.app", "ssh://host"]) expect(mac.APP_LINK.test(bad)).toBe(false);
+  });
+});
+
+type UiElement = import("./ui").UiElement;
+type UiSnapshot = import("./ui").UiSnapshot;
 type AgentTool = import("../../lib/agent/tools").AgentTool;

@@ -5,7 +5,7 @@ import { desktopInvoke } from "../../lib/desktop";
 import { type StreamEvent, streamChat } from "../../lib/llm";
 import { useStore } from "../../lib/store";
 import type { Bot, ToolCallRecord } from "../../lib/types";
-import { GUEST_SAFE_TOOLS, type RoomMessage, roomPrompt, type RoomTools, transcriptFor } from "./logic";
+import { GUEST_SAFE_TOOLS, HOST_PRIVATE_GROUPS, type RoomMessage, roomPrompt, type RoomTools, transcriptFor } from "./logic";
 
 type Options = {
   roomId: string;
@@ -14,6 +14,8 @@ type Options = {
   bot: Bot;
   transcript: RoomMessage[];
   tools: RoomTools;
+  /** A guest asked (not the host): the host's private tools stay out even with "Full tools". */
+  guest?: boolean;
   signal: AbortSignal;
   onCalls: (calls: ToolCallRecord[]) => void;
   onError: (text: string) => void;
@@ -41,7 +43,10 @@ export async function runRoomBot(o: Options) {
   const bot: Bot = { ...o.bot, memory: [], autoMemory: false };
   const system = [buildSystemPrompt(bot), roomPrompt(bot.name, o.roomName, o.hostName)].join("\n\n");
   const all = o.tools === "none" ? [] : toolsFor({ settings, providers, platform: "desktop", bot });
-  const tools = o.tools === "full" ? all : all.filter((t) => GUEST_SAFE_TOOLS.has(t.name) && t.risk === "read" && !t.riskFor);
+  const full = o.guest ? all.filter((t) => !HOST_PRIVATE_GROUPS.has(t.group) && t.kind !== "mcp") : all;
+  const tools = o.tools === "full" ? full : all.filter((t) => GUEST_SAFE_TOOLS.has(t.name) && t.risk === "read" && !t.riskFor);
+  // Guests' messages are outside content: commands and file changes ask the host, whatever the settings.
+  const taint = { sources: new Set(o.transcript.some((m) => m.kind === "guest") ? ["messages from room guests"] : []) };
 
   let content = "";
   let lastSent = 0;
@@ -69,7 +74,17 @@ export async function runRoomBot(o: Options) {
       await runToolLoop({
         request,
         tools,
-        context: { bot, conversationId: `room:${o.roomId}`, settings, providers, platform: "desktop", signal: o.signal, progress: () => undefined, shared: true },
+        context: {
+          bot,
+          conversationId: `room:${o.roomId}`,
+          settings,
+          providers,
+          platform: "desktop",
+          signal: o.signal,
+          progress: () => undefined,
+          shared: true,
+          taint,
+        },
         mode: settings.agent.mode,
         maxSteps: Math.min(settings.agent.maxSteps, 6),
         callbacks: { onEvent: handle, onCalls: o.onCalls },

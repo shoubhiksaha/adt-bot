@@ -23,11 +23,35 @@ function groupOf(time: number): string {
  * paint, but titles and order don't, so the sidebar skips those renders.
  */
 function chatListKey(conversations: Record<string, Conversation>): string {
-  return Object.values(conversations)
-    .filter((c) => c.messages.length > 0 && !c.temporary)
+  // Runs on every store change (each streamed token): reuse the last key unless a chat was added,
+  // removed, renamed, moved or emptied, which is a cheap pointer-and-field check.
+  if (listCache && sameListing(listCache.conversations, conversations)) {
+    listCache.conversations = conversations;
+    return listCache.key;
+  }
+  const key = Object.values(conversations)
+    .filter(listed)
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .map((c) => `${c.id}\u0001${c.botId}\u0001${c.updatedAt}\u0001${c.title}`)
     .join("\u0002");
+  listCache = { conversations, key };
+  return key;
+}
+
+let listCache: { conversations: Record<string, Conversation>; key: string } | null = null;
+const listed = (c: Conversation) => c.messages.length > 0 && !c.temporary;
+
+function sameListing(before: Record<string, Conversation>, after: Record<string, Conversation>): boolean {
+  if (before === after) return true;
+  let count = 0;
+  for (const id in after) {
+    count++;
+    const a = after[id];
+    const b = before[id];
+    if (a === b) continue;
+    if (!b || listed(a) !== listed(b) || a.updatedAt !== b.updatedAt || a.title !== b.title || a.botId !== b.botId) return false;
+  }
+  return count === Object.keys(before).length;
 }
 
 export function Sidebar({

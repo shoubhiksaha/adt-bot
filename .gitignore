@@ -15,3 +15,4 @@ android/.gradle/
 ios/App/build/
 *.tsbuildinfo
 .claude/
+build/native/
