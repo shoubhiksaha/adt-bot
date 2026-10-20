@@ -1,13 +1,15 @@
 // Smart Turn v3 (pipecat-ai/smart-turn, BSD-2-Clause): from the sound of the last 8 s, has the
 // speaker finished, or paused mid-thought? Lets a finished question get its answer sooner, and a
 // thinking pause not be cut off. Optional: without it, turns end after a fixed silence.
-import { WhisperFeatureExtractor } from "@huggingface/transformers";
+import { env, WhisperFeatureExtractor } from "@huggingface/transformers";
 import * as ort from "onnxruntime-web/webgpu";
 import ortMjs from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.mjs?url";
 import ortWasm from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url";
 import { cachedUrls, fetchCached } from "./model-cache";
 
 ort.env.wasm.wasmPaths = { mjs: ortMjs, wasm: ortWasm };
+// transformers.js would try to cache the bundled runtime files (app://), which the browser Cache API refuses.
+env.useWasmCache = false;
 // Runs once per pause, so a couple of threads finish it quickly without idling hot in between.
 ort.env.wasm.numThreads = 2;
 

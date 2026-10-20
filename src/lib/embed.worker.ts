@@ -18,6 +18,8 @@ const files = createStore("adtbot-models", "files");
 
 env.allowLocalModels = false;
 env.useBrowserCache = false;
+// The ONNX Runtime files are bundled with the app (app://), which the browser Cache API refuses.
+env.useWasmCache = false;
 env.useCustomCache = true;
 env.customCache = {
   async match(url: string) {
