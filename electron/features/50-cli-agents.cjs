@@ -225,6 +225,35 @@ function positional(text) {
 }
 
 /**
+ * MCP servers a folder declares for itself (.mcp.json in it or a parent, up to the home folder or
+ * the filesystem root). Claude Code's print mode can't ask before starting them, so a cloned repo
+ * could run its own commands; delegated runs switch them off and keep the user's own servers.
+ */
+function projectMcpServers(folder) {
+  const names = new Set();
+  const home = os.homedir();
+  let dir = path.resolve(folder);
+  for (let i = 0; i < 40; i++) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(path.join(dir, ".mcp.json"), "utf8"));
+      for (const name of Object.keys(parsed?.mcpServers ?? {})) names.add(name);
+    } catch {
+      // No file, or not JSON: Claude Code wouldn't load servers from it either.
+    }
+    const up = path.dirname(dir);
+    if (dir === home || up === dir) break;
+    dir = up;
+  }
+  return [...names];
+}
+
+/** Extra arguments that keep a folder's own MCP servers from starting in a delegated Claude Code run. */
+function claudeProjectGuard(folder) {
+  const names = projectMcpServers(folder);
+  return names.length ? ["--settings", JSON.stringify({ enableAllProjectMcpServers: false, disabledMcpjsonServers: names })] : [];
+}
+
+/**
  * The command line for one run. Returns { args, stdin } — stdin is the text written to the CLI's
  * standard input (null = no stdin). Never builds a shell string.
  */
@@ -705,6 +734,7 @@ async function runAgent(options, emit = () => undefined) {
   } catch {
     return fail(`Folder not found: ${cwd}`);
   }
+  if (agent === "claude") invocation.args.push(...claudeProjectGuard(cwd));
   const env = options.env ?? (await loginEnv());
   const file = options.binary || which(AGENTS[agent].bin, env.PATH);
   if (!file) return fail(`${AGENTS[agent].name} isn't installed (or not on your PATH). Install: ${AGENTS[agent].install}`);
@@ -863,6 +893,8 @@ exports._test = {
   AGENTS,
   PERMISSIONS,
   buildInvocation,
+  projectMcpServers,
+  claudeProjectGuard,
   createParser,
   parseEnvOutput,
   parseVersion,
