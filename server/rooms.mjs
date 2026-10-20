@@ -181,6 +181,8 @@ export function createRoomHub(options = {}) {
   let starting = null;
   /** address → { count, first, lockedUntil } (wrong PINs, all rooms) */
   const failures = new Map();
+  /** Addresses with a join being read right now. */
+  const joining = new Set();
 
   function handler(req, res) {
     handle(req, res).catch(() => {
@@ -252,8 +254,19 @@ export function createRoomHub(options = {}) {
   }
 
   async function join(room, req, res, peer) {
-    const now = Date.now();
     const key = peer.startsWith("::ffff:") ? peer.slice(7) : peer;
+    // One join at a time per address: a burst of held-open requests can't all get a guess in.
+    if (joining.has(key)) return json(res, 429, { error: "One moment: still checking your last try." });
+    joining.add(key);
+    let body;
+    try {
+      body = await readJson(req);
+    } finally {
+      joining.delete(key);
+    }
+    // From here to the answer nothing waits: the lockouts are checked and a wrong PIN counted in
+    // one go, so requests can't slip past a lockout between the check and the count.
+    const now = Date.now();
     const record = failures.get(key);
     if (record && record.lockedUntil > now) {
       return json(res, 429, { error: "Too many wrong PINs. Try again in a few minutes.", retryAfter: Math.ceil((record.lockedUntil - now) / 1000) });
@@ -261,7 +274,6 @@ export function createRoomHub(options = {}) {
     if (room.lockedUntil > now) return json(res, 429, { error: "Joining is paused for this room after many wrong PINs. Ask the host." });
     const banned = room.bans.get(key);
     if (banned && banned > now) return json(res, 403, { error: "The host removed you from this room." });
-    const body = await readJson(req);
     if (body.error) return json(res, body.error, { error: "Bad request." });
     const pin = String(body.value.pin ?? "").replace(/\s+/g, "").slice(0, 12);
     if (!pinMatches(room.pin, pin)) {
@@ -398,7 +410,8 @@ export function createRoomHub(options = {}) {
       new Promise((resolve, reject) => {
         const server = createServer(handler);
         server.headersTimeout = 15_000;
-        server.requestTimeout = 0; // event streams stay open
+        // The time to send a whole request (headers and body); event streams are responses, so they stay open.
+        server.requestTimeout = 15_000;
         server.once("error", reject);
         server.listen(wantedPort, host, () => {
           server.off("error", reject);

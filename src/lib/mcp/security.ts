@@ -8,7 +8,7 @@
  * - A local server's command runs only after the user confirmed that exact command.
  */
 import { type McpTool, shortHash } from "./protocol";
-import { cleanDeep, stripHidden } from "./unicode";
+import { cleanDeep, stripHidden, revealHidden } from "./unicode";
 
 // Hidden characters ------------------------------------------------------------------------------
 
@@ -128,9 +128,18 @@ export function launchKey(c: Launch): string {
 
 const quoteArg = (a: string) => (/^[\w@%+=:,./~-]+$/.test(a) ? a : `'${a.replace(/'/g, "'\\''")}'`);
 
-/** The full command line, as shown to the user before it runs (never shortened). */
-export function commandLine(c: Launch): string {
+/**
+ * The full command line, as shown to the user before it runs (never shortened). Hidden and
+ * direction-changing characters are shown as codes, so what's shown is what runs.
+ */
+export function commandLine(c: Launch, platform = typeof window === "undefined" ? undefined : window.adtbotDesktop?.platform): string {
+  if (platform === "win32") {
+    // Windows runs it through cmd.exe as written here, unquoted (electron/features/40-mcp.cjs).
+    const env = Object.entries(c.env ?? {}).map(([k, v]) => `set "${k}=${v}" && `);
+    const cmd = [c.command?.trim() ?? "", ...(c.args ?? [])].join(" ");
+    return revealHidden(`${c.cwd?.trim() ? `cd /d "${c.cwd.trim()}" && ` : ""}${env.join("")}${cmd}`);
+  }
   const env = Object.entries(c.env ?? {}).map(([k, v]) => `${k}=${quoteArg(v)}`);
   const cmd = [c.command?.trim() ?? "", ...(c.args ?? [])].map(quoteArg).join(" ");
-  return `${c.cwd?.trim() ? `cd ${quoteArg(c.cwd.trim())} && ` : ""}${env.length ? `${env.join(" ")} ` : ""}${cmd}`;
+  return revealHidden(`${c.cwd?.trim() ? `cd ${quoteArg(c.cwd.trim())} && ` : ""}${env.length ? `${env.join(" ")} ` : ""}${cmd}`);
 }

@@ -200,7 +200,8 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
         <div className="voice-status">{status}</div>
         {state.approval && (
           <div className="voice-approval" role="alertdialog" aria-label="The bot is asking for your OK">
-            <p className="voice-approval-q">{state.approval.question.replace(/ Say yes or no\.$/, "")}</p>
+            <p className="voice-approval-q">{state.approval.question.replace(/ Say yes or no\.$/, "").replace(/ The rest is on your screen\.$/, "")}</p>
+            {state.approval.detail && state.approval.detail.length > 60 && <pre className="voice-approval-detail">{state.approval.detail}</pre>}
             <p className="small muted">
               {/* Policy names ("ask-first-time") aren't explanations; real reasons are sentences. */}
               {state.approval.reason.includes(" ") ? `Asking because ${state.approval.reason}. ` : ""}Say “yes” or “no”, or:

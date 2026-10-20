@@ -82,11 +82,14 @@ function confine(file, mode = access.mode) {
 
 /**
  * macOS Seatbelt profile for Sandbox mode. The last matching rule wins.
- * - Network: no connections out (not even to this computer's own servers), so nothing in the
- *   workspace can be sent anywhere. Linux's bwrap --unshare-all does the same.
- * - Files: read and write the workspace (which holds the sandbox's own $HOME and $TMPDIR); nothing
- *   else under the home folder (only the home folder's own metadata, which tools need to resolve
- *   paths), shared or per-user temp folders, shared folders or other volumes.
+ * - Network: no connections out (not even to this computer's own servers or local sockets such as
+ *   Docker's or ssh-agent's), so nothing in the workspace can be sent anywhere. Linux's bwrap
+ *   --unshare-all does the same.
+ * - Files: read and write the workspace (which holds the sandbox's own $HOME and $TMPDIR). Nothing
+ *   else under any user's folder (only the home folder's own metadata, which tools need to resolve
+ *   paths), shared or per-user temp folders, other volumes, apps' shared data, system-wide
+ *   preferences (except the Xcode licence record, which git and python3 check), keychains or logs.
+ *   The system itself (/usr, /System, /etc…) stays readable so commands and toolchains run.
  * - No way to start programs outside the sandbox or act through other processes: Launch Services,
  *   Apple Events, launchd, the window server (screen and input), the pasteboard, preferences
  *   (cfprefsd reads and writes them on a process's behalf) and Spotlight (lists any file name).
@@ -94,12 +97,18 @@ function confine(file, mode = access.mode) {
 const MAC_PROFILE = `(version 1)
 (allow default)
 (deny network-outbound (remote ip))
+(deny network-outbound (remote unix-socket))
+(allow network-outbound (remote unix-socket (subpath (param "WORKSPACE"))))
 (deny file-write*)
 (allow file-write*
   (literal "/dev/null") (literal "/dev/zero") (literal "/dev/tty") (literal "/dev/dtracehelper")
   (regex #"^/dev/fd/") (regex #"^/dev/ttys"))
-(deny file-read* file-write* (subpath (param "HOME")) (subpath "/Users/Shared") (subpath "/Volumes")
-  (subpath "/private/tmp") (subpath "/private/var/tmp") (subpath "/private/var/folders"))
+(deny file-read* file-write* (subpath (param "HOME")) (subpath "/Users") (subpath "/Volumes")
+  (subpath "/private/tmp") (subpath "/private/var/tmp") (subpath "/private/var/folders")
+  (subpath "/Library/Application Support") (subpath "/Library/Preferences") (subpath "/Library/Keychains")
+  (subpath "/Library/Logs") (subpath "/private/var/log"))
+(allow file-read-metadata (literal "/Users"))
+(allow file-read* (literal "/Library/Preferences/com.apple.dt.Xcode.plist"))
 (allow file-read-metadata (literal (param "HOME")))
 (allow file-read-metadata (regex #"^/private/var(/folders(/[^/]+(/[^/]+(/[TC])?)?)?)?/?$"))
 (allow file-read* file-write*

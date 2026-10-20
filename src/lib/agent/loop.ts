@@ -3,10 +3,11 @@ import { presetById } from "../providers";
 import type { ToolCallRecord } from "../types";
 import { logActivity } from "./activity";
 import { accessGuidance, isComputerTool } from "./access";
-import { askAloudText } from "./asks";
+import { askAloudDetail, askAloudText } from "./asks";
 import { decide, gate, waitForDecision, isPending, type Decision } from "./approvals";
 import { type AgentTool, getTool, type ToolContext, toResult } from "./tools";
 import { insideWorkspace } from "./builtin";
+import { isTerminalApp, TERMINAL_APPS } from "./danger";
 import { desktopInvoke } from "../desktop";
 import { markUntrusted, UNTRUSTED_GUIDANCE } from "./vendor/copilotkit/untrusted-content";
 import type { ToolCall, ToolSchema } from "./vendor/openbot/types";
@@ -369,7 +370,7 @@ export function createToolRunner(options: {
         const settle = new AbortController();
         const fromCard = waitForDecision(call.id, settle.signal);
         const aloud = context
-          .askAloud({ summary: askAloudText(call), reason: verdict.reason, signal: settle.signal })
+          .askAloud({ summary: askAloudText(call), detail: askAloudDetail(call), reason: verdict.reason, signal: settle.signal })
           .then((answer): Decision => (answer === "allow" ? "once" : "deny"));
         decision = await Promise.race([fromCard, aloud, abortedAsDeny(context.signal)]);
         if (isPending(call.id)) decide(tool, call, decision);
@@ -423,29 +424,30 @@ export function createToolRunner(options: {
 
 /**
  * Whether a result's outside content should make the rest of the turn ask before commands and file
- * changes. The screen (screenshots, UI lists) doesn't: Full access exists to work with what's on it.
- * Neither do the workspace's own files or plain command output; a command that fetched from the web does.
+ * changes. What's on the screen or in a web page counts (someone else's message, a page): screen
+ * actions still run under Full access (they aren't taint-sensitive), but commands, file changes,
+ * scripts and routines ask afterwards. The workspace's own files and plain command output don't
+ * count; a command that fetched from the web does.
  */
 export function taints(tool: AgentTool, call: ToolCall): boolean {
-  if (tool.group === "mac") return tool.name === "mac_applescript";
-  // Mac-control connectors (Peekaboo, Ghost OS…) look at the screen too.
-  if (tool.controlsComputer) return false;
+  // Built-in screen control, and connectors that look at the screen (Peekaboo, Ghost OS…).
+  if (tool.group === "mac" || tool.controlsComputer) return true;
   if (tool.name === "read_file" || tool.name === "list_files") return !insideWorkspace(String(call.args.path ?? ""));
   if (tool.name === "run_command") return /\b(curl|wget|https?:\/\/|git\s+(clone|pull|fetch)|npx|pip3?\s+download)\b/i.test(String(call.args.command ?? ""));
   return true;
 }
 
-const TERMINALS = /\b(terminal|iterm2?|warp|alacritty|kitty|wezterm|ghostty|hyper|tabby|termius|console|windowsterminal|powershell|pwsh|cmd|conhost|wsl|mintty)\b/i;
 const TYPING = new Set(["mac_type", "mac_key", "mac_set_text", "mac_press"]);
 
-/** After outside content, typing or pressing keys into a terminal is as good as running a command: ask. */
-async function typingIntoTerminal(call: ToolCall, context: ToolContext): Promise<string | undefined> {
-  if (!context.taint?.sources.size || !TYPING.has(call.name)) return undefined;
-  const reason = "this conversation read outside content, and this types into a terminal";
-  if (TERMINALS.test(String(call.args.app ?? ""))) return reason;
+/** Typing or pressing keys into a terminal is as good as running a command: always ask. */
+export async function typingIntoTerminal(call: ToolCall, _context: ToolContext): Promise<string | undefined> {
+  if (!TYPING.has(call.name)) return undefined;
+  const reason = "this types into a terminal or script app, which runs it like a command";
+  const named = String(call.args.app ?? "").trim();
+  if (named) return isTerminalApp(named) ? reason : undefined;
   try {
-    const front = await desktopInvoke<{ name?: string }>("adt:mac:frontmost");
-    return TERMINALS.test(front?.name ?? "") ? reason : undefined;
+    const front = await desktopInvoke<{ name?: string; bundleId?: string }>("adt:mac:frontmost");
+    return TERMINAL_APPS.test(`${front?.name ?? ""} ${front?.bundleId ?? ""}`) ? reason : undefined;
   } catch {
     return undefined;
   }

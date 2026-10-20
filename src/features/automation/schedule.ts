@@ -54,6 +54,11 @@ export type Routine = {
   disabledReason?: string;
   /** The "Routine: <name>" chat the runs go to (replaced by a fresh one when it gets long). */
   conversationId?: string;
+  /**
+   * Set up or changed while a conversation had read outside content (a web page, another bot's
+   * reply…): every run treats its instruction that way too, so Full access asks before commands.
+   */
+  taintedBy?: string[];
   history: RoutineRun[];
   createdAt: number;
 };

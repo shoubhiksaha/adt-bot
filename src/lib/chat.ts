@@ -7,6 +7,7 @@ import { complete, type StreamEvent, streamChat, supportsNativeSearch } from "./
 import { desktopInvoke, desktopOn, isDesktop } from "./desktop";
 import { detectEnv } from "./transport";
 import { findUrls, readPage, sourcesPrompt, webSearch } from "./search";
+import { pointsAtPrivateHost } from "./agent/builtin";
 import { addMemory, flushStorage, newConversation, uid, updateConversation, useStore } from "./store";
 import type { Attachment, Bot, Message, Source } from "./types";
 import { knowledgeContext } from "./knowledge";
@@ -415,7 +416,9 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
     const pages: { url: string; text: string }[] = [];
     if (urls.length) {
       patchReply({ status: urls.length === 1 ? "Reading the link…" : `Reading ${urls.length} links…` });
-      const texts = await Promise.all(urls.map((url) => readPage(url, settings.useProxy, signal)));
+      // A public link may not redirect into this machine or the local network; a private one the
+      // user pasted themselves (their router, a local server) is read as asked.
+      const texts = await Promise.all(urls.map((url) => readPage(url, settings.useProxy, signal, publicLink(url))));
       texts.forEach((text, i) => text && pages.push({ url: urls[i], text }));
     }
 
@@ -716,6 +719,15 @@ function recentQuestion(history: Message[]): string {
     .slice(-2)
     .map((m) => m.content)
     .join(" ");
+}
+
+/** A link to somewhere on the public web (not this machine or the local network). */
+function publicLink(url: string): boolean {
+  try {
+    return !pointsAtPrivateHost(new URL(url));
+  } catch {
+    return true;
+  }
 }
 
 export function titleFrom(text: string): string {

@@ -344,10 +344,19 @@ export function isSubstantial(text: string): boolean {
 const YES = /^(yes|yeah|yea|yep|yup|sure|ok|okay|alright|go ahead|do it|allow( it)?|please do|of course|haan?|ha|hya|ji( haan)?|theek hai|thik ache|thik ase|korো|kor)\b/;
 const NO = /^(no|nope|nah|don'?t|do not|stop|cancel|deny|never ?mind|nahi|nahin|na|naa|mat( karo)?|thak|dorkar nei)\b/;
 
+/**
+ * Not an answer yet: a question ("what will it delete?"), a pause ("ok, hold on", "wait"), or a
+ * condition ("sure, but first…", "do it later"). These start like a yes but aren't one.
+ */
+const NOT_YET =
+  /\?|\b(what|why|how|which|when|where|who|wait|hold on|hang on|one (sec|second|moment|minute)|just a (sec|second|moment|minute)|let me|later|first|before|but|unless|if|not yet|maybe|tell me|explain|ruko|ek minute|dara(o)?|ektu)\b/;
+
 /** A spoken answer to "Can I …? Say yes or no.": "allow", "deny", or null when it's neither. */
 export function yesOrNo(text: string): "allow" | "deny" | null {
-  const t = text.toLowerCase().replace(/[^\p{L}\p{N}' ]+/gu, " ").replace(/\s+/g, " ").trim();
-  if (!t || t.split(" ").length > 8) return null;
+  const raw = text.toLowerCase();
+  const t = raw.replace(/[^\p{L}\p{N}' ]+/gu, " ").replace(/\s+/g, " ").trim();
+  // A clear answer is short; anything longer, questioning or hesitant is asked again.
+  if (!t || t.split(" ").length > 6 || NOT_YET.test(raw.replace(/[^\p{L}\p{N}'? ]+/gu, " "))) return null;
   const yes = YES.test(t);
   const no = NO.test(t);
   // "Yes… no, wait": unclear, so ask again rather than guess.

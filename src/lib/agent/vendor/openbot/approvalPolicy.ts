@@ -7,7 +7,7 @@
  */
 
 import type { ApprovalPolicy, ApprovalRequest, Settings, ToolCall, ToolSchema } from './types'
-import { hasShellMetacharacters, matchesAny, matchesAnyDeny, shellTokens } from './patterns'
+import { hasShellMetacharacters, matchesAny, matchesAnyDeny, shellTokens, looksLikeRegex } from './patterns'
 import { asString, stringifySafe } from './json'
 import { truncate } from './text'
 
@@ -153,7 +153,9 @@ export function evaluate(
   remembered: ReadonlySet<string>,
   force = false,
   /** What "already approved" is keyed on; defaults to the target. Pass every argument (`argsKey`). */
-  rememberAs = target
+  rememberAs = target,
+  /** The tool's approval kind (ADT Bot tools set their own; run_command is "shell"). */
+  kind?: ApprovalKind
 ): PolicyVerdict {
   const values = matchableValues(toolName, target)
 
@@ -178,9 +180,21 @@ export function evaluate(
    * that allows the whole tool) counts.
    */
   const chained = hasShellMetacharacters(target)
-  const allowed = (settings.allowlist ?? []).find((rule) =>
-    matchesAny([rule], [`tool:${toolName}`]) ? true : matchesAny([rule], [target]) && (!chained || rule.trim() === target)
-  )
+  /*
+   * ADT Bot: rules are scoped. "tool:<name>" allows that whole tool; "tool:<name> <target>" (what
+   * "Always allow" saves for files, pages and connector calls) allows exactly that target for that
+   * tool; a plain rule ("git status *") is a command rule and only applies to shell commands. A
+   * file-write approval for a folder used to also allow any command mentioning that folder.
+   */
+  const shell = (kind ?? kindForTool(toolName)) === 'shell' || toolName === 'run_command'
+  const allowed = (settings.allowlist ?? []).find((rule) => {
+    const r = rule.trim()
+    if (matchesAny([r], [`tool:${toolName}`])) return true
+    const scoped = /^tool:(\S+)\s+([\s\S]+)$/.exec(r)
+    if (scoped) return scoped[1] === toolName && scoped[2].trim().replace(/\s+/g, ' ') === target.trim().replace(/\s+/g, ' ')
+    if (r.startsWith('tool:') || !shell) return false
+    return matchesAny([r], [target]) && (!chained || r === target)
+  })
   if (allowed) {
     return { outcome: 'allow', reason: `allowlist rule "${allowed}"` }
   }
@@ -222,7 +236,10 @@ export function derivePattern(
 ): string | null {
   if (kind === 'computer') return null
   if (!target) return `tool:${toolName}`
-  if (kind !== 'shell') return target
+  // ADT Bot: exactly this target, for this tool only.
+  if (kind !== 'shell') return /[\r\n]/.test(target) ? null : `tool:${toolName} ${target}`
+  // A literal that would read as a regular expression ("/usr/bin/x /tmp/") can't be saved safely.
+  if (looksLikeRegex(target)) return null
 
   if (hasShellMetacharacters(target)) return target
   const tokens = shellTokens(target)

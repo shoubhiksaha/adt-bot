@@ -100,6 +100,8 @@ export async function delegate(options: {
   /** The caller was working for a shared room, or where approvals can't be answered: so is the helper. */
   shared?: boolean;
   unattended?: boolean;
+  /** Outside content the caller's turn had read: the helper's turn starts with it. */
+  taintedBy?: string[];
 }): Promise<DelegationResult> {
   const { caller, target, task, conversationId, progress } = options;
   if (!task.trim()) throw new Error("Describe the task for the other bot.");
@@ -132,6 +134,7 @@ export async function delegate(options: {
       signal,
       shared: options.shared,
       unattended: options.unattended,
+      taintedBy: options.taintedBy,
     });
     if (options.signal.aborted) throw new DOMException("Aborted", "AbortError");
     const text = reply?.content ?? "";

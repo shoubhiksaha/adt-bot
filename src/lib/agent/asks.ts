@@ -43,12 +43,28 @@ export function askTitle(call: Call): string {
   return `Allow the bot to ${what}${main ? `: ${main}` : ""}?`;
 }
 
-/** The same question, worded to be spoken: shorter, no quotes or ellipses. */
+/** Spoken questions read this much of what will run; the rest is on screen (askAloudDetail). */
+const SPOKEN_CHARS = 120;
+
+/**
+ * What the approval is really about, in full: the command, script or text for most tools; for a
+ * routine, what it will do every time it runs (not just its name).
+ */
+export function askAloudDetail(call: Call): string {
+  const routine = /^(create|update)_routine$/.test(call.name);
+  const instruction = typeof call.args.instruction === "string" ? call.args.instruction : "";
+  const name = typeof call.args.name === "string" ? call.args.name : "";
+  const main = routine && instruction ? `${name ? `${name}, which will: ` : ""}${instruction}` : (MAIN_ARGS.map((k) => call.args[k]).find((v) => typeof v === "string" && v) as string | undefined) ?? "";
+  return main.slice(0, 2000);
+}
+
+/** The same question, worded to be spoken: no quotes; a long command is cut and the rest pointed to on screen. */
 export function askAloudText(call: Call): string {
-  const what = ASKS[call.name] ?? `use ${call.name.replace(/^mcp_/, "").replace(/[_-]+/g, " ")}`;
-  const main = mainArg(call)?.replace(/[“”"`]/g, "").replace(/…$/, "");
-  const shortMain = main && main.length > 60 ? `${main.slice(0, 60).replace(/\s+\S*$/, "")}` : main;
-  return `Can I ${what}${shortMain ? `: ${shortMain}` : ""}? Say yes or no.`;
+  const what = ASKS[call.name] ?? (call.name === "update_routine" ? "change a routine" : `use ${call.name.replace(/^mcp_/, "").replace(/[_-]+/g, " ")}`);
+  const main = askAloudDetail(call).replace(/[“”"`]/g, "").replace(/\s+/g, " ").trim();
+  const long = main.length > SPOKEN_CHARS;
+  const spoken = long ? main.slice(0, SPOKEN_CHARS).replace(/\s+\S*$/, "") : main;
+  return `Can I ${what}${spoken ? `: ${spoken}` : ""}?${long ? " The rest is on your screen." : ""} Say yes or no.`;
 }
 
 /** What the bot is doing during a tool step, for the voice screen. */

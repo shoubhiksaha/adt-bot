@@ -201,6 +201,7 @@ const routineTools: AgentTool[] = [
         botId: targetBot(args, ctx).id,
         schedule,
         missedRunPolicy: policy(args),
+        taintedBy: taintOf(ctx),
       };
       const routine = await createRoutine(input);
       return `Created.\n${describeRoutine(routine)}`;
@@ -240,6 +241,9 @@ const routineTools: AgentTool[] = [
         patch.schedule = schedule;
       }
       if (!Object.keys(patch).length) throw new Error("Nothing to change: pass at least one field.");
+      // Changed after reading outside content: its runs are treated that way from now on.
+      const tainted = taintOf(ctx);
+      if (tainted) patch.taintedBy = [...new Set([...(routine.taintedBy ?? []), ...tainted])];
       const updated = await updateRoutine(routine.id, patch);
       return `Updated.\n${describeRoutine(updated)}`;
     },
@@ -340,6 +344,8 @@ const botTools: AgentTool[] = [
         progress: ctx.progress,
         shared: ctx.shared,
         unattended: ctx.unattended,
+        // The task may come from outside content this turn read: the other bot treats it that way too.
+        taintedBy: taintOf(ctx),
       });
       return {
         content: `Report from ${found.name} (linked chat "${result.title}"):\n${result.report}\n\nTell the user what ${found.name} found, in your own words, starting with its name.`,
@@ -350,6 +356,11 @@ const botTools: AgentTool[] = [
     },
   },
 ];
+
+/** The outside content this turn has read, carried into what it starts (a routine, another bot's run). */
+function taintOf(ctx: ToolContext): string[] | undefined {
+  return ctx.taint?.sources.size ? [...ctx.taint.sources] : undefined;
+}
 
 for (const tool of [...routineTools, ...botTools]) registerTool(tool);
 

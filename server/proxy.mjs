@@ -42,6 +42,17 @@ export const DEFAULT_ALLOWED_HOSTS = [
 const LOOPBACK_NAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 const PRIVATE_SUFFIXES = [".localhost", ".local", ".lan", ".home", ".internal", ".intranet", ".corp", ".home.arpa", ".ts.net"];
 
+/** Link-local addresses: cloud metadata services (169.254.169.254) live here; never relayed. */
+export function isLinkLocal(address) {
+  const ip = address.replace(/^\[|\]$/g, "").toLowerCase();
+  if (isIP(ip) === 4) return ip.startsWith("169.254.");
+  if (isIP(ip) === 6) {
+    const mapped = /^(?:::ffff:|64:ff9b::|::)(\d+\.\d+\.\d+\.\d+)$/.exec(ip);
+    return mapped ? isLinkLocal(mapped[1]) : /^fe[89ab]/.test(ip) || /^(?:::ffff:|64:ff9b::|::)a9fe:/.test(ip);
+  }
+  return false;
+}
+
 /** Loopback, LAN, link-local, CGNAT/Tailscale and IPv6 unique-local addresses. */
 export function isPrivateAddress(address) {
   const ip = address.replace(/^\[|\]$/g, "").toLowerCase();
@@ -88,6 +99,26 @@ export async function isPrivateHost(hostname) {
   }
 }
 
+/**
+ * For reading pages the bot found on the web: refuse a host that is, or resolves to, anything
+ * private (any one record, not all of them) or that can't be resolved.
+ */
+export async function reachesPrivateNetwork(hostname) {
+  const host = hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
+  if (LOOPBACK_NAMES.has(host) || host === "host.docker.internal") return true;
+  if (isIP(host)) return isPrivateAddress(host);
+  if (!host.includes(".") || PRIVATE_SUFFIXES.some((suffix) => host.endsWith(suffix))) return true;
+  try {
+    const records = await lookup(host, { all: true });
+    return !records.length || records.some((r) => isPrivateAddress(r.address));
+  } catch {
+    return true;
+  }
+}
+
+/** Headers safe to send on to another site when a request is redirected there (no keys). */
+const CROSS_ORIGIN_HEADERS = new Set(["accept", "accept-language", "content-type", "user-agent"]);
+
 const DROP_REQUEST_HEADERS = new Set([
   "host",
   "origin",
@@ -118,9 +149,12 @@ const DROP_REQUEST_HEADERS = new Set([
 export function createProxyHandler(options = {}) {
   const allowed = new Set([...DEFAULT_ALLOWED_HOSTS, ...(options.extraHosts ?? [])].map((h) => h.toLowerCase()));
 
-  const hostAllowed = async (url) => {
-    if (options.allowAllHosts) return true;
+  const hostAllowed = async (url, publicOnly) => {
     const host = url.hostname.toLowerCase();
+    // Pages the bot found on the web may not lead into this machine or its network.
+    if (publicOnly && (await reachesPrivateNetwork(host))) return false;
+    if (isLinkLocal(host)) return false;
+    if (options.allowAllHosts) return true;
     if (allowed.has(host) || [...allowed].some((h) => h.startsWith("*.") && host.endsWith(h.slice(1)))) return true;
     return Boolean(options.allowPrivate) && (await isPrivateHost(host));
   };
@@ -156,7 +190,11 @@ export function createProxyHandler(options = {}) {
       return fail(res, 400, "Missing or invalid x-adtbot-target header");
     }
     if (!/^https?:$/.test(target.protocol)) return fail(res, 400, "Only http(s) targets are allowed");
-    if (!(await hostAllowed(target))) {
+    const publicOnly = req.headers["x-adtbot-public-only"] === "1";
+    if (publicOnly && (await reachesPrivateNetwork(target.hostname))) {
+      return fail(res, 403, `${target.hostname} is on a private network: pages found on the web can't be read from there.`);
+    }
+    if (!(await hostAllowed(target, publicOnly))) {
       return fail(
         res,
         403,
@@ -194,10 +232,14 @@ export function createProxyHandler(options = {}) {
         const asGet = upstream.status === 303 || ((upstream.status === 301 || upstream.status === 302) && method === "POST");
         if (!location || (!asGet && method !== "GET" && method !== "HEAD")) break;
         const next = new URL(location, url);
-        if (!/^https?:$/.test(next.protocol) || !(await hostAllowed(next))) {
+        if (!/^https?:$/.test(next.protocol) || !(await hostAllowed(next, publicOnly))) {
           return fail(res, 403, `The relay won't follow a redirect to ${next.hostname}.`);
         }
         if (asGet) method = "GET";
+        // Another site gets no API keys or custom headers.
+        if (next.origin !== url.origin) {
+          for (const key of Object.keys(headers)) if (!CROSS_ORIGIN_HEADERS.has(key)) delete headers[key];
+        }
         url = next;
         upstream = await fetch(url, { method, headers, redirect: "manual", signal: controller.signal });
       }

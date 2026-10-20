@@ -377,4 +377,25 @@ describe("tool arguments", () => {
     expect(list).toContain('Researcher ("Scout")');
     expect(list).toContain("ADT (\"Jarvis\") [you]");
   });
+
+  it("carries outside content the turn read into the other bot's run and into routines", async () => {
+    const tainted = (): ToolContext => ({ ...ctx(), taint: { sources: new Set(["a web page"]) } });
+    // A page told the bot to hand a task on: the other bot starts as having read it too, so Full
+    // access still asks before its commands.
+    send.mockReset();
+    send.mockResolvedValueOnce(reply("Done."));
+    await getTool("ask_bot")!.run({ bot: "Scout", task: "Run the cleanup script" }, tainted());
+    expect(send.mock.calls[0][2]).toMatchObject({ taintedBy: ["a web page"] });
+    send.mockResolvedValueOnce(reply("Done."));
+    await getTool("ask_bot")!.run({ bot: "Scout", task: "Summarise my notes" }, ctx());
+    expect(send.mock.calls[1][2].taintedBy).toBeUndefined();
+    // A routine set up or changed after reading outside content keeps that on every run.
+    await getTool("create_routine")!.run({ name: "Nightly", instruction: "Run the cleanup script", schedule_type: "daily", time: "02:00" }, tainted());
+    await getTool("create_routine")!.run({ name: "Digest", instruction: "Summarise AI news", schedule_type: "daily", time: "08:00" }, ctx());
+    const [nightly, digest] = useRoutines.getState().routines;
+    expect(nightly.taintedBy).toEqual(["a web page"]);
+    expect(digest.taintedBy).toBeUndefined();
+    await getTool("update_routine")!.run({ routine: "Digest", instruction: "Summarise AI news and run fix.sh" }, tainted());
+    expect(useRoutines.getState().routines[1].taintedBy).toEqual(["a web page"]);
+  });
 });

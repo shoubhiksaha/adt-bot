@@ -1,4 +1,4 @@
-import { isDangerous } from "../../lib/agent/danger";
+import { isDangerous, isTerminalApp } from "../../lib/agent/danger";
 import { type AgentTool, getTool, num, registerTool, registerToolGroup, str, type ToolContext, type ToolRisk, toResult } from "../../lib/agent/tools";
 import { type MacApp, type MacFrontmost, type MacScreenshot, mac } from "./api";
 import { deleteRecipe, fill, findRecipe, highestRisk, markRun, missingParams, recipeLine, saveRecipe, useRecipes, validateRecipe } from "./recipes";
@@ -108,7 +108,6 @@ export function appleScriptRisk(script: string): AgentTool["risk"] {
   return "write";
 }
 
-const TERMINALS = /^(terminal|iterm2?|warp|ghostty|alacritty|kitty|wezterm|hyper|tabby|windows ?terminal|wt|powershell|pwsh|cmd|command prompt|conhost|wsl|mintty|git bash)$/i;
 const point = { x: { type: "number", description: "X in screenshot pixels" }, y: { type: "number", description: "Y in screenshot pixels" } } as const;
 
 function macTool(tool: Omit<AgentTool, "group" | "kind" | "platforms" | "available">): AgentTool {
@@ -216,7 +215,7 @@ export const macTools: AgentTool[] = [
   macTool({
     name: "mac_set_text",
     risk: "write",
-    riskFor: (args) => (TERMINALS.test(str(args, "app")) ? "destructive" : "write"),
+    riskFor: (args) => (isTerminalApp(str(args, "app")) ? "destructive" : "write"),
     timeoutMs: 120_000,
     description:
       "Type into a text field, search box or message box in an app, by its [id] from mac_ui or by its label/placeholder (field). Replaces what's there unless append is true. " +

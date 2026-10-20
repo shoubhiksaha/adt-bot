@@ -3,7 +3,7 @@
 //   HOST=0.0.0.0 PORT=8080 npm start        → reachable from your LAN / phone
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
-import { extname, join, normalize, resolve } from "node:path";
+import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createProxyHandler } from "./proxy.mjs";
 
@@ -37,9 +37,16 @@ export function startServer(options = {}) {
   const proxy = createProxyHandler(options.proxy);
 
   const serveStatic = (req, res) => {
-    const path = decodeURIComponent((req.url ?? "/").split("?")[0]);
+    let path;
+    try {
+      path = decodeURIComponent((req.url ?? "/").split("?")[0]);
+    } catch {
+      // "/%": a malformed escape must not throw (and take the server down).
+      res.writeHead(400).end();
+      return;
+    }
     let file = normalize(join(distDir, path));
-    if (!file.startsWith(distDir)) {
+    if (file !== distDir && !file.startsWith(distDir + sep)) {
       res.writeHead(403).end();
       return;
     }
@@ -58,7 +65,12 @@ export function startServer(options = {}) {
     createReadStream(file).pipe(res);
   };
 
-  const server = createServer((req, res) => proxy(req, res, () => serveStatic(req, res)));
+  const server = createServer((req, res) => {
+    Promise.resolve(proxy(req, res, () => serveStatic(req, res))).catch(() => {
+      if (!res.headersSent) res.writeHead(500);
+      res.end();
+    });
+  });
   const host = options.host ?? "127.0.0.1";
   return new Promise((resolvePromise, reject) => {
     server.once("error", reject);

@@ -19,14 +19,23 @@ import { escapeRegex } from './text'
  */
 const REGEX_LITERAL = /^\/(.+)\/([dgimsuvy]*)$/
 
-function asRegex(pattern: string): RegExp | undefined {
+/**
+ * ADT Bot: an allow rule written as a regex must match the whole value (`anchored`): unanchored,
+ * `/ls/` allowed any command containing "ls". Deny rules stay unanchored (broader is safer there).
+ */
+function asRegex(pattern: string, anchored = false): RegExp | undefined {
   const parsed = REGEX_LITERAL.exec(pattern)
   if (!parsed) return undefined
   try {
-    return new RegExp(parsed[1] ?? '', parsed[2] ?? '')
+    return new RegExp(anchored ? `^(?:${parsed[1] ?? ''})$` : (parsed[1] ?? ''), parsed[2] ?? '')
   } catch {
     return undefined
   }
+}
+
+/** Whether a rule would be read as a regular expression. */
+export function looksLikeRegex(pattern: string): boolean {
+  return asRegex(pattern.trim()) !== undefined
 }
 
 /**
@@ -48,7 +57,7 @@ export function matchPattern(pattern: string, value: string): boolean {
   const raw = pattern.trim()
   if (!raw || !value.trim()) return false
 
-  const rx = asRegex(raw)
+  const rx = asRegex(raw, true)
   if (rx) return rx.test(value.trim())
 
   const p = normalise(raw)
@@ -82,6 +91,8 @@ export function matchPattern(pattern: string, value: string): boolean {
  */
 export function matchDenyPattern(pattern: string, value: string): boolean {
   if (matchPattern(pattern, value)) return true
+  const rx = asRegex(pattern.trim())
+  if (rx) return rx.test(value.trim())
 
   const p = normalise(pattern).toLowerCase()
   const v = normalise(value).toLowerCase()

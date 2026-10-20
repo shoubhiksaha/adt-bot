@@ -414,7 +414,8 @@ export class LiveVoiceSession {
     this.clearIdle();
     this.lastInputAt = performance.now();
     this.userSaid(text);
-    if (this.approval) this.listenForAnswer(text);
+    // While it's still asking, what the microphone hears may be the question coming back.
+    if (this.approval && !this.player.playing) this.listenForAnswer(text);
     this.set({ phase: this.state.phase === "speaking" ? "speaking" : "hearing", partial: this.user?.text ?? "", heard: this.user?.text ?? "" });
   }
 
@@ -490,7 +491,7 @@ export class LiveVoiceSession {
    * A tool needs the user's OK: show it with Allow / Don't allow, have Gemini ask in its own voice,
    * and take the user's next "yes" or "no" (judged here, not by the model). No answer in a minute is no.
    */
-  private askApproval(request: { summary: string; reason: string; signal: AbortSignal }): Promise<"allow" | "deny"> {
+  private askApproval(request: { summary: string; reason: string; signal: AbortSignal; detail?: string }): Promise<"allow" | "deny"> {
     if (this.closed) return Promise.resolve("deny");
     // Gemini called the same thing again while it waits (it heard the user's "yes" too): the
     // first call is the one that runs; this one is turned down.
@@ -500,7 +501,7 @@ export class LiveVoiceSession {
     return asked;
   }
 
-  private ask({ summary, reason, signal }: { summary: string; reason: string; signal: AbortSignal }): Promise<"allow" | "deny"> {
+  private ask({ summary, reason, signal, detail }: { summary: string; reason: string; signal: AbortSignal; detail?: string }): Promise<"allow" | "deny"> {
     if (this.closed || signal.aborted) return Promise.resolve("deny");
     return new Promise((resolve) => {
       const timer = setTimeout(() => this.answerApproval("deny"), 60_000);
@@ -508,7 +509,7 @@ export class LiveVoiceSession {
       this.approval = pending;
       signal.addEventListener("abort", () => this.approval === pending && this.answerApproval("deny"), { once: true });
       this.clearIdle();
-      this.set({ approval: { question: summary, reason } });
+      this.set({ approval: { question: summary, reason, detail } });
       const question = summary.replace(/ Say yes or no\.$/, "");
       this.connection?.sendText(
         `[ADT Bot, not the user] A tool you called needs the user's OK first. Ask them now in one short sentence: "${question}" Then wait: the app hears their yes or no and sends you the tool's result.`,

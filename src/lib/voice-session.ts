@@ -46,8 +46,8 @@ export type VoiceState = {
   timing: { turn: number; stt: number; model: number; speech: number; early?: number } | null;
   engineLabel: string;
   wakeName: string;
-  /** A tool waiting for the user's OK, asked aloud (answer by voice or with the buttons). */
-  approval: { question: string; reason: string } | null;
+  /** A tool waiting for the user's OK, asked aloud (answer by voice or with the buttons). `detail`: all of what will run. */
+  approval: { question: string; reason: string; detail?: string } | null;
   /** Gemini Live is talking, not the app's own speech pipeline. */
   live?: boolean;
 };
@@ -262,7 +262,7 @@ export class VoiceSession {
    * question with Allow / Don't allow, and take the next thing they say as the answer. No answer in
    * a minute counts as no.
    */
-  private askApproval({ summary, reason, signal }: { summary: string; reason: string; signal: AbortSignal }): Promise<"allow" | "deny"> {
+  private askApproval({ summary, reason, signal, detail }: { summary: string; reason: string; signal: AbortSignal; detail?: string }): Promise<"allow" | "deny"> {
     if (this.closed) return Promise.resolve("deny");
     this.answerApproval("deny");
     return new Promise((resolve) => {
@@ -274,7 +274,7 @@ export class VoiceSession {
       this.clearIdle();
       this.dropEarly();
       this.unduck();
-      this.set({ approval: { question: summary, reason }, phase: "speaking", sentence: summary, spokenChars: 0 });
+      this.set({ approval: { question: summary, reason, detail }, phase: "speaking", sentence: summary, spokenChars: 0 });
       const speaker = this.speaker ?? createSpeaker(this.context(), { onError: (message) => this.set({ error: message }) });
       this.speaker = speaker;
       speaker.say(summary);

@@ -66,6 +66,7 @@ export type RoutineInput = {
   schedule: Schedule;
   enabled?: boolean;
   missedRunPolicy?: Routine["missedRunPolicy"];
+  taintedBy?: string[];
 };
 
 /** Checks a routine's fields; returns an error sentence or null. */
@@ -93,6 +94,7 @@ export async function createRoutine(input: RoutineInput, now = Date.now()): Prom
     schedule,
     enabled: input.enabled ?? true,
     missedRunPolicy: input.missedRunPolicy ?? "run-once",
+    ...(input.taintedBy?.length ? { taintedBy: input.taintedBy } : {}),
     nextRun,
     consecutiveFailures: 0,
     history: [],

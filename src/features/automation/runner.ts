@@ -81,7 +81,7 @@ async function execute(routineId: string, run: RoutineRun): Promise<RoutineRun> 
       if (waiting && !asked) void notify(`${routine.name} needs your approval`, "Open the routine's chat to allow or deny the action.", chat);
       asked = Boolean(waiting);
     });
-    const reply = await sendInBackground(chat, firingMessage(routine.instruction), { signal: timeout }).finally(unsubscribe);
+    const reply = await sendInBackground(chat, firingMessage(routine.instruction), { signal: timeout, taintedBy: routine.taintedBy }).finally(unsubscribe);
     if (timeout.aborted) throw new Error(`Stopped after ${RUN_TIMEOUT_MS / 60_000} minutes.`);
     if (!reply) throw new Error("The bot didn't answer.");
     if (reply.error) throw new Error(reply.error);

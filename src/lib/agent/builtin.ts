@@ -46,8 +46,13 @@ export function urlNeedsApproval(raw: string): boolean {
   } catch {
     return true;
   }
-  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  const privateHost =
+  return pointsAtPrivateHost(url) || Boolean(url.username || url.password) || raw.length > 200 || url.search.length > 120 || carriesData(url);
+}
+
+/** The address itself names this machine or a private network (an IP, a LAN-style name). */
+export function pointsAtPrivateHost(url: URL): boolean {
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  return (
     host === "localhost" ||
     host.endsWith(".localhost") ||
     host.endsWith(".local") ||
@@ -55,8 +60,8 @@ export function urlNeedsApproval(raw: string): boolean {
     !host.includes(".") ||
     /^(127\.|10\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(host) ||
     /^[\d.]+$/.test(host) ||
-    host.includes(":");
-  return privateHost || Boolean(url.username || url.password) || raw.length > 200 || url.search.length > 120 || carriesData(url);
+    host.includes(":")
+  );
 }
 
 /**

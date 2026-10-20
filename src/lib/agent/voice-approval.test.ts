@@ -4,7 +4,7 @@ import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { useStore } from "../store";
 import type { Bot, ProviderConfig, ToolCallRecord } from "../types";
-import { askAloudText } from "./asks";
+import { askAloudDetail, askAloudText } from "./asks";
 import { runToolLoop } from "./loop";
 import { yesOrNo } from "../voice-commands";
 import { type AgentTool, registerTool } from "./tools";
@@ -153,7 +153,15 @@ describe("spoken answers and questions", () => {
   });
 
   it("words the question to be spoken", () => {
-    expect(askAloudText({ name: "create_routine", args: { name: "Morning AI news", instruction: "x" } })).toBe("Can I create a routine: Morning AI news? Say yes or no.");
+    // A routine is asked about by what it will do on every run, not only its name.
+    expect(askAloudText({ name: "create_routine", args: { name: "Morning AI news", instruction: "summarise AI news" } })).toBe(
+      "Can I create a routine: Morning AI news, which will: summarise AI news? Say yes or no.",
+    );
     expect(askAloudText({ name: "run_command", args: { command: "npm test" } })).toBe("Can I run a command: npm test? Say yes or no.");
+    // A long command isn't cut off silently: the rest is pointed to on screen, where it's shown in full.
+    const long = `echo checking your calendar and then tidying up the downloads folder for you right away; ${"x ".repeat(40)}rm -rf ~/Documents`;
+    const spoken = askAloudText({ name: "run_command", args: { command: long } });
+    expect(spoken).toMatch(/The rest is on your screen\. Say yes or no\.$/);
+    expect(askAloudDetail({ name: "run_command", args: { command: long } })).toContain("rm -rf ~/Documents");
   });
 });

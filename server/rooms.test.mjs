@@ -129,6 +129,32 @@ describe("room server", () => {
     expect(events.some((e) => e.type === "notice")).toBe(true);
   });
 
+  it("gives a burst of held-open join requests one guess, not one each", async () => {
+    const { room } = await setup({ pinFailures: 5 });
+    const net = await import("node:net");
+    // Every request sends its headers and one byte of body, then all the bodies arrive at once:
+    // the lockout used to be checked before the body, so each request got a guess.
+    const guesses = Array.from({ length: 40 }, (_, i) => String(100000 + i));
+    guesses[30] = room.pin;
+    const sockets = guesses.map((pin) => {
+      const body = JSON.stringify({ name: "Eve", pin });
+      const socket = net.connect(room.port, "127.0.0.1");
+      let data = "";
+      const done = new Promise((resolve) => {
+        socket.on("data", (d) => (data += d));
+        socket.on("close", () => resolve(/HTTP\/1.1 (\d+)/.exec(data)?.[1] ?? "none"));
+      });
+      socket.write(`POST /r/${room.id}/join HTTP/1.1\r\nHost: 127.0.0.1:${room.port}\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n${body[0]}`);
+      return { socket, body, done };
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    sockets.forEach(({ socket, body }) => socket.write(body.slice(1)));
+    const statuses = await Promise.all(sockets.map((s) => s.done));
+    expect(statuses.filter((s) => s === "200")).toHaveLength(0);
+    expect(statuses.filter((s) => s === "403").length).toBeLessThanOrEqual(1);
+    expect(statuses.filter((s) => s === "429").length).toBeGreaterThanOrEqual(39);
+  });
+
   it("compares PINs in constant time and generates 6 digits", () => {
     expect(pinMatches("123456", "123456")).toBe(true);
     expect(pinMatches("123456", "123457")).toBe(false);

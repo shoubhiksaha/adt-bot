@@ -91,7 +91,7 @@ export function gate(
   if (access.outcome === "deny") return access;
   if (access.outcome === "allow") return checkTaint(access);
   if (risk === "read") return checkTaint({ outcome: "allow", reason: "read-only" });
-  const verdict = evaluate(policySettings, call.name, target, remembered, risk === "destructive", argsKey(call));
+  const verdict = evaluate(policySettings, call.name, target, remembered, risk === "destructive", argsKey(call), kind);
   if (verdict.outcome === "allow") return checkTaint({ outcome: "allow", reason: verdict.reason });
   if (verdict.outcome === "deny") return { outcome: "deny", reason: verdict.reason, refusal: denyRefusal(call.name, verdict.reason) };
   return ask(verdict.reason, risk !== "destructive" && derivePattern(kind, call.name, target) !== null);
