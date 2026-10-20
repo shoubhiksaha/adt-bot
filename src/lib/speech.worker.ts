@@ -110,7 +110,7 @@ async function speechProbability(frame: Float32Array): Promise<number> {
 
 let turnWorker: Worker | null = null;
 let turnJob = 0;
-const turnJobs = new Map<number, (result: { probability: number | null; ms?: number }) => void>();
+const turnJobs = new Map<number, (result: { probability: number | null; ms?: number; gpu?: boolean }) => void>();
 
 function getTurnWorker(): Worker {
   if (turnWorker) return turnWorker;
@@ -133,7 +133,7 @@ function getTurnWorker(): Worker {
 const loadTurnModel = () => getTurnWorker().postMessage({ type: "load" });
 
 /** Probability (0–1) that the speaker has finished, or null without the model. */
-function turnFinished(audio: Float32Array): Promise<{ probability: number | null; ms?: number }> {
+function turnFinished(audio: Float32Array): Promise<{ probability: number | null; ms?: number; gpu?: boolean }> {
   const id = ++turnJob;
   return new Promise((resolve) => {
     turnJobs.set(id, resolve);
@@ -250,10 +250,10 @@ function handle(event: SegmentEvent) {
     speculative = { version: event.version, text: transcribe(event.audio, "speculative") };
   } else if (event.type === "silence") {
     const { version, audio } = event;
-    void turnFinished(audio).then(({ probability, ms }) => {
+    void turnFinished(audio).then(({ probability, ms, gpu }) => {
       if (probability !== null) {
         segmenter.decide(version, probability > 0.5);
-        live({ type: "turn", probability: Math.round(probability * 100) / 100, ms });
+        live({ type: "turn", probability: Math.round(probability * 100) / 100, ms, gpu });
       }
       if (startsEarly(probability)) offer(version);
     });
