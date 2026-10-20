@@ -39,3 +39,24 @@ These aren't bundled with the app; they download on first use and are cached on 
 | [Whisper](https://github.com/openai/whisper) (ONNX by onnx-community) | MIT | On-device speech recognition |
 | [Moonshine](https://github.com/moonshine-ai/moonshine) by Useful Sensors ([ONNX](https://huggingface.co/onnx-community/moonshine-base-ONNX) by onnx-community) | MIT | On-device speech recognition for English (optional, Settings → Voice) |
 | [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) by hexgrad ([ONNX](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX) by onnx-community) | Apache-2.0 | "Kokoro" on-device reply voice (`src/lib/kokoro-tts.worker.ts`) |
+
+## Bundled in the desktop app (auto-update)
+
+| Package | License |
+| --- | --- |
+| electron-updater 6.8.10 | MIT |
+| builder-util-runtime 9.7.0 | MIT |
+| js-yaml | MIT |
+| argparse | Python-2.0 |
+| fs-extra | MIT |
+| graceful-fs | ISC |
+| jsonfile | MIT |
+| universalify | MIT |
+| semver | ISC |
+| lazy-val | MIT |
+| lodash.isequal | MIT |
+| lodash.escaperegexp | MIT |
+| tiny-typed-emitter | MIT |
+| debug | MIT |
+| ms | MIT |
+| sax | BlueOak-1.0.0 |
