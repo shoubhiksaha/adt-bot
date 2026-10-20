@@ -131,6 +131,12 @@ Bots can do things as well as talk. Turn it on or off, and choose what needs you
   - Before saying a task on screen is done, a bot looks at the result once (if it hasn't since its last action),
     and says what it saw. It waits for you to pause before using the keyboard or mouse, and sends messages only
     when the right field still holds its text.
+- **Control this PC** (desktop, Windows): bots drive apps the same way through Windows UI Automation, with a small
+  PowerShell helper bundled in the app (nothing to install or switch on). Listing, pressing and typing work by app and
+  element name, in the background where possible, with the same approvals, risky-button rules, the wait-for-you
+  guard and the Stop-all shortcut (Ctrl+Alt+Shift+Esc). Bots can't read or control apps running as administrator
+  unless ADT Bot runs as administrator too. AppleScript, in-browser page control and on-screen text recognition are
+  macOS-only. (New in 1.2.0 and not yet tried on a real Windows PC.)
 - **Each bot's own computer** (desktop): a Docker container per bot with a persistent `/workspace`,
   resource limits, and an optional "no network" switch. See **Computers** in the sidebar.
 - **Rooms** (desktop): people on your network chat with each other and your bots from any browser by

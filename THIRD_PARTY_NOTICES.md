@@ -63,3 +63,13 @@ These aren't bundled with the app; they download on first use and are cached on 
 | debug | MIT |
 | ms | MIT |
 | sax | BlueOak-1.0.0 |
+
+## Adapted ideas
+
+- **windows-cua-jev** (https://github.com/foklepoint/windows-cua-jev): MIT License, Copyright (c) 2026
+  windows-cua-jev contributors. The Windows accessibility helper (`electron/native/win-helper.ps1`) adapts its
+  indexed UI Automation tree and its Invoke/Toggle/SelectionItem/ExpandCollapse press order. No code was copied
+  verbatim.
+- **Ghost OS** (https://github.com/ghostwright/ghost-os): MIT. The Mac helper's accessibility-first approach and
+  saved "recipes" follow its design.
+
