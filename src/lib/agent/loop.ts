@@ -146,26 +146,17 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
   let mode: "native" | "prompted" = options.mode === "auto" ? (promptedFallback.has(key) ? "prompted" : "native") : options.mode;
   const discovery = tools.length > discoveryThreshold(request, mode);
   const exposed = new Set(discovery ? tools.filter((t) => CORE_TOOLS.has(t.name) || ALWAYS_LISTED.has(t.group)).map((t) => t.name) : tools.map((t) => t.name));
-  const records: ToolCallRecord[] = [];
   const turns: ToolTurn[] = [];
-  const reusable = new Map<string, Promise<ToolTurn["results"][number]>>();
+  const runner = createToolRunner({ tools, context, exposed, onCalls: callbacks.onCalls });
   const computer = tools.some(isComputerTool) ? accessGuidance(context.settings.agent, context) : "";
   const screen = tools.some((t) => t.group === "mac" || t.controlsComputer);
   const system = [request.system, TOOL_GUIDANCE, computer, screen ? COMPUTER_GUIDANCE : ""].filter(Boolean).join("\n\n");
   // Tasks in apps take more steps than questions do.
   const maxSteps = screen ? Math.max(options.maxSteps, 30) : options.maxSteps;
 
-  // Verify before "done": the latest screen action nobody has looked at since, and whether the
-  // model was already sent back once to check it.
-  let unseen: string | null = null;
+  // Verify before "done" (runner.unseen: the latest screen action nobody has looked at since), and
+  // whether the model was already sent back once to check it.
   let nudged = false;
-
-  const publish = () => callbacks.onCalls(records.map((r) => ({ ...r })));
-  const update = (id: string, patch: Partial<ToolCallRecord>) => {
-    const record = records.find((r) => r.id === id);
-    if (record) Object.assign(record, patch);
-    publish();
-  };
 
   for (let step = 0; step <= maxSteps; step++) {
     const last = step === maxSteps;
@@ -177,7 +168,7 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
     let asked: Extract<StreamEvent, { type: "tool_calls" }> | null = null;
     // After an action on screen nobody has looked at, an answer now may be sent back for one look:
     // hold this step's text until it's clear, so a premature "done" never shows.
-    const holdText = unseen !== null && !nudged && !last;
+    const holdText = runner.unseen !== null && !nudged && !last;
     const held: StreamEvent[] = [];
     try {
       for await (const event of streamChat({
@@ -207,6 +198,7 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
     }
     if (!asked || !asked.calls.length) {
       const answer = held.map((e) => (e.type === "text" ? e.text : "")).join("");
+      const unseen = runner.unseen;
       if (holdText && unseen && turns.length && claimsSuccess(answer)) {
         // Ask for one look first: the note rides on the last result, and this answer is dropped.
         nudged = true;
@@ -224,8 +216,50 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
     if (asked.text) callbacks.onEvent({ type: "text", text: "\n\n" });
     if (options.hold) await options.hold;
 
-    turns.push({ raw: asked.raw, text: asked.text, calls: asked.calls, results: await runStep(asked.calls) });
+    turns.push({ raw: asked.raw, text: asked.text, calls: asked.calls, results: await runner.runStep(asked.calls) });
   }
+}
+
+export type ToolRunner = {
+  /** Runs one step's calls, results in the model's order (see runStep below). */
+  runStep(calls: ToolCall[]): Promise<ToolTurn["results"]>;
+  /** One call on its own: the user's OK if it needs one, then the tool. `signal` ends just this call. */
+  run(call: ToolCall, signal?: AbortSignal): Promise<ToolTurn["results"][number]>;
+  /** The latest action on screen nobody has looked at since (verify before "done"). */
+  readonly unseen: string | null;
+};
+
+/**
+ * Runs a model's tool calls: the approval (a card, or asked aloud in voice mode), the tool with its
+ * time limit, and the records the chat shows. Used by every turn with tools, and by Gemini Live.
+ */
+export function createToolRunner(options: {
+  tools: AgentTool[];
+  context: ToolContext;
+  onCalls: (calls: ToolCallRecord[]) => void;
+  /** Tools listed to the model so far (find_tools adds to it). Default: all of them. */
+  exposed?: Set<string>;
+}): ToolRunner {
+  const { tools, context } = options;
+  const exposed = options.exposed ?? new Set(tools.map((t) => t.name));
+  const records: ToolCallRecord[] = [];
+  const reusable = new Map<string, Promise<ToolTurn["results"][number]>>();
+  let unseen: string | null = null;
+
+  const publish = () => options.onCalls(records.map((r) => ({ ...r })));
+  const update = (id: string, patch: Partial<ToolCallRecord>) => {
+    const record = records.find((r) => r.id === id);
+    if (record) Object.assign(record, patch);
+    publish();
+  };
+
+  return {
+    runStep,
+    run: (call, signal) => runCall(call, signal ? { ...context, signal: AbortSignal.any([context.signal, signal]) } : context),
+    get unseen() {
+      return unseen;
+    },
+  };
 
   /**
    * Runs one step's calls, results in the model's order. Neighbouring calls that only read and
@@ -286,7 +320,7 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
     });
   }
 
-  async function runCall(call: ToolCall): Promise<ToolTurn["results"][number]> {
+  async function runCall(call: ToolCall, context = options.context): Promise<ToolTurn["results"][number]> {
     const started = Date.now();
     const record: ToolCallRecord = { id: call.id, name: call.name, args: call.args, status: "pending", startedAt: started };
     records.push(record);

@@ -203,6 +203,15 @@ export type VoiceSettings = {
   wakeWord: boolean;
   /** Listen for the wake word whenever the app is open (opt-in, shows an indicator). */
   handsFree: boolean;
+  /**
+   * Voice mode's conversation: the app's own (speech recognition, the bot's model, the reply voice
+   * above), or Gemini Live (one model that hears and speaks; the bot's instructions and tools still apply).
+   */
+  conversation: "app" | "gemini-live";
+  /** Gemini Live: the Google Gemini provider whose key it uses ("" = the first one with a key), model and voice. */
+  liveProviderId: string;
+  liveModel: string;
+  liveVoice: string;
 };
 
 export type ThemeConfig = {

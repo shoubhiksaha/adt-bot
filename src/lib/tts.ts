@@ -487,6 +487,75 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
   };
 }
 
+export type PcmPlayer = {
+  /** Queues samples (−1…1) at `rate` Hz right after what's already queued. */
+  push(samples: Float32Array, rate: number): void;
+  /** Stops at once and drops everything queued (the user cut in). */
+  flush(): void;
+  /** Sound is playing or queued. */
+  readonly playing: boolean;
+  /** Resolves when everything queued has been heard. */
+  idle(): Promise<void>;
+};
+
+/**
+ * Plays a voice that arrives as a stream of audio pieces (Gemini Live), gaplessly, through the same
+ * output as the other voices: the echo canceller removes it and the orb follows it.
+ */
+export function createPcmPlayer(): PcmPlayer {
+  const sources = new Set<AudioBufferSourceNode>();
+  let next = 0;
+  let waiters: (() => void)[] = [];
+  const settle = () => {
+    if (sources.size) return;
+    networkPlaying = false;
+    waiters.forEach((w) => w());
+    waiters = [];
+    suspendOutputSoon();
+  };
+  return {
+    push(samples, rate) {
+      if (!samples.length) return;
+      const ctx = audioOutput();
+      const buffer = ctx.createBuffer(1, samples.length, rate);
+      buffer.copyToChannel(samples as Float32Array<ArrayBuffer>, 0);
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(outputNode(ctx));
+      // A little slack before the first piece, so the next one is there before this one ends.
+      const at = Math.max(next, ctx.currentTime + (sources.size ? 0 : 0.06));
+      source.start(at);
+      next = at + buffer.duration;
+      sources.add(source);
+      networkPlaying = true;
+      source.onended = () => {
+        sources.delete(source);
+        settle();
+      };
+    },
+    flush() {
+      for (const source of sources) {
+        source.onended = null;
+        try {
+          source.stop();
+        } catch {
+          // Not started yet.
+        }
+      }
+      sources.clear();
+      next = 0;
+      settle();
+    },
+    get playing() {
+      return sources.size > 0;
+    },
+    idle() {
+      if (!sources.size) return Promise.resolve();
+      return new Promise((resolve) => waiters.push(resolve));
+    },
+  };
+}
+
 /** The speakers' delay: measured for audio the page plays, a safe guess for the system voice. */
 export function outputTailMs(inPage: boolean): number {
   if (!inPage || !output) return 300;

@@ -19,6 +19,7 @@ import {
 import { isMoonshine } from "../../lib/speech-models";
 import { CAPTION_MB } from "../../lib/moonshine-streaming";
 import { localSpeechModel, onSpeechNotice, onWhisperProgress, preloadWhisper, SPEECH_MODELS, type SpeechModel, whisperDownloaded } from "../../lib/whisper";
+import { LIVE_MODELS, LIVE_VOICES } from "../../lib/gemini-live";
 import { ModelInput, Section, Toggle } from "./controls";
 
 export function VoiceSettings() {
@@ -34,6 +35,7 @@ export function VoiceSettings() {
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [speechNotice, setSpeechNotice] = useState("");
   const openaiLike = providers.filter((p) => p.kind === "openai");
+  const geminiKeys = providers.filter((p) => p.kind === "gemini" && p.apiKey);
   const engine = resolveEngine(voice, providers);
   const set = (patch: Partial<typeof voice>) => updateSettings({ voice: { ...voice, ...patch } });
   const wakeName = bots[0]?.nickname?.trim() || bots[0]?.name || "ADT";
@@ -70,6 +72,65 @@ export function VoiceSettings() {
           </div>
         </div>
       </div>
+
+      <Section title="Voice mode conversation" hint="Who hears you and answers in voice mode.">
+        <div className="field">
+          <select
+            id="voice-conversation"
+            className="select"
+            value={voice.conversation}
+            onChange={(e) => set({ conversation: e.target.value as VoiceSettings["conversation"] })}
+          >
+            <option value="app">ADT Bot: your bot's model, with the speech recognition and reply voice below</option>
+            <option value="gemini-live">Gemini 3.8 Live: one model hears you and talks back (most natural and fastest; Google AI key)</option>
+          </select>
+        </div>
+        {voice.conversation === "gemini-live" && (
+          <>
+            {geminiKeys.length === 0 && (
+              <p className="small error-text">Add Google Gemini under Settings → Providers first (a free key from aistudio.google.com).</p>
+            )}
+            {geminiKeys.length > 1 && (
+              <div className="field">
+                <label htmlFor="live-provider">Google AI key</label>
+                <select id="live-provider" className="select" value={voice.liveProviderId} onChange={(e) => set({ liveProviderId: e.target.value })}>
+                  <option value="">First one ({geminiKeys[0].name})</option>
+                  {geminiKeys.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            <div className="field">
+              <label htmlFor="live-model">Model</label>
+              <select id="live-model" className="select" value={voice.liveModel} onChange={(e) => set({ liveModel: e.target.value })}>
+                {LIVE_MODELS.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="live-voice">Voice</label>
+              <select id="live-voice" className="select" value={voice.liveVoice} onChange={(e) => set({ liveVoice: e.target.value })}>
+                {LIVE_VOICES.map((v) => (
+                  <option key={v.name} value={v.name}>
+                    {v.name} ({v.style.toLowerCase()})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <p className="small muted">
+              Your bot's instructions, memories and tools still apply (actions that need your OK are asked aloud), and the conversation is saved in the chat as
+              text. The speech recognition, reply voice and turn settings below aren't used. Google charges about $0.005 a minute for listening and $0.018 a
+              minute for speaking; voice mode pauses after 3 quiet minutes.
+            </p>
+          </>
+        )}
+      </Section>
 
       <Section title="Reply voice" hint="Natural voices sound like Grok's; device voices are free and instant.">
         <div className="field">

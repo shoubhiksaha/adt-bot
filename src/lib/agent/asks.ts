@@ -50,3 +50,27 @@ export function askAloudText(call: Call): string {
   const shortMain = main && main.length > 60 ? `${main.slice(0, 60).replace(/\s+\S*$/, "")}` : main;
   return `Can I ${what}${shortMain ? `: ${shortMain}` : ""}? Say yes or no.`;
 }
+
+/** What the bot is doing during a tool step, for the voice screen. */
+export function activityFor(tool: string): string {
+  const known: Record<string, string> = {
+    mac_screenshot: "Looking at the screen",
+    mac_click: "Clicking",
+    mac_type: "Typing",
+    mac_key: "Pressing keys",
+    mac_scroll: "Scrolling",
+    mac_drag: "Dragging",
+    mac_open_app: "Opening an app",
+    mac_list_apps: "Checking open apps",
+    mac_applescript: "Running a script",
+    run_command: "Running a command",
+    read_file: "Reading a file",
+    write_file: "Saving a file",
+    list_files: "Looking at files",
+    open_on_computer: "Opening it",
+    web_search: "Searching the web",
+    read_url: "Reading a page",
+    ask_bot: "Asking another bot",
+  };
+  return `${known[tool] ?? "Working"}…`;
+}

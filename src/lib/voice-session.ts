@@ -1,4 +1,5 @@
 import { type EarlyReply, sendMessage, setVoiceApprover, setVoiceModeActive, startEarlyReply, stopStreaming, stripMemoryTags } from "./chat";
+import { activityFor } from "./agent/asks";
 import { splitThink } from "./llm";
 import { selectBot, startNewChat, updateSettings, useStore } from "./store";
 import { localChoice, localVoiceReady } from "./local-tts";
@@ -18,29 +19,6 @@ import {
 } from "./voice-commands";
 import { Listener, type ListenerEvent, localSpeechModel, onWhisperProgress, SPEECH_MODELS, toWav } from "./whisper";
 
-/** What the bot is doing during a tool step, for the voice screen. */
-function activityFor(tool: string): string {
-  const known: Record<string, string> = {
-    mac_screenshot: "Looking at the screen",
-    mac_click: "Clicking",
-    mac_type: "Typing",
-    mac_key: "Pressing keys",
-    mac_scroll: "Scrolling",
-    mac_drag: "Dragging",
-    mac_open_app: "Opening an app",
-    mac_list_apps: "Checking open apps",
-    mac_applescript: "Running a script",
-    run_command: "Running a command",
-    read_file: "Reading a file",
-    write_file: "Saving a file",
-    list_files: "Looking at files",
-    open_on_computer: "Opening it",
-    web_search: "Searching the web",
-    read_url: "Reading a page",
-    ask_bot: "Asking another bot",
-  };
-  return `${known[tool] ?? "Working"}…`;
-}
 
 export type VoicePhase = "loading" | "listening" | "hearing" | "thinking" | "speaking" | "standby" | "muted" | "error";
 
@@ -70,6 +48,8 @@ export type VoiceState = {
   wakeName: string;
   /** A tool waiting for the user's OK, asked aloud (answer by voice or with the buttons). */
   approval: { question: string; reason: string } | null;
+  /** Gemini Live is talking, not the app's own speech pipeline. */
+  live?: boolean;
 };
 
 const IDLE_TO_STANDBY_MS = 60_000;

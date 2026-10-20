@@ -4,6 +4,7 @@ import { desktopInvoke, isDesktop } from "../lib/desktop";
 import { useStore } from "../lib/store";
 import { speakable, speechLevel, ttsLabel } from "../lib/tts";
 import { VoiceSession, type VoiceState } from "../lib/voice-session";
+import { LiveVoiceSession } from "../lib/live-session";
 import { isMoonshine } from "../lib/speech-models";
 import { localSpeechModel, SPEECH_MODELS, whisperDownloaded } from "../lib/whisper";
 import { Avatar } from "./Avatar";
@@ -25,7 +26,7 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
   const bot = useStore((s) => s.bots.find((b) => b.id === s.activeBotId));
   const voice = useStore((s) => s.settings.voice);
   const [state, setState] = useState<VoiceState | null>(null);
-  const session = useRef<VoiceSession | null>(null);
+  const session = useRef<VoiceSession | LiveVoiceSession | null>(null);
   // Loading a downloaded model also reports progress; don't call that a download.
   const [cached, setCached] = useState(false);
   useEffect(() => {
@@ -33,7 +34,10 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
   }, [voice.localModel]);
 
   useEffect(() => {
-    const s = new VoiceSession({ onState: setState, onClose, initialRequest });
+    const hooks = { onState: setState, onClose, initialRequest };
+    // Read once: a session keeps the engine it started with.
+    const live = useStore.getState().settings.voice.conversation === "gemini-live";
+    const s = live ? new LiveVoiceSession(hooks) : new VoiceSession(hooks);
     session.current = s;
     setState(s.state);
     void s.start();
@@ -143,7 +147,9 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
         ? "Loading speech model…"
         : `Downloading speech model, one time (${SPEECH_MODELS[speechModel].mb} MB${isMoonshine(speechModel) ? "" : "; about 90 MB more follows in the background for speed"})… ${state.download}%`
       : phase === "standby"
-        ? `Say “Hey ${state.wakeName}” to continue`
+        ? state.live
+          ? "Paused while it's quiet. Tap to carry on."
+          : `Say “Hey ${state.wakeName}” to continue`
         : phase === "thinking" && state.activity
           ? state.activity
           : STATUS[phase];
@@ -158,7 +164,7 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
           {bot.nickname?.trim() && <span className="muted small">“{bot.nickname.trim()}”</span>}
         </span>
         <span className="voice-meta small muted">
-          {state.engineLabel} · {ttsLabel(voice)}
+          {state.live ? state.engineLabel : `${state.engineLabel} · ${ttsLabel(voice)}`}
           {state.latencyMs !== null && (
             <span
               className="latency"
@@ -243,9 +249,11 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
       </div>
 
       <div className="voice-hints small muted">
-        {phase === "standby"
-          ? `Hands-free: say “Hey ${callName}, …” anytime.`
-          : `Talk naturally and pause when done. Say “stop”, “new chat”, “switch to …”, “search for …”, “slower”, or “goodbye”.`}
+        {state.live
+          ? "Talk naturally, and talk over it any time. Say “goodbye” to end."
+          : phase === "standby"
+            ? `Hands-free: say “Hey ${callName}, …” anytime.`
+            : `Talk naturally and pause when done. Say “stop”, “new chat”, “switch to …”, “search for …”, “slower”, or “goodbye”.`}
         <span className="hide-touch"> · Space = {tapLabel.toLowerCase()} · M = mute · Esc = end</span>
       </div>
 

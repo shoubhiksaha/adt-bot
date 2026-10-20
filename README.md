@@ -21,7 +21,7 @@ database or server stack to run.
 | Image creation | Yes | Yes, via OpenRouter, OpenAI, xAI, Gemini or any `/images/generations` server |
 | Reads PDFs, documents, code, links | Yes | Yes: PDFs, text and code files, images, and any link you paste |
 | Personalities | A few built-in modes and companions | Unlimited bots, each with its own personality, model and memory |
-| Voice | Yes | Hands-free voice mode with wake word (“Hey <nickname>”), voice commands, interrupting, live captions, natural voices (OpenAI, ElevenLabs, Fish Audio, Cartesia, Deepgram, Sarvam, Google, Azure, self-hosted Kokoro, or any voice API you add) or free device voices, on every platform |
+| Voice | Yes | Hands-free voice mode with wake word (“Hey <nickname>”), voice commands, interrupting, live captions, Gemini Live speech-to-speech, natural voices (OpenAI, ElevenLabs, Fish Audio, Cartesia, Deepgram, Sarvam, Google, Azure, self-hosted Kokoro, or any voice API you add) or free device voices, on every platform |
 | Your company's look | No | Your name, logo and theme, imported from a logo, brand guide, CSS file or website |
 | Knows your business | Limited | “About us”, custom instructions and knowledge files (PDF, Word, Markdown, HTML…), shared or per bot |
 | Price | Free tier with limits; subscriptions for more | Free app; pay your provider per use, or nothing with local models |
@@ -175,8 +175,9 @@ Click the **sound-wave button** next to the mic for a hands-free conversation:
   words, or "stop"), with any voice. Tapping the orb or pressing Space works too.
 - **It doesn't answer itself.** Its own voice coming back through the microphone (speakers, Bluetooth delay, a
   room's echo), even misheard, is recognised and ignored; when its echo runs into you talking over it, only your
-  words are kept. Natural on-device or cloud voices also get the microphone's echo cancellation; the Mac's built-in
-  voice plays outside the app, so for the cleanest talking-over, use an on-device natural voice.
+  words are kept. Every reply voice also gets the microphone's echo cancellation, the Mac's built-in voices too: the
+  desktop app renders them itself (about 0.1 s a sentence, faster than the system starts speaking) and plays them
+  like any natural voice.
 - **Typed messages get text answers.** Only voice mode speaks, plus, if you turn on Settings → Voice → "Read the
   answer aloud when you dictate", answers to messages you spoke with the mic button.
 - **Voice commands:** “stop”, “new chat”, “switch to Coder”, “search for …”, “draw …”, “repeat that”,
@@ -214,6 +215,16 @@ Google Cloud and Azure, or describe any service yourself (web address, headers, 
 
 For the snappiest conversations, pick a fast **voice model** in Settings → Voice (e.g. Claude Haiku, Gemini Flash
 or Groq) and set “Reply after you pause for” to *Short*.
+
+**Gemini Live** (Settings → Voice → Voice mode conversation → Gemini 3.8 Live): one Google model hears you and talks
+back directly, instead of speech recognition, a chat model and a reply voice in turn, so it answers sooner and sounds
+more natural. It understands 90+ languages and switches between them mid-sentence. Your bot's instructions,
+memories and tools still apply (tools run while it keeps talking; actions that need your OK are asked aloud and
+answered by your own "yes" or "no"), it searches Google for current information, and the conversation is saved in
+the chat as text. It needs a Google AI key (Settings → Providers → Google Gemini; free from
+[AI Studio](https://aistudio.google.com/apikey)); Google charges about $0.005 a minute of listening and $0.018 a
+minute of speaking, and voice mode pauses after 3 quiet minutes. Pick *Gemini 3.8 Live* for the quickest replies or
+*Extended Thinking* for harder tasks, and any of its 30 voices.
 
 ## Make it yours: name, logo, theme
 
@@ -408,10 +419,12 @@ src/lib/chat.ts        Send, search, stream, stop, regenerate, memory, smart tit
 src/lib/search.ts      Web search engines, page reading, citations
 src/lib/imagine.ts     Image generation (OpenRouter, Gemini, OpenAI-style)
 src/lib/voice-session.ts  Hands-free voice conversation: turns, commands, wake word, barge-in
+src/lib/live-session.ts   Voice mode on Gemini Live (gemini-live.ts: the Live API protocol)
 src/lib/speech.worker.ts  Silero VAD + Whisper/Moonshine in a worker (speculative transcription, live captions)
 src/lib/segmenter.ts      Turn detection from voice probabilities
 src/lib/voice-commands.ts Voice commands, wake-word matching, echo detection
 src/lib/tts.ts            Reply voices: device, OpenAI-compatible, ElevenLabs, Fish Audio, Cartesia, Deepgram; sentence streaming
+electron/native/speech-helper.swift  Renders the Mac's built-in voices for the app to play (echo-cancelled)
 src/lib/custom-tts.ts     Voice services you add yourself (templates: Sarvam, Google Cloud, Azure)
 src/lib/voice.ts          Speech engines (browser, Android, Whisper, cloud) for dictation
 src/lib/knowledge.ts      Knowledge files: storage, chunking, BM25 retrieval

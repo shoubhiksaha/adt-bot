@@ -282,7 +282,7 @@ async function* streamOnce(req: ChatRequest, shape: Shape = {}): AsyncGenerator<
 }
 
 /** Gemini accepts an OpenAPI subset: drop JSON-Schema keywords it rejects. */
-function geminiSchema(schema: unknown): unknown {
+export function geminiSchema(schema: unknown): unknown {
   if (Array.isArray(schema)) return schema.map(geminiSchema);
   if (!schema || typeof schema !== "object") return schema;
   const out: Record<string, unknown> = {};

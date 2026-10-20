@@ -718,7 +718,7 @@ function recentQuestion(history: Message[]): string {
     .join(" ");
 }
 
-function titleFrom(text: string): string {
+export function titleFrom(text: string): string {
   const line = text.split("\n")[0].trim();
   return line.length > 48 ? `${line.slice(0, 47)}…` : line;
 }
