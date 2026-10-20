@@ -1,7 +1,9 @@
-import { Ban, Check, ChevronRight, Loader2, MessageSquare, ShieldAlert, Wrench, X } from "lucide-react";
+import { Ban, Check, ChevronRight, Loader2, MessageSquare, ShieldAlert, Undo2, Wrench, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { isPending, onApprovalsChanged } from "../lib/agent/approvals";
+import { describeRewind, type RewindResult, type TurnChanges } from "../lib/agent/rewind";
 import { answerApproval } from "../lib/agent/loop";
+import { desktopInvoke, isDesktop } from "../lib/desktop";
 import { openConversation, useStore } from "../lib/store";
 import { ConnectorApprovalInfo, ConnectorQuestion, isConnectorTool, useQuestionsVersion } from "../features/connectors/ToolCallParts";
 import { openView } from "../features/registry";
@@ -66,7 +68,11 @@ const ASKS: Record<string, string> = {
   mac_recipe_run: "run a recipe",
   delegate_to_cli_agent: "hand a task to a coding agent",
   create_routine: "create a routine",
+  rewind: "undo file changes",
 };
+
+/** Tools whose file changes the desktop side keeps per turn, so the turn can be undone. */
+const FILE_TOOLS = new Set(["write_file", "run_command"]);
 
 const MAIN_ARGS = ["query", "url", "command", "path", "fact", "expression", "prompt", "target", "task", "app", "element", "text", "field", "combo", "script", "name"];
 
@@ -79,6 +85,7 @@ function label(call: ToolCallRecord): string {
   const base = LABELS[call.name] ?? call.name.replace(/^mcp_/, "").replace(/[_-]+/g, " ");
   const main = mainArg(call);
   if (call.name === "mac_press" && !main && typeof call.args.id === "number") return `${base} an element`;
+  if (call.name === "rewind") return call.args.action === "undo" ? "Undid file changes" : "Checked file changes";
   return main ? `${base}: ${main}` : base;
 }
 
@@ -102,7 +109,7 @@ function usePendingVersion() {
 }
 
 /** The tools a bot used for an answer, with approval cards for actions waiting on the user. */
-export function ToolCalls({ calls, live }: { calls: ToolCallRecord[]; live: boolean }) {
+export function ToolCalls({ calls, live, turn }: { calls: ToolCallRecord[]; live: boolean; turn?: string }) {
   usePendingVersion();
   useQuestionsVersion();
   // A connector's question (elicitation) waits on the user like an approval does.
@@ -111,6 +118,7 @@ export function ToolCalls({ calls, live }: { calls: ToolCallRecord[]; live: bool
   const [open, setOpen] = useState(false);
   const expanded = open || waiting || (live && calls.some((c) => c.status === "running"));
   const done = calls.filter((c) => c.status === "done").length;
+  const changedFiles = !live && Boolean(turn) && isDesktop() && calls.some((c) => FILE_TOOLS.has(c.name) && c.status === "done");
 
   return (
     <div className="tool-calls">
@@ -136,6 +144,124 @@ export function ToolCalls({ calls, live }: { calls: ToolCallRecord[]; live: bool
             </div>
           ),
       )}
+      {changedFiles && turn && <UndoFileChanges turn={turn} />}
+    </div>
+  );
+}
+
+type UndoState =
+  | { step: "idle" }
+  | { step: "loading" }
+  | { step: "confirm"; changes: TurnChanges }
+  | { step: "working" }
+  | { step: "done"; text: string };
+
+/**
+ * "Undo this turn's file changes": lists what will be put back, deleted or left alone (files changed
+ * since the bot changed them), and only acts after the user confirms.
+ */
+function UndoFileChanges({ turn }: { turn: string }) {
+  const [state, setState] = useState<UndoState>({ step: "idle" });
+  const [force, setForce] = useState(false);
+
+  const load = async () => {
+    setState({ step: "loading" });
+    try {
+      const changes = await desktopInvoke<TurnChanges>("adt:system:changes", { turn });
+      if (!changes.files.length) setState({ step: "done", text: "No file changes to undo (they're kept for 7 days, and an undone turn can't be undone twice)." });
+      else {
+        setForce(false);
+        setState({ step: "confirm", changes });
+      }
+    } catch (error) {
+      setState({ step: "done", text: `Couldn't read this turn's file changes: ${(error as Error).message}` });
+    }
+  };
+
+  const undo = async () => {
+    setState({ step: "working" });
+    try {
+      setState({ step: "done", text: describeRewind(await desktopInvoke<RewindResult>("adt:system:rewind", { turn, force, by: "user" })) });
+    } catch (error) {
+      setState({ step: "done", text: `Couldn't undo: ${(error as Error).message}` });
+    }
+  };
+
+  if (state.step === "idle" || state.step === "loading") {
+    return (
+      <div className="tool-undo">
+        <button type="button" className="link-btn" onClick={load} disabled={state.step === "loading"}>
+          {state.step === "loading" ? <Loader2 size={13} className="spin" /> : <Undo2 size={13} />} Undo this turn's file changes
+        </button>
+      </div>
+    );
+  }
+  if (state.step === "working") {
+    return (
+      <div className="tool-undo small muted">
+        <Loader2 size={13} className="spin" /> Undoing…
+      </div>
+    );
+  }
+  if (state.step === "done") {
+    return (
+      <div className="tool-undo small muted">
+        {state.text}{" "}
+        <button type="button" className="link-btn" onClick={load}>
+          Check again
+        </button>
+      </div>
+    );
+  }
+
+  const files = state.changes.files;
+  const ready = files.filter((f) => f.restorable && !f.changedSince);
+  const newer = files.filter((f) => f.restorable && f.changedSince);
+  const stuck = files.filter((f) => !f.restorable);
+  const restore = ready.filter((f) => f.change !== "created");
+  const remove = ready.filter((f) => f.change === "created");
+  const list = (items: TurnChanges["files"]) => <pre className="approval-detail">{items.map((f) => f.path).join("\n")}</pre>;
+  return (
+    <div className="approval-card tool-undo-card" role="group" aria-label="Undo file changes">
+      <div className="approval-title">
+        <Undo2 size={15} /> Undo this turn's file changes?
+      </div>
+      {restore.length > 0 && (
+        <>
+          <div className="small">Put back as they were before this turn:</div>
+          {list(restore)}
+        </>
+      )}
+      {remove.length > 0 && (
+        <>
+          <div className="small">Delete (the bot created them):</div>
+          {list(remove)}
+        </>
+      )}
+      {newer.length > 0 && (
+        <>
+          <div className="small">Changed again after the bot changed them, so left as they are:</div>
+          {list(newer)}
+          <label className="toggle small">
+            <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
+            <span>Undo these too (the newer changes are lost)</span>
+          </label>
+        </>
+      )}
+      {stuck.length > 0 && (
+        <>
+          <div className="small muted">Can't be undone (too big to keep a copy):</div>
+          {list(stuck)}
+        </>
+      )}
+      <div className="btn-row">
+        <button type="button" className="btn primary" onClick={undo} disabled={!ready.length && !(force && newer.length)}>
+          Undo changes
+        </button>
+        <button type="button" className="btn" onClick={() => setState({ step: "idle" })}>
+          Cancel
+        </button>
+      </div>
     </div>
   );
 }

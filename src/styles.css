@@ -2135,6 +2135,23 @@ input[type="color"] {
 .tool-progress {
   padding: 0 6px 4px 28px;
 }
+.tool-undo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 0 11px 8px;
+}
+.tool-undo .link-btn {
+  margin: 0;
+  font-size: 13px;
+}
+.tool-undo-card {
+  margin: 0 8px 8px;
+}
+.tool-undo-card .toggle {
+  margin: 0 0 8px;
+}
 .approval-card {
   margin: 4px 6px 6px;
   padding: 10px 12px;

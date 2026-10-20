@@ -188,7 +188,7 @@ export const MessageItem = memo(function MessageItem({
             <BookOpen size={13} /> {message.knowledge.join(", ")}
           </div>
         )}
-        {message.toolCalls && message.toolCalls.length > 0 && <ToolCalls calls={message.toolCalls} live={live} />}
+        {message.toolCalls && message.toolCalls.length > 0 && <ToolCalls calls={message.toolCalls} live={live} turn={message.id} />}
         {reasoning && (
           <details className="reasoning" open={thinkingNow}>
             <summary>

@@ -4,6 +4,7 @@ import { knowledgeContext } from "../knowledge";
 import { memoryIsLarge, searchMemory } from "../memory-recall";
 import { readPage, webSearch } from "../search";
 import { addMemory, useStore } from "../store";
+import { describeChanges, describeRewind, type RewindResult, type TurnChanges } from "./rewind";
 import { registerTool, registerToolGroup, str, type ToolRisk } from "./tools";
 import { isDuplicate, screen } from "./vendor/openbot/memoryFilter";
 
@@ -280,6 +281,9 @@ registerTool({
       command: str(args, "command"),
       cwd: str(args, "cwd") || undefined,
       timeoutMs: RUN_TIMEOUT_MS - 5_000,
+      // The desktop side snapshots the workspace first, so this turn's changes can be undone.
+      turn: ctx.turnId,
+      conversation: ctx.conversationId,
     }).finally(() => ctx.signal.removeEventListener("abort", cancel));
     const text = `${result.output.trim() || "(no output)"}\n[exit code ${result.code}]`;
     return { content: text, display: { kind: "terminal", text: `$ ${str(args, "command")}\n${text}` }, untrustedSource: "command output" };
@@ -327,14 +331,55 @@ registerTool({
   },
   riskFor: (args) => writeRisk(String(args.path ?? ""), args.overwrite === true && !args.append),
   sandboxed: (args) => insideWorkspace(String(args.path ?? "")),
-  async run(args) {
+  async run(args, ctx) {
     const result = await desktopInvoke<{ path: string; size: number }>("adt:system:write", {
       path: str(args, "path"),
       content: str(args, "content"),
       append: Boolean(args.append),
       overwrite: args.overwrite === true,
+      // The file's earlier version is kept with this turn, so it can be undone.
+      turn: ctx.turnId,
+      conversation: ctx.conversationId,
     });
     return `Saved ${result.path} (${result.size} bytes).`;
+  },
+});
+
+registerTool({
+  name: "rewind",
+  group: "local",
+  risk: "write",
+  kind: "write",
+  platforms: ["desktop"],
+  description:
+    "Undo file changes bots made in this chat: write_file anywhere, and commands run in the ADT Bot Workspace folder (kept for 7 days). " +
+    "action list: the turns of this chat with file changes, newest first. action undo: put a turn's files back as they were and delete the files it created (turn: an id from list; default the latest). " +
+    "Files someone changed after the bot did are left alone unless force is true (asks the user).",
+  parameters: {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ["list", "undo"], description: "Default list" },
+      turn: { type: "string", description: "undo: the turn's id from list (default: the latest)" },
+      force: { type: "boolean", description: "undo: also overwrite files changed since" },
+    },
+  },
+  riskFor: (args): ToolRisk => (str(args, "action", "list") !== "undo" ? "read" : args.force === true ? "destructive" : "write"),
+  // The desktop side keeps Sandbox mode to files inside the workspace.
+  sandboxed: () => true,
+  async run(args, ctx) {
+    const turns = (await desktopInvoke<TurnChanges[]>("adt:system:change-turns", { conversation: ctx.conversationId })).filter((t) => t.files.length);
+    if (str(args, "action", "list") !== "undo") {
+      if (!turns.length) return "No file changes from bots in this chat (or they're more than 7 days old).";
+      return `Turns in this chat with file changes, newest first:\n${turns
+        .slice(0, 20)
+        .map((t) => `- turn ${t.turn}${t.turn === ctx.turnId ? " (this one)" : ""}, ${new Date(t.at).toLocaleString()}: ${describeChanges(t.files)}`)
+        .join("\n")}`;
+    }
+    const turn = str(args, "turn") || turns[0]?.turn;
+    if (!turn) return "There are no file changes to undo in this chat.";
+    if (!turns.some((t) => t.turn === turn)) throw new Error(`No file changes are kept for turn ${turn} in this chat. Use action list.`);
+    const result = await desktopInvoke<RewindResult>("adt:system:rewind", { turn, force: args.force === true, by: "bot" });
+    return describeRewind(result) + (result.conflicts.length && args.force !== true ? " To undo those too, call rewind again with force: true (the user will be asked)." : "");
   },
 });
 

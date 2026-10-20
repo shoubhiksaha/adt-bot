@@ -5,8 +5,12 @@ const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { createSnapshots, plainIo, validTurn } = require("../rewind.cjs");
 
 const MAX_OUTPUT = 200_000;
+
+/** Earlier versions of files bots changed, per turn, for undo (electron/rewind.cjs). Set up in register(). */
+let snapshots = null;
 const ACCESS_MODES = new Set(["sandbox", "restricted", "full"]);
 
 /** Shared with the other features (main.cjs); the app keeps it in step with the setting. */
@@ -198,7 +202,29 @@ function stopAllCommands() {
   for (const id of [...running.keys()]) stopCommand(id);
 }
 
-function exec({ id, command, cwd, timeoutMs = 120000 }, mode = access.mode) {
+/**
+ * Commands run in the workspace get a snapshot of it first (bounded: see electron/rewind.cjs), so
+ * the turn's changes to its files can be undone. Commands elsewhere can't be covered.
+ */
+function snapshotWorkspace(turn, conversation, dir, sandboxed) {
+  if (!snapshots || !validTurn(turn) || !inWorkspace(dir)) return null;
+  try {
+    return snapshots.beforeCommand(turn, workspaceDir(), { conversation, confined: sandboxed });
+  } catch {
+    return null;
+  }
+}
+
+function finishSnapshot(snap) {
+  if (!snap) return;
+  try {
+    snapshots?.afterCommand(snap);
+  } catch (error) {
+    console.warn("Couldn't record the command's file changes:", error);
+  }
+}
+
+function exec({ id, command, cwd, timeoutMs = 120000, turn, conversation }, mode = access.mode) {
   return new Promise((resolve) => {
     let bin;
     let args;
@@ -218,6 +244,7 @@ function exec({ id, command, cwd, timeoutMs = 120000 }, mode = access.mode) {
     } catch (error) {
       return resolve({ code: -1, output: String(error.message) });
     }
+    const snap = snapshotWorkspace(turn, conversation, dir, sandboxed);
     // Its own process group, so Stop and the time limit end everything it started.
     const child = spawn(bin, args, { cwd: dir, env, detached: process.platform !== "win32" });
     const key = id ? String(id) : `cmd-${child.pid}-${Date.now()}`;
@@ -240,11 +267,13 @@ function exec({ id, command, cwd, timeoutMs = 120000 }, mode = access.mode) {
       // purpose (`npm run dev &`) keep running. Stop and the time limit still end the whole group.
       if (sandboxed) killGroup(child);
       if (child.stoppedByUser) output += "\n[stopped]";
+      finishSnapshot(snap);
       resolve({ code, output: output.length >= MAX_OUTPUT ? `${output}\n[output cut]` : output });
     });
     child.on("error", (error) => {
       clearTimeout(timer);
       running.delete(key);
+      finishSnapshot(snap);
       resolve({ code: -1, output: String(error.message) });
     });
   });
@@ -290,6 +319,49 @@ for f in * .[!.]* ..?*; do
   printf '%s\\t%s\\t%s\\n' "$t" "\${n:-0}" "$f"
 done`;
 
+/** Snapshots and undo in Sandbox mode read and write workspace files through the sandbox too. */
+const confinedIo = {
+  async read(file) {
+    const out = await runSandboxed('[ -f "$1" ] || { printf N; exit 0; }; printf Y; cat -- "$1"', [file]);
+    return out[0] === 0x59 ? out.subarray(1) : null;
+  },
+  async write(file, buffer) {
+    await runSandboxed(WRITE_SCRIPT, [file, "w"], { input: buffer });
+  },
+  async remove(file) {
+    await runSandboxed('rm -f -- "$1"', [file]);
+  },
+};
+
+/** What a file held before write_file changes it, when this call belongs to a turn. Undo is best effort: never fails the write. */
+async function snapshotBefore(turn, file, mode) {
+  if (!snapshots || !validTurn(turn)) return null;
+  try {
+    return await snapshots.capture(file, mode === "sandbox" && canSandbox() ? confinedIo : plainIo);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Undoes a turn's file changes. In Sandbox mode a bot can only undo inside the workspace (the user
+ * can undo anything the list showed them), and workspace files are written through the sandbox.
+ */
+function restoreTurn({ turn, force = false, by = "user" } = {}, mode = access.mode) {
+  if (!snapshots) throw new Error("Undo isn't available.");
+  const sandboxed = mode === "sandbox";
+  const viaSandbox = (file) => sandboxed && canSandbox() && inWorkspace(file);
+  return snapshots.restore(String(turn ?? ""), {
+    force: force === true,
+    allow: (file) => !(sandboxed && by === "bot") || inWorkspace(file),
+    io: {
+      read: plainIo.read,
+      write: (file, buffer, fileMode) => (viaSandbox(file) ? confinedIo.write(file, buffer) : plainIo.write(file, buffer, fileMode)),
+      remove: (file) => (viaSandbox(file) ? confinedIo.remove(file) : plainIo.remove(file)),
+    },
+  });
+}
+
 function toFile(buffer, file, maxBytes) {
   const slice = buffer.subarray(0, maxBytes);
   if (slice.includes(0)) return { path: file, binary: true, size: buffer.length, text: "" };
@@ -309,21 +381,32 @@ async function readFile({ path: p, maxBytes = 400000 } = {}, mode = access.mode)
   return toFile(fs.readFileSync(file), file, maxBytes);
 }
 
-async function writeFile({ path: p, content = "", append = false, overwrite = false } = {}, mode = access.mode) {
+async function writeFile({ path: p, content = "", append = false, overwrite = false, turn, conversation } = {}, mode = access.mode) {
   const file = confine(resolvePath(p), mode);
   // Replacing a file outside the workspace is destructive: the app asks first only when the bot
   // says so (overwrite), so refuse a silent replace here.
   if (!append && !overwrite && mode !== "sandbox" && !inWorkspace(file) && exists(file)) {
     throw new Error(`${file} already exists. To replace it, call write_file again with overwrite: true (the user will be asked), or use append.`);
   }
+  const before = await snapshotBefore(turn, file, mode);
+  let result;
   if (mode === "sandbox" && canSandbox()) {
     const out = await runSandboxed(WRITE_SCRIPT, [file, append ? "a" : "w"], { input: String(content) });
-    return { path: file, size: Number(out.toString().trim()) || 0 };
+    result = { path: file, size: Number(out.toString().trim()) || 0 };
+  } else {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    if (append) fs.appendFileSync(file, String(content));
+    else fs.writeFileSync(file, String(content));
+    result = { path: file, size: fs.statSync(file).size };
   }
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  if (append) fs.appendFileSync(file, String(content));
-  else fs.writeFileSync(file, String(content));
-  return { path: file, size: fs.statSync(file).size };
+  if (before) {
+    try {
+      snapshots.record(turn, file, before, { conversation, tool: "write_file" });
+    } catch (error) {
+      console.warn("Couldn't keep the file's earlier version:", error);
+    }
+  }
+  return result;
 }
 
 async function listFiles({ path: p } = {}, mode = access.mode) {
@@ -397,7 +480,17 @@ exports.register = (ctx) => {
   ipcMain.handle("adt:system:write", (_e, payload) => writeFile(payload ?? {}));
   ipcMain.handle("adt:system:list", (_e, payload) => listFiles(payload ?? {}));
   ipcMain.handle("adt:system:open", (_e, { target } = {}) => openTarget(shell, target));
+  // Undo ("rewind") for bots' file changes, kept per turn in the app's data folder.
+  snapshots = createSnapshots({ dir: path.join(ctx.userData ?? path.join(os.homedir(), ".adt-bot"), "rewind") });
+  setTimeout(() => snapshots.prune(true), 30_000).unref?.();
+  ipcMain.handle("adt:system:changes", (_e, { turn } = {}) => snapshots.changes(String(turn ?? "")));
+  ipcMain.handle("adt:system:change-turns", (_e, { conversation } = {}) => snapshots.turns(String(conversation ?? "")));
+  ipcMain.handle("adt:system:rewind", (_e, payload) => restoreTurn(payload ?? {}));
 };
 
 exports.stopAllCommands = stopAllCommands;
-exports._test = { resolvePath, exec, stopCommand, stopAllCommands, workspaceDir, confine, sandboxCommand, openTarget, readFile, writeFile, listFiles, MAC_PROFILE };
+exports._test = {
+  resolvePath, exec, stopCommand, stopAllCommands, workspaceDir, confine, sandboxCommand, openTarget, readFile, writeFile, listFiles, restoreTurn, MAC_PROFILE,
+  /** Tests use their own snapshot store. */
+  useSnapshots: (store) => (snapshots = store),
+};

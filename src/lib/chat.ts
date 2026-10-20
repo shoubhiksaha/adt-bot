@@ -525,6 +525,8 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
             platform,
             signal,
             progress: () => undefined,
+            // File changes are kept under this reply's id, for "Undo this turn's file changes".
+            turnId: reply.id,
             unattended: opts.voice || opts.unattended,
             shared: opts.shared,
             taint,
