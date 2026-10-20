@@ -99,10 +99,27 @@ const STOPWORDS = new Set(
   ),
 );
 
+/** Chinese and Japanese are written without spaces. */
+const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u;
+
 export function tokenize(text: string): string[] {
-  return (text.toLowerCase().normalize("NFKD").match(/[\p{L}\p{N}]{2,}/gu) ?? [])
-    .filter((w) => !STOPWORDS.has(w))
-    .map((w) => (w.length > 4 ? w.replace(/(ing|ed|es|s)$/, "") : w));
+  const words =
+    text
+      .toLowerCase()
+      .normalize("NFKD")
+      // Accents off Latin, Greek and Cyrillic letters, so "clinica" finds "clínica". Other marks are
+      // part of the letter (Hindi and Bengali vowel signs): they stay inside the word.
+      .replace(/[\u0300-\u036f]/g, "")
+      .match(/[\p{L}\p{M}\p{N}]+/gu) ?? [];
+  const tokens: string[] = [];
+  for (const w of words) {
+    if (CJK.test(w)) {
+      // No spaces to split on: match pairs of characters ("在宅勤務" → 在宅, 宅勤, 勤務).
+      if (w.length < 3) tokens.push(w);
+      else for (let i = 0; i < w.length - 1; i++) tokens.push(w.slice(i, i + 2));
+    } else if (w.length >= 2 && !STOPWORDS.has(w)) tokens.push(w.length > 4 ? w.replace(/(ing|ed|es|s)$/, "") : w);
+  }
+  return tokens;
 }
 
 /** BM25 ranking of passages against the question. */
