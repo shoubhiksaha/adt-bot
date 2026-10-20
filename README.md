@@ -171,8 +171,12 @@ Click the **sound-wave button** next to the mic for a hands-free conversation:
 - **Supertonic 3** adds a free, private, offline natural reply voice in 31 languages (398 MB download, faster with a
   GPU). Its model license is [OpenRAIL-M](https://huggingface.co/Supertone/supertonic-3/blob/main/LICENSE): no
   impersonating people without consent, and don't pass its speech off as a human's.
-- **Interrupt any time** by talking (instantly with natural voices; device voices check it isn't hearing itself), by
-  tapping the orb, or by pressing Space.
+- **Interrupt any time** by just talking over it: it stops as soon as the live captions show it's you (a few
+  words, or "stop"), with any voice. Tapping the orb or pressing Space works too.
+- **It doesn't answer itself.** Its own voice coming back through the microphone (speakers, Bluetooth delay, a
+  room's echo), even misheard, is recognised and ignored; when its echo runs into you talking over it, only your
+  words are kept. Natural on-device or cloud voices also get the microphone's echo cancellation; the Mac's built-in
+  voice plays outside the app, so for the cleanest talking-over, use an on-device natural voice.
 - **Typed messages get text answers.** Only voice mode speaks, plus, if you turn on Settings → Voice → "Read the
   answer aloud when you dictate", answers to messages you spoke with the mic button.
 - **Voice commands:** “stop”, “new chat”, “switch to Coder”, “search for …”, “draw …”, “repeat that”,

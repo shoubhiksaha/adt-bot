@@ -4,7 +4,17 @@ import { selectBot, startNewChat, updateSettings, useStore } from "./store";
 import { localChoice, localVoiceReady } from "./local-tts";
 import { chime, createSpeaker, duckSpeech, type Speaker, takeSentences } from "./tts";
 import { END_SILENCE_MS, type Engine, ENGINE_LABELS, listen, type ListenSession, resolveEngine, stopReadAloud, transcribe } from "./voice";
-import { isEcho, isLikelyHallucination, isSubstantial, matchWakeWord, normalize, parseVoiceCommand, yesOrNo } from "./voice-commands";
+import {
+  echoesLastWords,
+  isLikelyHallucination,
+  isSubstantial,
+  matchWakeWord,
+  normalize,
+  parseVoiceCommand,
+  soundsLikeUser,
+  userPart,
+  yesOrNo,
+} from "./voice-commands";
 import { Listener, type ListenerEvent, localSpeechModel, onWhisperProgress, SPEECH_MODELS, toWav } from "./whisper";
 
 /** What the bot is doing during a tool step, for the voice screen. */
@@ -64,6 +74,8 @@ export type VoiceState = {
 const IDLE_TO_STANDBY_MS = 60_000;
 /** Sound starting this soon after the bot stopped talking is checked for being its echo. */
 const ECHO_TAIL_MS = 450;
+/** Sound starting this soon after the bot's voice really ended is checked for being its last words. */
+const LATE_ECHO_MS = 2000;
 /** While tools work silently, say "Still working on it" after this long without speaking. */
 const STILL_WORKING_MS = 8000;
 
@@ -104,6 +116,8 @@ export class VoiceSession {
   private offProgress: (() => void) | null = null;
   /** The current speech segment began while the bot was talking, so it may be the bot's own voice. */
   private segmentDuringSpeech = false;
+  /** When the sound being transcribed started (to tell a late echo from a reply). */
+  private segmentStartedAt = 0;
   /** What the bot said last, to recognise its echo arriving just after it stops. */
   private lastSpoken = "";
   /** When the bot last stopped speaking: sound right after it may be its echo (room, Bluetooth delay). */
@@ -142,8 +156,13 @@ export class VoiceSession {
 
   private set(patch: Partial<VoiceState>) {
     if (this.closed) return;
-    // Live captions cost a Whisper run each, so they only run while the user is the one talking.
-    if (patch.phase && patch.phase !== this.state.phase) this.listener?.setPartials(patch.phase === "listening" || patch.phase === "hearing");
+    // Live captions only run while someone may be talking to the bot: the user, or the user cutting
+    // in while it speaks or thinks (the caption shows it's them, so it stops at once). They cost
+    // nothing while the room is quiet: captions only run on sound the detector took for speech.
+    if (patch.phase && patch.phase !== this.state.phase) {
+      const p = patch.phase;
+      this.listener?.setPartials(p === "listening" || p === "hearing" || p === "speaking" || p === "thinking");
+    }
     this.state = { ...this.state, ...patch };
     this.hooks.onState(this.state);
   }
@@ -155,7 +174,8 @@ export class VoiceSession {
   private micLevel = 0;
   inputLevel(): number {
     const phase = this.state.phase;
-    return phase === "listening" || phase === "hearing" || phase === "standby" ? this.micLevel : 0;
+    if (phase !== "listening" && phase !== "hearing" && phase !== "standby") return 0;
+    return this.listener?.level?.() ?? this.micLevel;
   }
 
   /** Current phase (a method, so checks after an await aren't narrowed away by TypeScript). */
@@ -240,6 +260,21 @@ export class VoiceSession {
     if (notify) this.hooks.onClose();
   }
 
+  /** What the bot said lately: its own voice may come back through the microphone as any of it. */
+  private recentSpeech(): string {
+    return `${this.lastSpoken} ${this.speaker?.spoken ?? ""}`.slice(-900);
+  }
+
+  /**
+   * Live caption heard while the bot talks: is it the user cutting in (a command like "stop", or
+   * two or more real words that aren't the bot's own voice coming back)?
+   */
+  private isCutIn(caption: string): boolean {
+    if (this.approval || this.bargeMode() === "off") return false;
+    if (parseVoiceCommand(caption, useStore.getState().bots)?.type === "stop") return true;
+    return soundsLikeUser(caption, this.recentSpeech());
+  }
+
   /**
    * A tool needs the user's OK in the middle of a reply: ask aloud with the reply's voice, show the
    * question with Allow / Don't allow, and take the next thing they say as the answer. No answer in
@@ -264,7 +299,7 @@ export class VoiceSession {
       void speaker.idle().then(() => {
         if (this.approval !== pending) return;
         this.lastSpoken = speaker.spoken;
-        this.speechEndedAt = performance.now();
+        this.speechEndedAt = performance.now() + speaker.tailMs;
         this.listener?.setSensitivity("normal");
         this.set({ phase: "listening", partial: "" });
       });
@@ -358,6 +393,7 @@ export class VoiceSession {
     }
     if (event.type === "start") {
       this.clearIdle();
+      this.segmentStartedAt = performance.now();
       this.segmentDuringSpeech = phase === "speaking" || phase === "thinking" || performance.now() - this.speechEndedAt < ECHO_TAIL_MS;
       if (phase === "listening") this.set({ phase: "hearing", partial: "" });
       return;
@@ -396,7 +432,13 @@ export class VoiceSession {
       return;
     }
     if (event.type === "partial") {
-      if (this.state.phase === "hearing") this.set({ partial: event.text });
+      const now = this.state.phase;
+      if (now === "hearing") this.set({ partial: event.text });
+      else if ((now === "speaking" || now === "thinking") && this.isCutIn(event.text)) {
+        // Talking over the bot: stop it now, while the user is still mid-sentence.
+        this.interrupt();
+        this.set({ phase: "hearing", partial: event.text });
+      }
       return;
     }
     if (event.type === "error") {
@@ -481,6 +523,7 @@ export class VoiceSession {
    */
   private startEarly(text: string) {
     if (this.approval) return;
+    if (this.segmentStartedAt - this.speechEndedAt < LATE_ECHO_MS && echoesLastWords(text, this.lastSpoken)) return;
     if (!this.context().voice.earlyReply || this.phase() !== "hearing" || this.segmentDuringSpeech) return;
     if (this.early && sameWords(this.early.text, text)) return;
     this.dropEarly();
@@ -508,7 +551,7 @@ export class VoiceSession {
     // A tool is waiting on the user's OK: this is the answer (or our own question coming back).
     if (this.approval && text) {
       early?.discard();
-      if (isEcho(text, this.lastSpoken)) return;
+      if (echoesLastWords(text, this.lastSpoken)) return;
       const answer = yesOrNo(text);
       if (answer) this.answerApproval(answer);
       else this.set({ heard: text, partial: "" });
@@ -521,7 +564,26 @@ export class VoiceSession {
       return;
     }
     // Started while the bot was talking but finished after it stopped: drop it if it's the bot's own voice.
-    if (duringSpeech && (phase === "listening" || phase === "hearing") && isEcho(text, this.lastSpoken)) {
+    const command = parseVoiceCommand(text, useStore.getState().bots);
+    if (duringSpeech && !command) {
+      // Began while the bot was talking: its own voice, or the user (maybe both, echo first).
+      const own = userPart(text, this.recentSpeech());
+      if (own === null) {
+        early?.discard();
+        this.unduck();
+        if (phase === "hearing") this.enterListening();
+        return;
+      }
+      if (own !== text) {
+        early?.discard();
+        early = null;
+        text = own;
+      }
+    }
+    // Started just after the bot stopped, and it's the bot's last words: a late echo (speaker delay,
+    // Bluetooth, reverb), not the user.
+    const sinceVoiceEnded = this.segmentStartedAt - this.speechEndedAt;
+    if (!duringSpeech && (phase === "listening" || phase === "hearing") && sinceVoiceEnded < LATE_ECHO_MS && echoesLastWords(text, this.lastSpoken)) {
       early?.discard();
       if (phase === "hearing") this.enterListening();
       return;
@@ -541,8 +603,8 @@ export class VoiceSession {
       return;
     }
     if (phase === "speaking") {
-      // Heard during our own speech: ignore it if it's just our voice coming back.
-      if (this.bargeMode() === "off" || isEcho(text, this.speaker?.spoken ?? "")) {
+      // Heard during our own speech (already checked above for being our voice coming back).
+      if (this.bargeMode() === "off") {
         this.unduck();
         return;
       }
@@ -641,7 +703,8 @@ export class VoiceSession {
     speaker.say(text);
     await speaker.idle();
     this.lastSpoken = speaker.spoken;
-    this.speechEndedAt = performance.now();
+    // The voice is still coming out of the speakers for a moment after playback ends here.
+    this.speechEndedAt = performance.now() + speaker.tailMs;
     return turn === this.turn && !this.closed;
   }
 
@@ -802,7 +865,8 @@ export class VoiceSession {
     }
     await speaker.idle();
     this.lastSpoken = speaker.spoken;
-    this.speechEndedAt = performance.now();
+    // The voice is still coming out of the speakers for a moment after playback ends here.
+    this.speechEndedAt = performance.now() + speaker.tailMs;
     if (turn !== this.turn || this.closed) return;
     this.lastReply = this.state.reply;
     this.enterListening();
@@ -813,7 +877,7 @@ export class VoiceSession {
     this.dropEarly();
     if (this.speaker) {
       this.lastSpoken = this.speaker.spoken;
-      if (this.speaker.speaking) this.speechEndedAt = performance.now();
+      if (this.speaker.speaking) this.speechEndedAt = performance.now() + this.speaker.tailMs;
     }
     this.speaker?.stop();
     this.speaker = null;

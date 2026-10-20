@@ -175,6 +175,11 @@ export type Speaker = {
   readonly spoken: string;
   /** Audio is played by the page, so the microphone's echo canceller can remove it. */
   readonly inPageAudio: boolean;
+  /**
+   * How long sound keeps coming out of the speakers after playback "ends" here (output buffering,
+   * Bluetooth): the bot's last words can reach the microphone this much later.
+   */
+  readonly tailMs: number;
 };
 
 export type TtsContext = { voice: VoiceSettings; providers: ProviderConfig[]; useProxy: boolean };
@@ -437,7 +442,17 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
     get inPageAudio() {
       return network && !deviceStandIn;
     },
+    get tailMs() {
+      return outputTailMs(network && !deviceStandIn);
+    },
   };
+}
+
+/** The speakers' delay: measured for audio the page plays, a safe guess for the system voice. */
+export function outputTailMs(inPage: boolean): number {
+  if (!inPage || !output) return 300;
+  const latency = (output.outputLatency || 0) + (output.baseLatency || 0);
+  return Math.round(Math.min(1500, latency * 1000) + 80);
 }
 
 /** Natural-voice services that only need an API key: how each one is called. */

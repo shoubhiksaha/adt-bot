@@ -56,14 +56,19 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
     let frame = 0;
     let level = 0;
     let written = "";
-    const tick = () => {
+    let last = performance.now();
+    const tick = (now: number) => {
       const s = session.current;
       const phase = s?.state.phase;
       const quiet = !s || still?.matches || phase === "muted" || phase === "error" || phase === "loading";
       const target = quiet ? 0 : phase === "speaking" ? speechLevel() : s.inputLevel();
-      // Rise fast, fall slower, like a VU meter.
-      level += (target - level) * (target > level ? 0.45 : 0.12);
-      const value = level < 0.004 ? "0" : level.toFixed(2);
+      // Rise fast, fall slower, like a VU meter. Timed, not per frame, so it moves the same at 60 Hz
+      // and 120 Hz (and catches up smoothly after a slow frame).
+      const dt = Math.min(100, Math.max(0, now - last));
+      last = now;
+      const tau = target > level ? 45 : 170;
+      level += (target - level) * (1 - Math.exp(-dt / tau));
+      const value = level < 0.004 ? "0" : level.toFixed(3);
       if (value !== written) {
         written = value;
         orb.current?.style.setProperty("--level", value);
@@ -173,15 +178,19 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
       </div>
 
       <div className="voice-center">
-        <button
-          type="button"
-          ref={orb}
-          className={`orb ${phase}`}
-          onClick={() => session.current?.tap()}
-          aria-label={tapLabel}
-        >
-          {(phase === "standby" || phase === "muted") && (phase === "muted" ? <MicOff size={34} /> : <Mic size={34} />)}
-        </button>
+        {/* Breathing (thinking, standby) lives on the wrapper, the sound on the orb: both animate
+            on the compositor and combine, instead of one replacing the other's transform. */}
+        <div className={`orb-breath ${phase}`}>
+          <button
+            type="button"
+            ref={orb}
+            className={`orb ${phase}`}
+            onClick={() => session.current?.tap()}
+            aria-label={tapLabel}
+          >
+            {(phase === "standby" || phase === "muted") && (phase === "muted" ? <MicOff size={34} /> : <Mic size={34} />)}
+          </button>
+        </div>
         <div className="voice-status">{status}</div>
         {state.approval && (
           <div className="voice-approval" role="alertdialog" aria-label="The bot is asking for your OK">

@@ -183,6 +183,9 @@ export class Listener {
   private stream: MediaStream | null = null;
   private context: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
+  /** The microphone's loudness, read on the page every frame (the orb), not via the worker. */
+  private analyser: AnalyserNode | null = null;
+  private levelSamples: Float32Array<ArrayBuffer> | null = null;
   private options: ListenerOptions | null = null;
   private closed = false;
   private muted = false;
@@ -263,6 +266,10 @@ export class Listener {
     const silent = this.context.createGain();
     silent.gain.value = 0;
     source.connect(this.node).connect(silent).connect(this.context.destination);
+    this.analyser = this.context.createAnalyser();
+    this.analyser.fftSize = 512;
+    this.levelSamples = new Float32Array(this.analyser.fftSize);
+    source.connect(this.analyser);
     if (this.context.state === "suspended") await this.context.resume();
 
     const channel = new MessageChannel();
@@ -323,6 +330,8 @@ export class Listener {
   private release() {
     this.node?.disconnect();
     this.node = null;
+    this.analyser?.disconnect();
+    this.analyser = null;
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
     void this.context?.close().catch(() => undefined);
@@ -342,6 +351,19 @@ export class Listener {
     this.muted = muted;
     this.lastFrameAt = performance.now();
     this.configure({ muted });
+  }
+
+  /**
+   * How loud the microphone is right now, 0–1 (about -60 dB to -12 dB). Cheap enough to call every
+   * animation frame; the worker's level arrives in bursts, so the orb would stutter on it.
+   */
+  level(): number | null {
+    if (!this.analyser || !this.levelSamples || this.muted) return null;
+    this.analyser.getFloatTimeDomainData(this.levelSamples);
+    let sum = 0;
+    for (let i = 0; i < this.levelSamples.length; i++) sum += this.levelSamples[i] * this.levelSamples[i];
+    const db = 10 * Math.log10(sum / this.levelSamples.length + 1e-12);
+    return Math.min(1, Math.max(0, (db + 60) / 48));
   }
 
   setPartials(partials: boolean) {

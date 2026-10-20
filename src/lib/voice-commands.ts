@@ -128,6 +128,129 @@ export function isEcho(heard: string, spoken: string): boolean {
   return overlap >= 0.6;
 }
 
+/** Two words that speech-to-text could have heard for each other ("Rome" / "room", "Sayan" / "Sayen"). */
+function similar(a: string, b: string): boolean {
+  if (a === b) return true;
+  const longest = Math.max(a.length, b.length);
+  const allowed = longest >= 6 ? 2 : longest >= 4 ? 1 : 0;
+  if (allowed && Math.abs(a.length - b.length) <= allowed && editDistance(a, b) <= allowed) return true;
+  const sa = skeleton(a);
+  return sa.length >= 2 && sa === skeleton(b);
+}
+
+/** Consonants only, doubled letters merged, a few sounds folded together: "rome" and "room" → "rm". */
+function skeleton(word: string): string {
+  return word
+    .replace(/ph/g, "f")
+    .replace(/[ckq]/g, "k")
+    .replace(/[sz]/g, "s")
+    .replace(/[aeiouy'h]/g, "")
+    .replace(/(.)\1+/g, "$1");
+}
+
+function editDistance(a: string, b: string): number {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i];
+    for (let j = 1; j <= b.length; j++) row[j] = Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = row;
+  }
+  return prev[b.length];
+}
+
+/** Words in what was heard that the bot didn't just say (allowing for speech-to-text slips). */
+export function newWords(heard: string, spoken: string): string[] {
+  const said = [...new Set(normalize(spoken).split(" ").filter((w) => w.length > 2))];
+  return normalize(heard)
+    .split(" ")
+    .filter((w) => w.length > 2 && !said.some((s) => similar(s, w)));
+}
+
+/**
+ * Heard while (or just after) the bot talked: the user's words in it, or null when it's only the
+ * bot's own voice coming back through the microphone, maybe garbled ("Here's Rome" heard as "20
+ * years' room"). An echo that runs into the user talking over it ("…Romulus founded it. Tell me
+ * about Paris") gives back the user's part. The user's words are mostly ones the bot didn't say.
+ */
+export function userPart(heard: string, spoken: string): string | null {
+  const own = withoutLeadingEcho(heard, spoken);
+  const words = normalize(own)
+    .split(" ")
+    .filter((w) => w.length > 2);
+  if (!words.length) return null;
+  const fresh = newWords(own, spoken).length;
+  const share = fresh / words.length;
+  // After a run of echo, a stray misheard word isn't the user: they said at least two new things.
+  if (own !== heard.trim()) return fresh >= 2 && share >= 0.5 ? own : null;
+  return (fresh >= 3 && share >= 0.34) || (fresh >= 1 && share >= 0.6) ? own : null;
+}
+
+/** For a live caption while the bot talks: the user cutting in says at least two new words. */
+export function soundsLikeUser(heard: string, spoken: string): boolean {
+  const own = userPart(heard, spoken);
+  return own !== null && newWords(own, spoken).length >= 2;
+}
+
+/**
+ * The bot's echo and the user talking over it often arrive as one stretch of speech: drop the
+ * leading words the bot said, so "…Romulus founded it. Tell me about Paris" becomes "Tell me
+ * about Paris".
+ */
+export function withoutLeadingEcho(heard: string, spoken: string): string {
+  const said = [...new Set(normalize(spoken).split(" ").filter((w) => w.length > 2))];
+  const tokens = heard.trim().split(/\s+/);
+  const isNew = (token: string) => {
+    const w = normalize(token);
+    return w.length > 2 && !said.some((s) => similar(s, w));
+  };
+  for (let i = 0; i < tokens.length; i++) {
+    // The user's part starts at two new words in a row (short words in between don't count).
+    if (!isNew(tokens[i])) continue;
+    const next = tokens.slice(i + 1).find((t) => normalize(t).length > 2);
+    if (!next || isNew(next)) {
+      // An echo is a run of the bot's words; one look-alike word ("wait" / "with") isn't.
+      const echoed = tokens.slice(0, i).filter((t) => normalize(t).length > 2).length;
+      return echoed >= 3 ? tokens.slice(i).join(" ") : heard.trim();
+    }
+  }
+  return heard.trim();
+}
+
+/**
+ * Stricter than isEcho, for sound that starts a little after the bot stopped (speaker delay,
+ * Bluetooth, a room's reverb): at least four heard words must follow the bot's last words in the
+ * same order. A quick real reply ("yes, send it") doesn't, so it still gets through.
+ */
+export function echoesLastWords(heard: string, spoken: string): boolean {
+  const h = normalize(heard).split(" ").filter(Boolean);
+  if (h.length < 4) return false;
+  const s = normalize(spoken).split(" ").filter(Boolean).slice(-60);
+  // Most heard words found in order in what was just said, ending near its end (a late echo is
+  // always the last words).
+  let best = 0;
+  for (let start = 0; start < s.length; start++) {
+    let i = 0;
+    let last = -1;
+    for (let j = start; j < s.length && i < h.length; j++) {
+      if (s[j] === h[i] || near(s[j], h[i])) {
+        i++;
+        last = j;
+      }
+    }
+    if (last >= s.length - 15) best = Math.max(best, i);
+    if (best === h.length) break;
+  }
+  return best / h.length >= 0.75;
+}
+
+/** Speech-to-text often hears a word slightly differently ("Sayan" / "Sayen"). */
+function near(a: string, b: string): boolean {
+  if (a.length < 4 || b.length < 4 || Math.abs(a.length - b.length) > 1) return false;
+  let diff = 0;
+  for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] !== b[i] && ++diff > 1) return false;
+  return true;
+}
+
 /**
  * Whisper invents short phrases from noise or silence ("Thank you.", "Thanks for watching!",
  * "Love you.", "[Music]"). These are dropped instead of being treated as the user speaking.

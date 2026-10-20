@@ -57,6 +57,7 @@ vi.mock("./tts", async () => {
           return spoken;
         },
         inPageAudio: true,
+        tailMs: 0,
       };
     },
   };
