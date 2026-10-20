@@ -243,8 +243,12 @@ export class McpTimeoutError extends Error {
 export type SseEvent = { event: string; data: string; id?: string };
 
 /** Incremental text/event-stream parser (handles \n, \r\n, multi-line data, comments). */
+/** The most a connector may send in one message (32 MB of text). */
+export const MAX_MESSAGE_CHARS = 32 * 1024 * 1024;
+
 export function createSseParser(onEvent: (event: SseEvent) => void) {
   let buffer = "";
+  let dataSize = 0;
   let event = "";
   let data: string[] = [];
   let id: string | undefined;
@@ -252,6 +256,7 @@ export function createSseParser(onEvent: (event: SseEvent) => void) {
     if (data.length) onEvent({ event: event || "message", data: data.join("\n"), id });
     event = "";
     data = [];
+    dataSize = 0;
   };
   const line = (raw: string) => {
     if (raw === "") return dispatch();
@@ -261,12 +266,18 @@ export function createSseParser(onEvent: (event: SseEvent) => void) {
     let value = colon === -1 ? "" : raw.slice(colon + 1);
     if (value.startsWith(" ")) value = value.slice(1);
     if (field === "event") event = value;
-    else if (field === "data") data.push(value);
+    else if (field === "data") {
+      data.push(value);
+      dataSize += value.length;
+      if (dataSize > MAX_MESSAGE_CHARS) throw new Error("The connector sent a message too large to read.");
+    }
     else if (field === "id") id = value;
   };
   return {
     push(chunk: string) {
       buffer += chunk;
+      // A line that never ends would grow without limit: a server can't use up the app's memory.
+      if (buffer.length > MAX_MESSAGE_CHARS) throw new Error("The connector sent a message too large to read.");
       let index: number;
       while ((index = buffer.search(/\r\n|\r|\n/)) !== -1) {
         const isCrLf = buffer[index] === "\r" && buffer[index + 1] === "\n";

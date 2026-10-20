@@ -76,7 +76,12 @@ export async function webSearch(
     }
   }
 
-  results = dedupe(results).slice(0, 6);
+  // Search services' answers are outside data: keep results with a web address, as plain strings.
+  results = dedupe(
+    results
+      .filter((r) => typeof r?.url === "string" && /^https?:\/\//i.test(r.url))
+      .map((r) => ({ ...r, title: String(r.title ?? r.url).slice(0, 300), snippet: String(r.snippet ?? "").slice(0, 2000) })),
+  ).slice(0, 6);
   if (search.readPages) {
     // Read the top pages for real substance, not just two-line snippets. Failures are fine.
     const pages = await Promise.allSettled(
@@ -201,7 +206,8 @@ function decodeEntities(text: string): string {
   return text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, code: string) => {
     if (code[0] === "#") {
       const n = code[1].toLowerCase() === "x" ? Number.parseInt(code.slice(2), 16) : Number(code.slice(1));
-      return Number.isFinite(n) ? String.fromCodePoint(n) : match;
+      // Beyond Unicode, or a lone surrogate: not a character (fromCodePoint would throw).
+      return Number.isInteger(n) && n > 0 && n <= 0x10ffff && (n < 0xd800 || n > 0xdfff) ? String.fromCodePoint(n) : match;
     }
     return ENTITIES[code.toLowerCase()] ?? match;
   });

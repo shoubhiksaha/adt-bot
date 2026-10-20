@@ -35,6 +35,8 @@ export const FONTS: Record<string, { label: string; stack: string; display?: str
 // Colour maths -----------------------------------------------------------------------
 
 export function parseColor(input: string): [number, number, number] | null {
+  // Themes come from brand kits and backups too: anything that isn't a colour string is no colour.
+  if (typeof input !== "string") return null;
   const value = input.trim().toLowerCase();
   let m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/.exec(value);
   if (m) {
@@ -44,7 +46,11 @@ export function parseColor(input: string): [number, number, number] | null {
   m = /^rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)/.exec(value);
   if (m) return [Number(m[1]), Number(m[2]), Number(m[3])].map((n) => Math.min(255, n)) as [number, number, number];
   m = /^hsla?\(\s*([\d.]+)(?:deg)?[\s,]+([\d.]+)%[\s,]+([\d.]+)%/.exec(value);
-  if (m) return hslToRgb(Number(m[1]), Number(m[2]) / 100, Number(m[3]) / 100);
+  if (m) {
+    // "hsl(1.2.3, …)" parses as NaN: not a colour.
+    const rgb = hslToRgb(Number(m[1]), Number(m[2]) / 100, Number(m[3]) / 100);
+    return rgb.every((n) => Number.isFinite(n)) ? rgb : null;
+  }
   return null;
 }
 
@@ -116,15 +122,35 @@ export function onColor(background: string): string {
 
 const NEUTRAL = { dark: "#0b0c0e", light: "#fafaf8" };
 
+/**
+ * A theme from outside (a brand kit, a backup, saved settings) with every field checked: colours
+ * are real colours, the font a plain name, the radius a number. Bad values fall back to `base`.
+ */
+export function safeTheme(theme: Partial<ThemeConfig> | undefined, base: ThemeConfig): ThemeConfig {
+  const t = theme && typeof theme === "object" ? theme : {};
+  return {
+    preset: typeof t.preset === "string" ? t.preset.slice(0, 40) : base.preset,
+    accent: normalizeHex(t.accent as string) ?? base.accent,
+    background: t.background === "" ? "" : (normalizeHex(t.background as string) ?? base.background),
+    font: typeof t.font === "string" ? t.font.slice(0, 80) : base.font,
+    radius: Number.isFinite(Number(t.radius)) ? Math.max(0, Math.min(32, Number(t.radius))) : base.radius,
+  };
+}
+
+/** A logo from outside: only an image embedded in the data itself (an address would load from anywhere). */
+export function safeLogo(logo: unknown): string {
+  return typeof logo === "string" && /^data:image\/(png|jpeg|webp|gif|svg\+xml);base64,/i.test(logo) && logo.length < 3_000_000 ? logo : "";
+}
+
 export function preferredMode(theme: ThemeConfig): "dark" | "light" | null {
-  if (!theme.background || !parseColor(theme.background)) return null;
+  if (!theme?.background || !parseColor(theme.background)) return null;
   return luminance(theme.background) < 0.35 ? "dark" : "light";
 }
 
 /** CSS variables for both modes, derived from the brand colours. */
 export function themeCss(theme: ThemeConfig): string {
-  const accent = normalizeHex(theme.accent) ?? "#3b82f6";
-  const brandBg = normalizeHex(theme.background ?? "");
+  const accent = normalizeHex(theme?.accent) ?? "#3b82f6";
+  const brandBg = normalizeHex(theme?.background ?? "");
   const brandMode = preferredMode(theme);
   const block = (mode: "dark" | "light") => {
     const bg = brandBg && brandMode === mode ? brandBg : NEUTRAL[mode];

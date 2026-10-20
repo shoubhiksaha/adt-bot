@@ -1,4 +1,5 @@
 import { ArrowDown, ChevronDown, Download, EyeOff, Menu, MoreHorizontal, SlidersHorizontal, SquarePen } from "lucide-react";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { conversationMarkdown, newConversation, renameConversation, startNewChat, useStore } from "../lib/store";
 import type { Bot } from "../lib/types";
@@ -231,14 +232,17 @@ export function ChatView({ bot, onOpenSidebar, onEditBot }: { bot: Bot; onOpenSi
           >
             <div className="messages-inner">
               {messages.map((m, i) => (
-                <MessageItem
-                  key={m.id}
-                  message={m}
-                  avatar={avatar}
-                  conversationId={conversation!.id}
-                  busy={busy}
-                  live={busy && i === messages.length - 1}
-                />
+                // One message with data the app can't show (an imported chat, a service's odd
+                // answer) shows a note instead of taking the whole chat down.
+                <ErrorBoundary key={m.id} fallback={() => <div className="msg-broken small muted">This message can't be shown.</div>}>
+                  <MessageItem
+                    message={m}
+                    avatar={avatar}
+                    conversationId={conversation!.id}
+                    busy={busy}
+                    live={busy && i === messages.length - 1}
+                  />
+                </ErrorBoundary>
               ))}
             </div>
           </div>

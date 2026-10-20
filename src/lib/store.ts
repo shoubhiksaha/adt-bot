@@ -1,4 +1,5 @@
 import { del, get, set } from "idb-keyval";
+import { safeLogo, safeTheme } from "./theme";
 import { create } from "zustand";
 import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
 import brandDefaults from "../brand.json";
@@ -244,7 +245,9 @@ export const useStore = create<State>()(
         for (const key of ["search", "image", "voice", "modes", "brand", "agent"] as const) {
           settings[key] = { ...defaultSettings[key], ...saved.settings?.[key] } as never;
         }
-        settings.brand.theme = { ...DEFAULT_THEME, ...saved.settings?.brand?.theme };
+        // Checked on every load: a bad colour saved from a kit or a backup can't break the app.
+        settings.brand.theme = safeTheme({ ...DEFAULT_THEME, ...saved.settings?.brand?.theme }, DEFAULT_THEME);
+        settings.brand.logo = safeLogo(settings.brand.logo);
         const savedCloud = saved.settings?.voice?.cloudTts;
         settings.voice.cloudTts = Object.fromEntries(
           Object.entries(defaultSettings.voice.cloudTts).map(([id, d]) => [id, { ...d, ...savedCloud?.[id as keyof typeof savedCloud] }]),
@@ -480,6 +483,16 @@ export function importChanges(json: string): string[] {
     else if (mine && JSON.stringify(mine.headers ?? {}) !== JSON.stringify(p.headers ?? {})) changes.push(`${p.name || p.id}: different request headers`);
     else if (!mine && p.baseUrl) changes.push(`${p.name || p.id} (new): ${p.baseUrl}`);
   }
+  // Other places a key is sent: voice services you added, and your own search server.
+  const { settings } = getState();
+  const myVoices = new Map((settings.voice.customVoices ?? []).map((v) => [v.id, v]));
+  for (const v of (data?.settings?.voice?.customVoices ?? []) as { id?: string; name?: string; url?: string }[]) {
+    const mine = v?.id ? myVoices.get(v.id) : undefined;
+    if (mine && (mine.url ?? "") !== (v.url ?? "")) changes.push(`Voice "${v.name || v.id}": ${mine.url || "(none)"} → ${v.url || "(none)"}`);
+    else if (!mine && v?.url) changes.push(`Voice "${v.name || v.id}" (new): ${v.url}`);
+  }
+  const search = data?.settings?.search as { url?: string } | undefined;
+  if (search?.url && search.url !== (settings.search.url ?? "")) changes.push(`Search server: ${settings.search.url || "(none)"} → ${search.url}`);
   return changes;
 }
 

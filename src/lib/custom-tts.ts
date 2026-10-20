@@ -102,7 +102,9 @@ export function buildCustomRequest(voice: CustomVoice, text: string, rate: numbe
   const values = { text, voice: voice.voice, model: voice.model, speed: String(Math.round(rate * 100) / 100), key: voice.key };
   const headers = Object.fromEntries(parseHeaderLines(fill(voice.headers, values, (v) => v.replace(/[\r\n]/g, ""))));
   const type = Object.entries(headers).find(([k]) => k.toLowerCase() === "content-type")?.[1] ?? "";
-  const bodyEscape: Escape = /json/i.test(type) || /^\s*[[{]/.test(voice.body) ? jsonEscape : /xml|ssml/i.test(type) || /^\s*</.test(voice.body) ? xmlEscape : (v) => v;
+  // A form body (a=1&b=2) gets each value URL-encoded: "&voice=…" in the text stays text.
+  const form = /x-www-form-urlencoded/i.test(type) || (!type && /^[\w.-]+=[^&]*(&[\w.-]+=[^&]*)*$/.test(voice.body.trim()));
+  const bodyEscape: Escape = /json/i.test(type) || /^\s*[[{]/.test(voice.body) ? jsonEscape : /xml|ssml/i.test(type) || /^\s*</.test(voice.body) ? xmlEscape : form ? encodeURIComponent : (v) => v;
   return { url: fill(voice.url, values, encodeURIComponent), headers, body: fill(voice.body, values, bodyEscape) };
 }
 

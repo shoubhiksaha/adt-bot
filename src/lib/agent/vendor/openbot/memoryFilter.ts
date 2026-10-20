@@ -149,7 +149,12 @@ const DIRECTIVE_PHRASES: RegExp[] = [
   /\bgoing forward,/i,
   /\bwithout (?:asking|approval|confirmation|permission)\b/i,
   /\bdo not (?:ask|mention|tell|warn|refuse|report)\b/i,
-  /\byour (?:instructions|rules|system prompt|guidelines)\b/i
+  /\byour (?:instructions|rules|system prompt|guidelines)\b/i,
+  // ADT Bot: "facts" that are really standing orders to act.
+  /\bwithout (?:checking|confirming|telling|double-checking)\b/i,
+  /\b(?:first|next|last) (?:step|thing|action)\b[^.]*\b(?:is|means|should be)\b[^.]*\b(?:run|running|execut|open|send|install|download|delete)/i,
+  /\b(?:automatically|always|every time|each time|whenever)\b[^.]*\b(?:runs?|running|execut\w*|install\w*|download\w*|deletes?|sends?|forwards?|uploads?|opens?)\b/i,
+  /\b(?:wants?|prefers?|likes?|expects?) (?:you|the (?:assistant|bot|ai)) to\b/i
 ]
 
 /** The gate itself. A durable "fact" about it is how an injected line would widen it. */
@@ -198,6 +203,11 @@ export function screen(raw: string): Screening {
   }
   if (POLICY_TERMS.test(text)) {
     return { ok: false, reason: 'is about approvals or permissions, which memory does not decide' }
+  }
+  // ADT Bot: a command, script or web address paired with doing something is an action to take,
+  // not a fact about the user.
+  if (/(?:~\/|\/Users\/|\/tmp\/|\.(?:sh|py|ps1|bat|command|scpt)\b|\bcurl\b|\bwget\b|https?:\/\/)/i.test(text) && /\b(?:run|runs|running|execut\w*|install\w*|source|launch\w*|send|upload)\b/i.test(text)) {
+    return { ok: false, reason: 'names a command or address to act on, which memory does not store' }
   }
 
   return { ok: true, text }

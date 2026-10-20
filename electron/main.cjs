@@ -60,15 +60,17 @@ function isPrivateAddress(address) {
 
 /** A private IP literal, a LAN-style name, or a name whose DNS answers include a private address. */
 async function isPrivateHost(hostname) {
-  const host = String(hostname).replace(/^\[|\]$/g, "").toLowerCase();
+  // "localhost." with a trailing dot is the same name.
+  const host = String(hostname).replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
   if (LOOPBACK_NAMES.has(host)) return true;
   if (isIP(host)) return isPrivateAddress(host);
   if (!host.includes(".") || PRIVATE_SUFFIXES.some((suffix) => host.endsWith(suffix))) return true;
   try {
     const records = await lookup(host, { all: true });
-    return records.some((r) => isPrivateAddress(r.address));
+    return !records.length || records.some((r) => isPrivateAddress(r.address));
   } catch {
-    return false;
+    // Can't be checked, so it isn't read (the browser engine might still reach it some other way).
+    return true;
   }
 }
 
@@ -78,6 +80,23 @@ async function isPrivateHost(hostname) {
  */
 const MAX_PAGE_BYTES = 8 * 1024 * 1024;
 
+/**
+ * Pages are read through their own session, which records the address each response really came
+ * from: a name can resolve to a public address when it's checked and a private one when it's
+ * fetched (DNS rebinding), so the address actually used is checked too.
+ */
+let publicSession = null;
+const answeredFrom = new Map();
+function pageSession() {
+  if (publicSession) return publicSession;
+  publicSession = session.fromPartition("adt-public-pages", { cache: false });
+  publicSession.webRequest.onResponseStarted({ urls: ["http://*/*", "https://*/*"] }, (details) => {
+    if (details.ip) answeredFrom.set(details.url, details.ip);
+    if (answeredFrom.size > 200) answeredFrom.delete(answeredFrom.keys().next().value);
+  });
+  return publicSession;
+}
+
 async function fetchPublic(url, headers) {
   let current = url;
   for (let hop = 0; hop <= 5; hop++) {
@@ -85,7 +104,7 @@ async function fetchPublic(url, headers) {
     if (!/^https?:$/.test(target.protocol)) throw new Error("only http(s) pages can be read");
     if (await isPrivateHost(target.hostname)) throw new Error(`${target.host} is on a private network; the page can only be read with your approval`);
     const result = await new Promise((resolve, reject) => {
-      const request = net.request({ url: target.toString(), method: "GET", redirect: "manual", headers });
+      const request = net.request({ url: target.toString(), method: "GET", redirect: "manual", headers, session: pageSession() });
       // A page that never finishes (or never starts) mustn't tie up the app.
       const timer = setTimeout(() => {
         request.abort();
@@ -119,6 +138,9 @@ async function fetchPublic(url, headers) {
       current = result.location;
       continue;
     }
+    const ip = answeredFrom.get(target.toString());
+    answeredFrom.delete(target.toString());
+    if (ip && isPrivateAddress(ip)) throw new Error(`${target.host} answered from a private network address; the page can only be read with your approval`);
     const type = result.response.headers["content-type"];
     const empty = [101, 204, 205, 304].includes(result.response.statusCode);
     return new Response(empty ? null : result.body, {
@@ -187,7 +209,7 @@ const ISOLATION_HEADERS = {
 // content can't reach the desktop bridge. Network calls stay open (any provider, local servers).
 const CSP = [
   "default-src 'self'",
-  "script-src 'self' 'wasm-unsafe-eval' blob:",
+  "script-src 'self' 'wasm-unsafe-eval'",
   "worker-src 'self' blob:",
   "style-src 'self' 'unsafe-inline'",
   "font-src 'self' data:",

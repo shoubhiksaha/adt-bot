@@ -36,6 +36,10 @@ export function linkCitations(block: string, sources: Source[] | undefined): str
   if (!sources?.length || /^\s{0,3}(```|~~~)/.test(block)) return block;
   return block.replace(/\[(\d{1,2})\](?![(:])/g, (match, n: string) => {
     const source = sources[Number(n) - 1];
-    return source ? `[${n}](${source.url} "${source.title.replace(/"/g, "'")}")` : match;
+    if (!source || typeof source.url !== "string") return match;
+    // The address in <…> (spaces and parentheses can't end the link early); the title without quotes or brackets.
+    const url = source.url.replace(/[<>\s]/g, encodeURIComponent);
+    const title = String(source.title ?? "").replace(/["\\\n\r]/g, "'").slice(0, 200);
+    return `[${n}](<${url}> "${title}")`;
   });
 }

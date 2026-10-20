@@ -5,6 +5,8 @@ const { spawn } = require("node:child_process");
 const os = require("node:os");
 
 const STDERR_TAIL = 4000;
+/** The longest message a local server may send (32 MB). */
+const MAX_LINE = 32 * 1024 * 1024;
 
 /** POSIX shell quoting for one argument. */
 function quote(arg) {
@@ -72,6 +74,13 @@ function createManager({ send }) {
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
       buffer += chunk;
+      // A message that never ends would fill memory: stop a server that sends one.
+      if (buffer.length > MAX_LINE) {
+        buffer = "";
+        entry.stderr = `${entry.stderr}\nStopped: the server sent a message larger than ${MAX_LINE / 1024 / 1024} MB.`.slice(-STDERR_TAIL);
+        child.kill("SIGKILL");
+        return;
+      }
       let index;
       while ((index = buffer.indexOf("\n")) !== -1) {
         const line = buffer.slice(0, index).replace(/\r$/, "");

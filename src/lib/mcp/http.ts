@@ -10,6 +10,7 @@ import {
   isResponse,
   type JsonRpcMessage,
   LIST_TIMEOUT_MS,
+  MAX_MESSAGE_CHARS,
   McpClosedError,
   McpError,
   McpHttpError,
@@ -127,7 +128,7 @@ export class StreamableHttpTransport implements McpTransport {
       if (id !== undefined && !answered && !options.signal?.aborted) throw new McpStreamEndedError();
       return;
     }
-    const text = await res.text();
+    const text = await textUpTo(res, MAX_MESSAGE_CHARS);
     if (!text.trim()) {
       if (id !== undefined) throw new McpStreamEndedError();
       return;
@@ -275,4 +276,23 @@ export async function connectHttp(
       throw new Error(`${(error as Error).message} (The legacy SSE transport didn't work either: ${(legacyError as Error).message})`);
     }
   }
+}
+
+/** A response body as text, refusing one larger than `max` characters (a server can't exhaust memory). */
+async function textUpTo(res: Response, max: number): Promise<string> {
+  if (Number(res.headers.get("content-length") ?? 0) > max * 4) throw new Error("The connector sent a message too large to read.");
+  if (!res.body) return res.text();
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+    if (text.length > max) {
+      void reader.cancel().catch(() => undefined);
+      throw new Error("The connector sent a message too large to read.");
+    }
+  }
+  return text + decoder.decode();
 }

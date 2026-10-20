@@ -125,17 +125,21 @@ export async function brandFromTextWithAI(text: string): Promise<BrandSuggestion
 // Extraction helpers ---------------------------------------------------------------
 
 /** Colours in CSS, design tokens, SVG, documents. Brand-named variables win. */
-export function colorsInText(text: string): { palette: string[]; accent?: string; background?: string; font?: string } {
+export function colorsInText(input: string): { palette: string[]; accent?: string; background?: string; font?: string } {
+  const text = input.slice(0, 400_000);
   const counts = new Map<string, number>();
   const pattern = /#(?:[0-9a-f]{6}|[0-9a-f]{3})\b|rgba?\([^)]+\)|hsla?\([^)]+\)/gi;
   for (const match of text.matchAll(pattern)) {
     const hex = normalizeHex(match[0]);
     if (hex) counts.set(hex, (counts.get(hex) ?? 0) + 1);
   }
+  // Every "name: colour" pair once, in a single pass (a pattern that searched for the name inside
+  // the variable took minutes on a large stylesheet), then the first whose name says what it is.
+  const pairs = [...text.matchAll(/(-{0,2}[\w-]{1,80})["']?\s*[:=]\s*["']?(#[0-9a-f]{3,6}\b|rgba?\([^)]{0,80}\)|hsla?\([^)]{0,80}\))/gi)];
   const named = (names: string) => {
-    const re = new RegExp(`["']?-{0,2}(?:[\\w-]*?)(?:${names})(?:[\\w-]*?)["']?\\s*[:=]\\s*["']?(#[0-9a-f]{3,6}\\b|rgba?\\([^)]+\\)|hsla?\\([^)]+\\))`, "i");
-    const m = re.exec(text);
-    return m ? (normalizeHex(m[1]) ?? undefined) : undefined;
+    const wanted = new RegExp(names, "i");
+    const hit = pairs.find((m) => wanted.test(m[1]));
+    return hit ? (normalizeHex(hit[2]) ?? undefined) : undefined;
   };
   const accent = named("brand|primary|accent|main|theme");
   const background = named("background|bg|surface|page");

@@ -277,7 +277,10 @@ function ToolCallRow({ call }: { call: ToolCallRecord }) {
         </div>
       )}
 
-      {call.display?.kind === "image" && <img className="tool-image" src={call.display.src} alt={call.display.caption ?? "Tool output"} />}
+      {/* Screenshots are embedded images; an address (e.g. from an imported chat) isn't loaded. */}
+      {call.display?.kind === "image" && /^data:image\//.test(call.display.src) && (
+        <img className="tool-image" src={call.display.src} alt={call.display.caption ?? "Tool output"} />
+      )}
       {call.display?.kind === "terminal" && (details || call.status === "error") && <pre className="tool-terminal">{call.display.text}</pre>}
       {call.display?.kind === "conversation" && <ConversationLink display={call.display} />}
       {details && (

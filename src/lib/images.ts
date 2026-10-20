@@ -11,12 +11,19 @@ export const ACCEPTED_FILES = "image/*,.pdf,.docx,.htm,.html,text/*,.md,.csv,.js
 
 /** Turns a picked/pasted/dropped file into an attachment: images are resized, documents become text. */
 export async function fileToAttachment(file: File): Promise<Attachment> {
-  if (file.type.startsWith("image/")) return imageToAttachment(file);
+  if (file.type.startsWith("image/")) {
+    if (file.size > MAX_FILE_BYTES) throw new Error(`${file.name} is too large (${Math.round(file.size / 1e6)} MB; up to ${MAX_FILE_BYTES / 1e6} MB).`);
+    return imageToAttachment(file);
+  }
   return textAttachment(file, await fileText(file));
 }
 
+/** The largest file read: past this, a document or image could exhaust the page's memory. */
+const MAX_FILE_BYTES = 60_000_000;
+
 /** Readable text from a document: PDF, Word, HTML, Markdown, code, CSV, JSON… */
 export async function fileText(file: File): Promise<string> {
+  if (file.size > MAX_FILE_BYTES) throw new Error(`${file.name} is too large (${Math.round(file.size / 1e6)} MB; up to ${MAX_FILE_BYTES / 1e6} MB).`);
   if (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) return pdfText(file);
   if (/\.docx$/i.test(file.name) || file.type.includes("officedocument.wordprocessingml")) return docxText(file);
   if (/\.html?$/i.test(file.name) || file.type === "text/html") {

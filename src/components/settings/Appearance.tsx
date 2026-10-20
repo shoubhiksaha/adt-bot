@@ -2,7 +2,7 @@ import { Download, Globe, ImagePlus, Loader2, RotateCcw, Sparkles, Upload, X } f
 import { useRef, useState } from "react";
 import { brandFromFile, brandFromTextWithAI, brandFromWebsite, type BrandSuggestion } from "../../lib/brand-import";
 import { DEFAULT_THEME, defaultSettings, updateSettings, useStore } from "../../lib/store";
-import { FONTS, normalizeHex, preferredMode, THEME_PRESETS } from "../../lib/theme";
+import { FONTS, normalizeHex, preferredMode, safeLogo, safeTheme, THEME_PRESETS } from "../../lib/theme";
 import type { Brand, ThemeConfig } from "../../lib/types";
 import { Section, Toggle } from "./controls";
 
@@ -345,9 +345,9 @@ export function AppearanceSettings() {
                 updateSettings({
                   brand: {
                     name: String(kit.name || defaultSettings.brand.name),
-                    logo: typeof kit.logo === "string" ? kit.logo : "",
+                    logo: safeLogo(kit.logo),
                     logoAsAvatar: Boolean(kit.logoAsAvatar),
-                    theme: { ...DEFAULT_THEME, ...kit.theme },
+                    theme: safeTheme({ ...DEFAULT_THEME, ...kit.theme }, DEFAULT_THEME),
                   },
                 });
               } catch (err) {

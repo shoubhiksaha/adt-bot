@@ -528,10 +528,14 @@ export function createPcmPlayer(): PcmPlayer {
       next = at + buffer.duration;
       sources.add(source);
       networkPlaying = true;
-      source.onended = () => {
-        sources.delete(source);
+      const ended = () => {
+        clearTimeout(watchdog);
+        if (!sources.delete(source)) return;
         settle();
       };
+      // "ended" can be lost (the output device changed, the Mac slept): don't stay "speaking".
+      const watchdog = setTimeout(ended, (at - ctx.currentTime + buffer.duration + 2) * 1000);
+      source.onended = ended;
     },
     flush() {
       for (const source of sources) {

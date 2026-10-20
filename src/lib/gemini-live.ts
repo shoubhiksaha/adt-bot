@@ -230,6 +230,7 @@ export type LiveConnectionOptions = {
   /** Tests point this at a fake server. */
   url?: string;
   WebSocketImpl?: typeof WebSocket;
+  setupTimeoutMs?: number;
 };
 
 export class LiveConnection {
@@ -246,6 +247,13 @@ export class LiveConnection {
     return new Promise((resolve, reject) => {
       let ready = false;
       const socket = new Impl(url);
+      // No answer to the setup: give up rather than show "Getting ready…" forever.
+      const timer = setTimeout(() => {
+        if (ready) return;
+        reject(new Error("Gemini Live didn't answer. Check the internet connection, then try again."));
+        this.closedByUs = true;
+        socket.close();
+      }, this.options.setupTimeoutMs ?? 15_000);
       this.socket = socket;
       socket.binaryType = "arraybuffer";
       socket.onopen = () => this.send(setupMessage(setup));
@@ -262,6 +270,7 @@ export class LiveConnection {
         for (const e of parseServerMessage(message)) {
           if (e.type === "ready" && !ready) {
             ready = true;
+            clearTimeout(timer);
             if (setup.history?.length && !setup.resumeHandle) this.send(historyMessage(setup.history));
             resolve();
           }
@@ -271,6 +280,7 @@ export class LiveConnection {
       socket.onerror = () => undefined;
       socket.onclose = (event) => {
         this.socket = null;
+        clearTimeout(timer);
         if (!ready) reject(new Error(closeReason(event.code, event.reason)));
         else if (!this.closedByUs) this.options.onClose({ code: event.code, reason: event.reason });
       };

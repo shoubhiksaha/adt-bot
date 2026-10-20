@@ -180,6 +180,18 @@ describe("connection", () => {
     await expect(opened).rejects.toThrow(/refused the API key/);
   });
 
+  it("gives up when the server never answers the setup", async () => {
+    const connection = new LiveConnection({
+      key: "k",
+      setup: { model: "m", system: "", tools: [], voice: "Kore" },
+      onEvent: () => undefined,
+      onClose: () => undefined,
+      WebSocketImpl: FakeSocket as unknown as typeof WebSocket,
+      setupTimeoutMs: 30,
+    });
+    await expect(connection.open()).rejects.toThrow(/didn't answer/);
+  });
+
   it("reports a drop after it was open, but not its own close", async () => {
     const closes: unknown[] = [];
     const make = () =>

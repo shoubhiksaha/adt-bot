@@ -2327,3 +2327,17 @@ h2,
   font-family: var(--font-mono, ui-monospace, Menlo, monospace);
   font-size: 12px;
 }
+
+.app-crashed {
+  max-width: 560px;
+  margin: 15vh auto 0;
+  padding: 24px;
+  font-family: system-ui, sans-serif;
+  color: var(--foreground, #111);
+}
+.app-crashed h1 {
+  font-size: 20px;
+}
+.msg-broken {
+  padding: 8px 12px;
+}

@@ -75,7 +75,9 @@ export function gate(
   // Rooms: the allow list (rules for your own chats) doesn't apply, and approvals stay in that room.
   const scope = context?.shared ? `room:${context.conversationId ?? ""}` : "";
   const remembered = rememberedFor(scope);
-  const policySettings = { approvalPolicy: agent.approvalPolicy, allowlist: context?.shared ? [] : agent.allowlist, denylist: agent.denylist };
+  // In a room, "auto-run" is the host's choice for their own chats: guests' requests still ask.
+  const approvalPolicy = context?.shared && agent.approvalPolicy === "auto-run" ? "ask-every-time" : agent.approvalPolicy;
+  const policySettings = { approvalPolicy, allowlist: context?.shared ? [] : agent.allowlist, denylist: agent.denylist };
   const denied = deniedRuleForCall(policySettings, call);
   if (denied) return { outcome: "deny", reason: `blocked by your deny rule "${denied}"`, refusal: denyRefusal(call.name, denied) };
   const risk = tool.riskFor?.(call.args) ?? tool.risk;

@@ -205,7 +205,10 @@ describe("markdown", () => {
       { title: "A", url: "https://a.com", snippet: "" },
       { title: "B", url: "https://b.com", snippet: "" },
     ];
-    expect(linkCitations("Fact [1]. Not [3]. Link [x](y)", sources)).toBe('Fact [1](https://a.com "A"). Not [3]. Link [x](y)');
-    expect(linkCitations("Both[1][2].", sources)).toBe('Both[1](https://a.com "A")[2](https://b.com "B").');
+    expect(linkCitations("Fact [1]. Not [3]. Link [x](y)", sources)).toBe('Fact [1](<https://a.com> "A"). Not [3]. Link [x](y)');
+    expect(linkCitations("Both[1][2].", sources)).toBe('Both[1](<https://a.com> "A")[2](<https://b.com> "B").');
+    // A source's address can't end the link early and slip in an image or a second link.
+    const tricky = [{ title: undefined as unknown as string, url: "https://a.example/x)![i](https://t.example/p.png", snippet: "" }];
+    expect(linkCitations("See [1].", tricky)).toBe('See [1](<https://a.example/x)![i](https://t.example/p.png> "").');
   });
 });

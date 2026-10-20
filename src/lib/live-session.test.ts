@@ -256,6 +256,39 @@ describe("talking with Gemini Live", () => {
     expect(s.state.phase).toBe("listening");
   });
 
+  it("closing while it connects leaves nothing open", async () => {
+    let finish: () => void = () => undefined;
+    const slow = (options: LiveConnectionOptions) => {
+      const c = connect(options);
+      return { ...c, open: () => new Promise<void>((r) => (finish = r)) };
+    };
+    const s = new LiveVoiceSession({ onState: () => undefined, onClose: () => undefined }, { connect: slow, openMic, player });
+    const started = s.start();
+    await until(() => connections.length === 1);
+    s.close(false);
+    finish();
+    await started;
+    expect(connections[0].closed).toBe(true);
+  });
+
+  it("holds a tool result made during a reconnect and sends it on the new connection", async () => {
+    let finish: () => void = () => undefined;
+    let opened = 0;
+    const second = (options: LiveConnectionOptions) => {
+      const c = connect(options);
+      return { ...c, open: () => (++opened === 1 ? Promise.resolve() : new Promise<void>((r) => (finish = r))) };
+    };
+    session = new LiveVoiceSession({ onState: () => undefined, onClose: () => undefined }, { connect: second, openMic, player });
+    await session.start();
+    connections[0].emit({ type: "resume", handle: "h1" }, { type: "goAway", timeLeftMs: 1000 }, { type: "toolCall", calls: [{ id: "c9", name: "look_up", args: { text: "x" } }] });
+    await until(() => runs.length === 1);
+    await sleep(20);
+    expect(connections[0].sent.filter((x) => x.kind === "tool")).toHaveLength(0);
+    finish();
+    await until(() => connections[1].sent.some((x) => x.kind === "tool"));
+    expect(connections[1].sent.find((x) => x.kind === "tool")!.value[0]).toMatchObject({ id: "c9", response: { status: "ok" } });
+  });
+
   it("fails clearly when the connection drops and can't be resumed", async () => {
     const s = await open();
     last().options.onClose({ code: 1008, reason: "API key expired" });

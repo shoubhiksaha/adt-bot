@@ -44,9 +44,18 @@ async function openMic(onAudio: (samples: Float32Array) => void): Promise<Mic> {
     throw new Error("Microphone access was blocked. Allow it in your system or browser settings.");
   }
   const context = new AudioContext({ sampleRate: 16000 });
-  await context.audioWorklet.addModule(workletUrl);
-  const source = context.createMediaStreamSource(stream);
-  const node = new AudioWorkletNode(context, "pcm-frames");
+  let node: AudioWorkletNode;
+  let source: MediaStreamAudioSourceNode;
+  try {
+    await context.audioWorklet.addModule(workletUrl);
+    source = context.createMediaStreamSource(stream);
+    node = new AudioWorkletNode(context, "pcm-frames");
+  } catch (error) {
+    // Don't leave the microphone on (its indicator lit) when setting up the audio failed.
+    stream.getTracks().forEach((t) => t.stop());
+    void context.close().catch(() => undefined);
+    throw error;
+  }
   // Keeps the node pulled by the audio graph without making a sound.
   const silent = context.createGain();
   silent.gain.value = 0;
@@ -112,6 +121,8 @@ export class LiveVoiceSession {
   private key = "";
   private resumeHandle = "";
   private reconnecting = false;
+  /** Tool results and notes made while reconnecting: sent once the new connection is ready. */
+  private held: ((connection: NonNullable<LiveVoiceSession["connection"]>) => void)[] = [];
   private mic: Mic | null = null;
   private player: PcmPlayer;
   /** Microphone audio isn't sent (muted, or paused while quiet). */
@@ -190,6 +201,7 @@ export class LiveVoiceSession {
     this.key = provider.apiKey;
     this.conversationId = activeConversationId;
     const platform = (await detectEnv()).platform;
+    if (this.closed) return;
     // Gemini searches Google itself; the app's own web search isn't needed.
     this.tools = toolsFor({ settings, providers, platform, bot }).filter((t) => t.name !== "web_search");
     this.toolContext = {
@@ -213,15 +225,20 @@ export class LiveVoiceSession {
     };
     try {
       await this.connect();
-      if (this.closed) return;
-      this.mic = await (this.deps.openMic ?? openMic)((samples) => {
-        if (!this.paused) this.connection?.sendAudio(pcm16Base64(samples));
+      // Closed while connecting (Esc right away): don't leave the session open on Google's side.
+      if (this.closed) return this.connection?.close();
+      const mic = await (this.deps.openMic ?? openMic)((samples) => {
+        if (!this.paused && !this.reconnecting) this.connection?.sendAudio(pcm16Base64(samples));
       });
+      if (this.closed) {
+        mic.close();
+        return this.connection?.close();
+      }
+      this.mic = mic;
     } catch (error) {
       this.fail((error as Error).message);
       return;
     }
-    if (this.closed) return this.mic?.close();
     chime("listen");
     this.set({ phase: "listening", error: null });
     this.armIdle();
@@ -287,6 +304,12 @@ export class LiveVoiceSession {
     await connection.open();
   }
 
+  /** Sends now, or once a reconnect is done. */
+  private send(fn: (connection: NonNullable<LiveVoiceSession["connection"]>) => void) {
+    if (this.reconnecting || !this.connection) this.held.push(fn);
+    else fn(this.connection);
+  }
+
   /** The server is about to close (sessions are recycled every few minutes): reconnect where we were. */
   private async reconnect(attempt = 1) {
     if (this.closed || this.reconnecting || !this.setup) return;
@@ -294,9 +317,14 @@ export class LiveVoiceSession {
     const old = this.connection;
     try {
       const next = this.makeConnection({ ...this.setup, resumeHandle: this.resumeHandle || undefined, history: this.resumeHandle ? undefined : this.history() });
-      this.connection = next;
+      // The new connection takes over once it's ready; until then the old one still carries
+      // tool results and notes (and the microphone waits).
       await next.open();
+      if (this.closed) return next.close();
+      this.connection = next;
       old?.close();
+      const held = this.held.splice(0);
+      held.forEach((send) => send(next));
     } catch (error) {
       this.reconnecting = false;
       if (attempt >= 3) return this.fail((error as Error).message);
@@ -472,10 +500,11 @@ export class LiveVoiceSession {
     this.running.delete(call.id);
     if (!this.running.size) this.set({ activity: "", ...(this.state.phase === "thinking" ? { phase: "listening" as const } : {}) });
     if (this.closed || own.signal.aborted) return;
-    if (result.image) this.connection?.sendImage(result.image.mediaType, result.image.data);
+    const image = result.image;
+    if (image) this.send((c) => c.sendImage(image.mediaType, image.data));
     const declined = Boolean(result.isError) && /^(The user declined|Refused)/.test(result.content);
     const content = result.content.length > RESULT_LIMIT ? `${result.content.slice(0, RESULT_LIMIT)}\n[…cut]` : result.content;
-    this.connection?.sendToolResponses([
+    this.send((c) => c.sendToolResponses([
       {
         id: call.id,
         name: call.name,
@@ -483,7 +512,7 @@ export class LiveVoiceSession {
         // Said when the user isn't talking (Gemini 3.8 waits for them to finish).
         scheduling: "INTERRUPT",
       },
-    ]);
+    ]));
     this.armIdle();
   }
 
@@ -511,9 +540,9 @@ export class LiveVoiceSession {
       this.clearIdle();
       this.set({ approval: { question: summary, reason, detail } });
       const question = summary.replace(/ Say yes or no\.$/, "");
-      this.connection?.sendText(
+      this.send((c) => c.sendText(
         `[ADT Bot, not the user] A tool you called needs the user's OK first. Ask them now in one short sentence: "${question}" Then wait: the app hears their yes or no and sends you the tool's result.`,
-      );
+      ));
     });
   }
 
@@ -585,7 +614,10 @@ export class LiveVoiceSession {
   private armIdle() {
     this.clearIdle();
     this.idleTimer = setTimeout(() => {
-      if (this.state.phase === "listening" && !this.running.size && !this.approval) this.pause("standby");
+      // Quiet, or only noise that got no reply ("hearing" with nothing more coming).
+      const quiet = this.state.phase === "listening" || (this.state.phase === "hearing" && performance.now() - this.lastInputAt > IDLE_MS);
+      if (quiet && !this.running.size && !this.approval) this.pause("standby");
+      else if (!this.closed && !this.paused) this.armIdle();
     }, IDLE_MS);
   }
 
@@ -615,6 +647,7 @@ export class LiveVoiceSession {
     this.mic = null;
     this.connection?.close();
     this.connection = null;
+    this.held = [];
     this.user = null;
     this.reply = null;
     this.approvals = Promise.resolve();
