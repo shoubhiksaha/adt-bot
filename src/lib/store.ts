@@ -45,9 +45,13 @@ function createThrottledStorage(): PersistStorage<Persisted> & { flush: () => vo
     if (!pending) return;
     const value = pending;
     pending = null;
+    const state = appKeeper.forDisk(value.state);
     // Without IndexedDB (tests in Node, locked-down webviews) set() throws synchronously, inside a timer.
-    if (typeof indexedDB === "undefined") return;
-    void set(STORAGE_KEY, { ...value, state: appKeeper.forDisk(value.state) }).catch((error) => console.error("Could not save", error));
+    try {
+      void set(STORAGE_KEY, { ...value, state }).catch((error) => console.error("Could not save", error));
+    } catch (error) {
+      console.error("Could not save", error);
+    }
   };
 
   // If the keychain stops taking keys, save again with them in place so nothing is lost.
