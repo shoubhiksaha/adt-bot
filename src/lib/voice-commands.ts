@@ -33,7 +33,9 @@ export function parseVoiceCommand(text: string, bots: { id: string; name: string
   if (!t) return null;
   const test = (pattern: string) => new RegExp(`^${PLEASE}(?:${pattern})${TAIL}`).test(t);
 
-  if (test("stop|stop talking|be quiet|quiet|shut up|enough|cancel|never ?mind|hold on|wait")) return { type: "stop" };
+  // Cutting in is often a few words together: "wait, stop", "okay okay stop", "no, hold on".
+  const STOPS = "stop|stop talking|stop it|be quiet|quiet|shut up|enough|cancel|never ?mind|hold on|hang on|wait|wait a (?:second|sec|minute)";
+  if (new RegExp(`^${PLEASE}(?:(?:ok|okay|no|hey|oh|um|uh|wait|sorry|actually) )*(?:${STOPS})(?: (?:${STOPS}|please|now|thanks|thank you))*$`).test(t)) return { type: "stop" };
   if (test("goodbye|good bye|bye|bye bye|end voice mode|exit voice mode|close voice mode|stop listening|that's all|that is all|i'm done|we're done")) {
     return { type: "end" };
   }
@@ -158,62 +160,129 @@ function editDistance(a: string, b: string): number {
   return prev[b.length];
 }
 
-/** Words in what was heard that the bot didn't just say (allowing for speech-to-text slips). */
+/**
+ * Content words: not the short ones (they say little about who spoke) and not numbers, which
+ * speech-to-text writes either way ("third" / "3rd", "seven fifty-three" / "753").
+ */
+const isContent = (w: string) => w.length > 2 && !/\d/.test(w);
+const content = (text: string) => normalize(text).split(" ").filter(isContent);
+
+/**
+ * Which heard words line up, in order, with what the bot said (allowing for speech-to-text slips):
+ * a longest common subsequence. The bot's echo lines up almost entirely, even garbled; someone
+ * talking over it doesn't, even when they reuse a word or two of the bot's.
+ */
+function alignedFlags(heard: string[], spoken: string[]): boolean[] {
+  const n = heard.length;
+  const m = spoken.length;
+  const table = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      table[i][j] = similar(heard[i], spoken[j]) ? table[i + 1][j + 1] + 1 : Math.max(table[i + 1][j], table[i][j + 1]);
+    }
+  }
+  const flags = new Array<boolean>(n).fill(false);
+  for (let i = 0, j = 0; i < n && j < m; ) {
+    if (similar(heard[i], spoken[j]) && table[i][j] === table[i + 1][j + 1] + 1) {
+      flags[i] = true;
+      i++;
+      j++;
+    } else if (table[i + 1][j] >= table[i][j + 1]) i++;
+    else j++;
+  }
+  return flags;
+}
+
+/** What the bot said lately, as content words (enough for any echo still in the room). */
+const spokenWords = (spoken: string) => content(spoken).slice(-160);
+
+/** Heard words that don't line up with what the bot said: the user's own. */
 export function newWords(heard: string, spoken: string): string[] {
-  const said = [...new Set(normalize(spoken).split(" ").filter((w) => w.length > 2))];
-  return normalize(heard)
-    .split(" ")
-    .filter((w) => w.length > 2 && !said.some((s) => similar(s, w)));
+  const words = content(heard);
+  const flags = alignedFlags(words, spokenWords(spoken));
+  return words.filter((_, i) => !flags[i]);
 }
 
 /**
  * Heard while (or just after) the bot talked: the user's words in it, or null when it's only the
  * bot's own voice coming back through the microphone, maybe garbled ("Here's Rome" heard as "20
  * years' room"). An echo that runs into the user talking over it ("…Romulus founded it. Tell me
- * about Paris") gives back the user's part. The user's words are mostly ones the bot didn't say.
+ * about Paris") gives back the user's part.
  */
 export function userPart(heard: string, spoken: string): string | null {
-  const own = withoutLeadingEcho(heard, spoken);
-  const words = normalize(own)
-    .split(" ")
-    .filter((w) => w.length > 2);
+  const own = withoutTrailingEcho(withoutLeadingEcho(heard, spoken), spoken);
+  const words = content(own);
   if (!words.length) return null;
-  const fresh = newWords(own, spoken).length;
-  const share = fresh / words.length;
-  // After a run of echo, a stray misheard word isn't the user: they said at least two new things.
-  if (own !== heard.trim()) return fresh >= 2 && share >= 0.5 ? own : null;
-  return (fresh >= 3 && share >= 0.34) || (fresh >= 1 && share >= 0.6) ? own : null;
+  const said = spokenWords(spoken);
+  // One word is too little to call a misheard echo: only an exact repeat of the bot's counts.
+  if (words.length === 1) return said.includes(words[0]) && own === heard.trim() ? null : own;
+  const fresh = words.length - alignedFlags(words, said).filter(Boolean).length;
+  return fresh >= 2 && fresh / words.length >= 0.4 ? own : null;
 }
 
-/** For a live caption while the bot talks: the user cutting in says at least two new words. */
+/** For a live caption while the bot talks: someone cutting in says at least two words of their own. */
 export function soundsLikeUser(heard: string, spoken: string): boolean {
   const own = userPart(heard, spoken);
   return own !== null && newWords(own, spoken).length >= 2;
 }
 
 /**
- * The bot's echo and the user talking over it often arrive as one stretch of speech: drop the
- * leading words the bot said, so "…Romulus founded it. Tell me about Paris" becomes "Tell me
- * about Paris".
+ * The other end: the bot kept talking (or echoing) after the user's words, so the stretch ends with
+ * a run of the bot's words again. Drop that run (three words or more) after the user's last two.
  */
-export function withoutLeadingEcho(heard: string, spoken: string): string {
-  const said = [...new Set(normalize(spoken).split(" ").filter((w) => w.length > 2))];
+export function withoutTrailingEcho(heard: string, spoken: string): string {
   const tokens = heard.trim().split(/\s+/);
-  const isNew = (token: string) => {
-    const w = normalize(token);
-    return w.length > 2 && !said.some((s) => similar(s, w));
-  };
-  for (let i = 0; i < tokens.length; i++) {
-    // The user's part starts at two new words in a row (short words in between don't count).
-    if (!isNew(tokens[i])) continue;
-    const next = tokens.slice(i + 1).find((t) => normalize(t).length > 2);
-    if (!next || isNew(next)) {
-      // An echo is a run of the bot's words; one look-alike word ("wait" / "with") isn't.
-      const echoed = tokens.slice(0, i).filter((t) => normalize(t).length > 2).length;
-      return echoed >= 3 ? tokens.slice(i).join(" ") : heard.trim();
+  const words = tokens.map((t) => normalize(t)).map((w) => (isContent(w) ? w : ""));
+  const contentIndex = words.flatMap((w, i) => (w ? [i] : []));
+  const flags = alignedFlags(
+    contentIndex.map((i) => words[i]),
+    spokenWords(spoken),
+  );
+  let end = -1;
+  for (let k = flags.length - 1; k > 0; k--) {
+    if (!flags[k] && !flags[k - 1]) {
+      end = k;
+      break;
     }
   }
-  return heard.trim();
+  // Forward over the user's words and lone words of the bot's among them, as at the start.
+  while (end >= 0 && end + 1 < flags.length && (!flags[end + 1] || (end + 2 < flags.length && !flags[end + 2]))) end++;
+  if (end < 0 || flags.length - 1 - end < 3) return heard.trim();
+  return tokens.slice(0, contentIndex[end] + 1).join(" ");
+}
+
+/**
+ * The bot's echo and the user talking over it often arrive as one stretch of speech: drop the
+ * leading part that lines up with what the bot said (at least three words of it), so "…Romulus
+ * founded it. Tell me about Paris" becomes "Tell me about Paris".
+ */
+export function withoutLeadingEcho(heard: string, spoken: string): string {
+  const tokens = heard.trim().split(/\s+/);
+  const said = spokenWords(spoken);
+  const words = tokens.map((t) => normalize(t)).map((w) => (isContent(w) ? w : ""));
+  const contentIndex = words.flatMap((w, i) => (w ? [i] : []));
+  const flags = alignedFlags(
+    contentIndex.map((i) => words[i]),
+    said,
+  );
+  // The echo is the run of lined-up words at the start; the user starts at two unaligned in a row
+  // (one stray word at the end is a mishearing, not someone talking).
+  let cut = -1;
+  for (let k = 0; k + 1 < flags.length; k++) {
+    if (!flags[k] && !flags[k + 1]) {
+      cut = k;
+      break;
+    }
+  }
+  // Walk back over the user's own words, and over a lone word of the bot's among them ("Tell me
+  // about Paris": the bot said "about" too); the echo is a run of the bot's words.
+  let start = cut;
+  while (start > 0 && (!flags[start - 1] || (start - 2 >= 0 && !flags[start - 2]))) start--;
+  if (start < 3) return heard.trim();
+  let from = contentIndex[start];
+  // A last echo word before a full stop ("…in September. Wait, stop.") isn't the user's.
+  if (/[.!?]$/.test(tokens[from]) && from + 1 < tokens.length) from++;
+  return tokens.slice(from).join(" ");
 }
 
 /**
@@ -282,5 +351,14 @@ export function yesOrNo(text: string): "allow" | "deny" | null {
   const mixed = (yes && /\b(no|not|don'?t|nahi|nahin)\b/.test(t)) || (no && /\b(yes|yeah|sure|okay|ok|haan)\b/.test(t));
   if (mixed || yes === no) return null;
   return yes ? "allow" : "deny";
+}
+
+/** "…and it started as a small kingdom. Stop": a stop said at the end of what was heard, after an echo. */
+export function endsWithStop(text: string): boolean {
+  const words = normalize(text).split(" ").filter(Boolean);
+  for (let n = 1; n <= Math.min(4, words.length); n++) {
+    if (parseVoiceCommand(words.slice(-n).join(" "), [])?.type === "stop") return true;
+  }
+  return false;
 }
 

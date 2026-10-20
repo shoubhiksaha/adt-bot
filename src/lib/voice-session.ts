@@ -6,6 +6,7 @@ import { chime, createSpeaker, duckSpeech, type Speaker, takeSentences } from ".
 import { END_SILENCE_MS, type Engine, ENGINE_LABELS, listen, type ListenSession, resolveEngine, stopReadAloud, transcribe } from "./voice";
 import {
   echoesLastWords,
+  endsWithStop,
   isLikelyHallucination,
   isSubstantial,
   matchWakeWord,
@@ -271,7 +272,7 @@ export class VoiceSession {
    */
   private isCutIn(caption: string): boolean {
     if (this.approval || this.bargeMode() === "off") return false;
-    if (parseVoiceCommand(caption, useStore.getState().bots)?.type === "stop") return true;
+    if (parseVoiceCommand(caption, useStore.getState().bots)?.type === "stop" || endsWithStop(caption)) return true;
     return soundsLikeUser(caption, this.recentSpeech());
   }
 
@@ -564,6 +565,8 @@ export class VoiceSession {
       return;
     }
     // Started while the bot was talking but finished after it stopped: drop it if it's the bot's own voice.
+    // "Stop" at the end of a stretch that began with the bot's echo is still the user saying stop.
+    if (duringSpeech && endsWithStop(text) && !parseVoiceCommand(text, useStore.getState().bots)) text = "stop";
     const command = parseVoiceCommand(text, useStore.getState().bots);
     if (duringSpeech && !command) {
       // Began while the bot was talking: its own voice, or the user (maybe both, echo first).
@@ -702,10 +705,12 @@ export class VoiceSession {
     this.set({ phase: "speaking", sentence: text, spokenChars: 0, error: null });
     speaker.say(text);
     await speaker.idle();
+    // A newer turn already took over (and interrupt() recorded this one): don't overwrite its state.
+    if (turn !== this.turn || this.closed) return false;
     this.lastSpoken = speaker.spoken;
     // The voice is still coming out of the speakers for a moment after playback ends here.
     this.speechEndedAt = performance.now() + speaker.tailMs;
-    return turn === this.turn && !this.closed;
+    return true;
   }
 
   private async ask(text: string, options: { search?: boolean; imagine?: boolean } = {}, early: EarlyReply | null = null) {
@@ -864,10 +869,12 @@ export class VoiceSession {
       chime("error");
     }
     await speaker.idle();
+    // An interrupted turn ends here after the next one began: interrupt() already recorded what it
+    // said, and overwriting now would hide the new reply from the echo check.
+    if (turn !== this.turn || this.closed) return;
     this.lastSpoken = speaker.spoken;
     // The voice is still coming out of the speakers for a moment after playback ends here.
     this.speechEndedAt = performance.now() + speaker.tailMs;
-    if (turn !== this.turn || this.closed) return;
     this.lastReply = this.state.reply;
     this.enterListening();
   }

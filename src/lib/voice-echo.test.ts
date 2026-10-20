@@ -277,6 +277,9 @@ describe("garbled echo and talking over it", () => {
     const { withoutLeadingEcho } = await import("./voice-commands");
     expect(withoutLeadingEcho("Years' Rome in six sentences. Legends says Romulus founded it. Tell me about Paris instead.", spoken)).toBe("Tell me about Paris instead.");
     expect(withoutLeadingEcho("Tell me about Paris", spoken)).toBe("Tell me about Paris");
+    // Echo on both sides: the user's words are in the middle.
+    const { userPart } = await import("./voice-commands");
+    expect(userPart("Here's Rome in six sentences. Legend says Romulus. Tell me about Paris instead. Founded it in seven fifty-three BC, and it started as a small kingdom.", spoken)).toBe("Tell me about Paris instead.");
   });
 
   it("drops a garbled echo that began while it spoke, and answers the user's part of a mixed one", async () => {
@@ -302,6 +305,30 @@ describe("answering the bot's question", () => {
     const { echoesLastWords } = await import("./voice-commands");
     expect(echoesLastWords("Yes.", "Can I create a routine: Morning news? Say yes or no.")).toBe(false);
     expect(echoesLastWords("create a routine morning news say yes or no", "Can I create a routine: Morning news? Say yes or no.")).toBe(true);
+  });
+});
+
+describe("saying stop", () => {
+  it("understands the ways people cut in, alone or after the bot's echo", async () => {
+    const { endsWithStop, parseVoiceCommand, userPart } = await import("./voice-commands");
+    for (const t of ["Wait, stop.", "okay okay stop", "no, hold on", "stop stop", "wait a second", "hang on please"]) expect(parseVoiceCommand(t, [])?.type, t).toBe("stop");
+    expect(parseVoiceCommand("wait actually tell me about Paris", [])).toBeNull();
+    expect(endsWithStop("and it started as a small kingdom. Stop.")).toBe(true);
+    expect(endsWithStop("it started as a small kingdom")).toBe(false);
+    // Reusing one of the bot's words ("Paris" ≈ "parts") doesn't make the user's sentence an echo.
+    const spoken = "The city grew in parts over many centuries, and it was rebuilt about three times.";
+    expect(userPart("Tell me about Paris instead", spoken)).toBe("Tell me about Paris instead");
+  });
+});
+
+describe("numbers and stray words around the user's words", () => {
+  it("drops a garbled number echo and a stray echo word before the user's sentence", async () => {
+    const { userPart } = await import("./voice-commands");
+    const spoken = "Paris started around the third century BC as a settlement of a Celtic tribe called the Parisii.";
+    expect(userPart("3rd century BC as a 13th century.", spoken)).toBeNull();
+    const rome = "Here's Rome in six sentences. According to legend, Rome was founded in seven fifty-three BC by Romulus, and it was ruled by kings until about 509 BC.";
+    expect(userPart("Here's Rome in six sentences, according to legend Rome was founded in 1784. Tell me about Paris instead.", rome)).toBe("Tell me about Paris instead.");
+    expect(userPart("According to legend, Rome was founded in September. Wait, stop. Tell me about Paris instead.", rome)).toBe("Wait, stop. Tell me about Paris instead.");
   });
 });
 
