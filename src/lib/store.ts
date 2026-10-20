@@ -39,6 +39,8 @@ function createThrottledStorage(): PersistStorage<Persisted> & { flush: () => vo
     if (!pending) return;
     const value = pending;
     pending = null;
+    // Without IndexedDB (tests in Node, locked-down webviews) set() throws synchronously, inside a timer.
+    if (typeof indexedDB === "undefined") return;
     void set(STORAGE_KEY, value).catch((error) => console.error("Could not save", error));
   };
 
