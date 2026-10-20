@@ -1,6 +1,7 @@
 import { desktopInvoke, isDesktop } from "../desktop";
 import { generateImage, resolveImageModel } from "../imagine";
 import { knowledgeContext } from "../knowledge";
+import { memoryIsLarge, searchMemory } from "../memory-recall";
 import { readPage, webSearch } from "../search";
 import { addMemory, useStore } from "../store";
 import { registerTool, registerToolGroup, str, type ToolRisk } from "./tools";
@@ -100,12 +101,23 @@ registerTool({
   name: "search_knowledge",
   group: "knowledge",
   risk: "read",
-  description: "Search the user's knowledge files (company documents, handbooks, product docs) for passages relevant to a question.",
+  description:
+    "Search the user's knowledge files (company documents, handbooks, product docs) and what you've saved about the user, for passages and memories relevant to a question.",
   parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
-  available: ({ settings, bot }) => settings.knowledge.length + (bot.knowledge?.length ?? 0) > 0,
+  // Memories are all in the prompt until there are many of them; then searching them helps too.
+  available: ({ settings, bot }) => settings.knowledge.length + (bot.knowledge?.length ?? 0) > 0 || memoryIsLarge(bot.memory),
   async run(args, ctx) {
-    const result = await knowledgeContext([...ctx.settings.knowledge, ...(ctx.bot.knowledge ?? [])], str(args, "query"));
-    return result.prompt ? { content: result.prompt, untrustedSource: "knowledge files" } : "Nothing relevant found.";
+    const query = str(args, "query");
+    // The bot as this turn sees it (chat rooms hand over a copy without its private memory). A
+    // small memory is already in the prompt whole.
+    const memory = memoryIsLarge(ctx.bot.memory) ? ctx.bot.memory : [];
+    const [result, memories] = await Promise.all([
+      knowledgeContext([...ctx.settings.knowledge, ...(ctx.bot.knowledge ?? [])], query),
+      searchMemory(ctx.bot, memory, query, 8),
+    ]);
+    if (!result.prompt && !memories.length) return "Nothing relevant found.";
+    const remembered = memories.length ? `Saved memories about the user that may be relevant:\n${memories.map((m) => `- ${m}`).join("\n")}` : "";
+    return result.prompt ? { content: [remembered, result.prompt].filter(Boolean).join("\n\n"), untrustedSource: "knowledge files" } : remembered;
   },
 });
 

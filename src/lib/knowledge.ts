@@ -1,5 +1,7 @@
 import { createStore, del, get, set } from "idb-keyval";
+import { hybridRank } from "./hybrid";
 import type { KnowledgeRef } from "./types";
+import { deleteVectors } from "./vector-index";
 
 /**
  * Knowledge files: company profiles, handbooks, product docs, a bot's instructions. Text is kept
@@ -31,11 +33,21 @@ export async function saveKnowledgeText(name: string, text: string, size = text.
 export async function removeKnowledgeText(id: string) {
   cache.delete(id);
   if (docs) await del(id, docs);
+  await deleteVectors(knowledgeSource(id)).catch(() => undefined);
 }
 
 async function loadText(id: string): Promise<string> {
   if (!cache.has(id)) cache.set(id, (docs ? await get<string>(id, docs) : undefined) ?? "");
   return cache.get(id)!;
+}
+
+/** Where a file's passages live in the vector index (smarter search). */
+export const knowledgeSource = (id: string) => `file:${id}`;
+
+/** A file's passages, as ranked and as indexed for smarter search. */
+export async function knowledgeChunks(id: string): Promise<string[]> {
+  const text = await loadText(id);
+  return text ? chunk(text) : [];
 }
 
 export type KnowledgeContext = { prompt: string; used: string[] };
@@ -55,8 +67,9 @@ export async function knowledgeContext(refs: KnowledgeRef[], query: string): Pro
     };
   }
 
-  const chunks = available.flatMap((t) => chunk(t.text).map((text, i) => ({ name: t.ref.name, index: i, text })));
-  const ranked = rank(chunks, query).slice(0, TOP_CHUNKS);
+  const chunks = available.flatMap((t) => chunk(t.text).map((text, i) => ({ name: t.ref.name, index: i, text, source: knowledgeSource(t.ref.id) })));
+  // Keywords (BM25), plus meaning when smarter search is on.
+  const ranked = (await hybridRank(chunks, query, rank(chunks, query))).items.slice(0, TOP_CHUNKS);
   if (!ranked.length) return { prompt: "", used: [] };
   ranked.sort((a, b) => (a.name === b.name ? a.index - b.index : a.name.localeCompare(b.name)));
   return {

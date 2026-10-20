@@ -8,6 +8,7 @@ import type { SettingsTab } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { stopStreaming } from "./lib/chat";
 import { desktopOn } from "./lib/desktop";
+import { startSemanticSearch } from "./lib/semantic";
 import { selectBot, startNewChat, useStore } from "./lib/store";
 import { preferredMode, themeCss } from "./lib/theme";
 
@@ -112,6 +113,11 @@ export function App() {
   useEffect(() => {
     if (hydrated && !bot && bots[0]) selectBot(bots[0].id);
   }, [hydrated, bot, bots]);
+
+  // Smarter memory search keeps its index current in the background (only when it's switched on).
+  useEffect(() => {
+    if (hydrated) startSemanticSearch();
+  }, [hydrated]);
 
   // Warm up the Markdown renderer once the first screen is up.
   useEffect(() => {

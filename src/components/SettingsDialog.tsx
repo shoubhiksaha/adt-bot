@@ -18,6 +18,7 @@ import {
   updateSettings,
   useStore,
 } from "../lib/store";
+import { clearVectorIndex } from "../lib/semantic";
 import { detectEnv, type Platform } from "../lib/transport";
 import { Dialog } from "./Dialog";
 import { ProviderSetup } from "./ProviderSetup";
@@ -486,7 +487,8 @@ function DataTab() {
         className="btn danger"
         onClick={async () => {
           if (confirm("Delete all bots, chats, memory and keys from this device?")) {
-            await eraseAllData();
+            // The search index holds what memories and files say, in another form: it goes too.
+            await Promise.allSettled([eraseAllData(), clearVectorIndex()]);
             location.reload();
           }
         }}

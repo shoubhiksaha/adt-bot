@@ -233,6 +233,8 @@ export type Settings = {
   about: string;
   /** Files every bot can draw on (company profile, handbook, product docs…). */
   knowledge: KnowledgeRef[];
+  /** "Smarter memory search": also find memories and knowledge passages by meaning, with an on-device model. */
+  semanticSearch: boolean;
   sendOnEnter: boolean;
   /** Route requests through the bundled relay when one is available (desktop, self-hosted web). */
   useProxy: boolean;

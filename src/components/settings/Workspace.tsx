@@ -4,6 +4,7 @@ import { fileText } from "../../lib/images";
 import { updateSettings, useStore } from "../../lib/store";
 import { KNOWLEDGE_ACCEPT, KnowledgeFiles } from "../KnowledgeFiles";
 import { Section } from "./controls";
+import { SemanticSearchSetting } from "./SemanticSearch";
 
 /** Who you are, what your organisation does, what the bots are for, plus shared knowledge files. */
 export function WorkspaceSettings() {
@@ -96,6 +97,10 @@ export function WorkspaceSettings() {
           onChange={(knowledge) => updateSettings({ knowledge })}
           hint="Drop documents here."
         />
+      </Section>
+
+      <Section title="Memory and knowledge search">
+        <SemanticSearchSetting />
       </Section>
     </div>
   );

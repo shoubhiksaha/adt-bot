@@ -2,6 +2,7 @@ import { ArrowUp, AudioLines, FileText, Globe, Lightbulb, Loader2, Mic, Papercli
 import { useEffect, useRef, useState } from "react";
 import { sendMessage, stopStreaming } from "../lib/chat";
 import { ACCEPTED_FILES, fileToAttachment, formatBytes } from "../lib/images";
+import { warmSemanticSearch } from "../lib/semantic";
 import { updateSettings, useStore } from "../lib/store";
 import type { Attachment } from "../lib/types";
 import { listen, type ListenSession, resolveEngine, warmVoice } from "../lib/voice";
@@ -14,6 +15,7 @@ function warmVoiceMode() {
   const { settings, providers } = useStore.getState();
   void import("./VoiceMode");
   warmVoice(settings.voice, providers);
+  warmSemanticSearch();
 }
 
 export function Composer({
@@ -176,6 +178,7 @@ export function Composer({
           value={text}
           placeholder={placeholder}
           aria-label="Message"
+          onFocus={warmSemanticSearch}
           onChange={(e) => setText(e.target.value)}
           onPaste={(e) => {
             const files = [...e.clipboardData.files];

@@ -124,6 +124,7 @@ export const defaultSettings: Settings = {
   userName: "",
   about: "",
   knowledge: [],
+  semanticSearch: false,
   sendOnEnter: true,
   useProxy: true,
   customInstructions: "",
