@@ -128,6 +128,9 @@ Bots can do things as well as talk. Turn it on or off, and choose what needs you
     passwords, always ask. A "Stop" banner shows while it works (**⌘⇧⎋** stops every bot), and nothing is typed
     while the Mac is locked. Needs Accessibility and Screen Recording permission (**Settings → Computer control**
     links to the right System Settings pages).
+  - Before saying a task on screen is done, a bot looks at the result once (if it hasn't since its last action),
+    and says what it saw. It waits for you to pause before using the keyboard or mouse, and sends messages only
+    when the right field still holds its text.
 - **Each bot's own computer** (desktop): a Docker container per bot with a persistent `/workspace`,
   resource limits, and an optional "no network" switch. See **Computers** in the sidebar.
 - **Rooms** (desktop): people on your network chat with each other and your bots from any browser by
@@ -135,6 +138,11 @@ Bots can do things as well as talk. Turn it on or off, and choose what needs you
   need approval unless you allow it.
 - **Desktop tools**: run commands, read and write files (in `~/ADT Bot Workspace` by default), open
   files and links.
+- **Undo file changes**: before a bot changes a file (write_file), or runs a command in `~/ADT Bot Workspace`, the
+  earlier versions are kept for 7 days (up to 1 GB). "Undo this turn's file changes" under a reply lists what will be
+  put back or deleted and asks first; files you changed since are left alone unless you say otherwise. Bots can do
+  the same with the `rewind` tool. Commands elsewhere, coding agents and very large workspaces (over 2,000 files)
+  aren't covered.
 
 ## Voice (hands-free, like Grok's voice mode)
 
