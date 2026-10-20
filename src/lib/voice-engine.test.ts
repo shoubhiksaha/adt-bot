@@ -14,7 +14,7 @@ const voice = (n: number) => Array(n).fill(0.95);
 
 describe("turn detection", () => {
   it("emits start, a speculative pause, then the end of the turn after the silence window", () => {
-    const events = run([...quiet(20), ...voice(30), ...quiet(30)]);
+    const events = run([...quiet(20), ...voice(30), ...quiet(30)]).filter((e) => e.type !== "progress" && e.type !== "silence");
     expect(events.map((e) => e.type)).toEqual(["start", "speech", "pause", "end"]);
     const pause = events[2] as Extract<SegmentEvent, { type: "pause" }>;
     const end = events[3] as Extract<SegmentEvent, { type: "end" }>;
@@ -25,7 +25,7 @@ describe("turn detection", () => {
   });
 
   it("invalidates the speculative result when the speaker keeps going", () => {
-    const events = run([...voice(20), ...quiet(8), ...voice(20), ...quiet(30)]);
+    const events = run([...voice(20), ...quiet(8), ...voice(20), ...quiet(30)]).filter((e) => e.type !== "progress" && e.type !== "silence");
     expect(events.map((e) => e.type)).toEqual(["start", "speech", "pause", "resume", "pause", "end"]);
     const firstPause = events[2] as Extract<SegmentEvent, { type: "pause" }>;
     const end = events.at(-1) as Extract<SegmentEvent, { type: "end" }>;
@@ -41,6 +41,27 @@ describe("turn detection", () => {
     expect(run([...quiet(5), ...voice(4), ...quiet(40)]).map((e) => e.type)).toEqual(["start", "discard"]);
     const speech = run([...quiet(5), ...voice(7), ...voice(10)]).map((e) => e.type);
     expect(speech).toEqual(["start", "speech"]);
+  });
+
+  it("asks the turn model after a short silence; a finished turn ends at once, an unfinished one waits", () => {
+    const frames = (n: number, p: number) => Array.from({ length: n }, () => p);
+    const decideOn = (complete: boolean) => {
+      const segmenter = new Segmenter({ endSilenceMs: 700, settleMs: 200, patientEndMs: 2000 });
+      const types: { type: string; at: number }[] = [];
+      [...frames(30, 0.9), ...frames(80, 0.05)].forEach((p, i) => {
+        for (const e of segmenter.push(new Float32Array(FRAME), p)) {
+          types.push({ type: e.type, at: i });
+          if (e.type === "silence") segmenter.decide(e.version, complete);
+        }
+      });
+      return types;
+    };
+    const done = decideOn(true);
+    const silence = done.find((e) => e.type === "silence")!;
+    expect(done.find((e) => e.type === "end")!.at - silence.at).toBeLessThanOrEqual(1);
+    // Unfinished: no end within the normal 700 ms (22 frames), but by 2 s (63 frames) of silence.
+    const waiting = decideOn(false);
+    expect(waiting.find((e) => e.type === "end")!.at - 30).toBeGreaterThan(40);
   });
 
   it("reports progress during long speech for live captions", () => {

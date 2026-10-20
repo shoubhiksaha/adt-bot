@@ -27,11 +27,13 @@ const PANES = {
   accessibility: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
   "screen-recording": "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
   automation: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
+  microphone: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
 };
 const PANE_LABEL = {
   accessibility: "Privacy & Security → Accessibility",
   "screen-recording": "Privacy & Security → Screen & System Audio Recording",
   automation: "Privacy & Security → Automation",
+  microphone: "Privacy & Security → Microphone",
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -426,25 +428,60 @@ function electronApi() {
   }
 }
 
-async function permissions() {
+/** Automation (System Events): only known once macOS has been asked; remembered from the last answer. */
+let automationState = "unknown";
+
+/**
+ * Where macOS stands on each permission now. The app's own answers for Screen Recording are cached
+ * by macOS until the app restarts, so it also asks a fresh helper process (which macOS attributes
+ * to this app) and reports when the change is waiting for a restart.
+ */
+async function permissions({ fresh = true } = {}) {
   if (!SUPPORTED) return { supported: false, platform: process.platform };
   const sp = electronApi()?.systemPreferences;
-  let accessibility = null;
-  let screen = "unknown";
-  if (sp?.isTrustedAccessibilityClient) {
-    accessibility = sp.isTrustedAccessibilityClient(false);
-    screen = sp.getMediaAccessStatus("screen");
-  } else {
-    const r = JSON.parse(await jxa(PERMISSIONS_JXA, [], "Checking permissions"));
-    accessibility = r.accessibility;
-    screen = r.screen === true ? "granted" : r.screen === false ? "denied" : "unknown";
-  }
-  return { supported: true, platform: "darwin", accessibility, screenRecording: screen, app: hostAppLabel() };
+  const live = fresh ? await jxa(PERMISSIONS_JXA, [], "Checking permissions", 10_000).then(JSON.parse, () => ({})) : {};
+  const cachedScreen = sp?.getMediaAccessStatus?.("screen") ?? "unknown";
+  const accessibility = Boolean(sp?.isTrustedAccessibilityClient?.(false)) || live.accessibility === true ? true : (live.accessibility ?? (sp ? false : null));
+  const screenRecording =
+    live.screen === true ? "granted" : live.screen === false ? (cachedScreen === "not-determined" ? "not-determined" : "denied") : cachedScreen;
+  return {
+    supported: true,
+    platform: "darwin",
+    accessibility,
+    screenRecording,
+    /** Allowed in System Settings, but this running copy of the app still has the old answer. */
+    screenNeedsRestart: screenRecording === "granted" && cachedScreen !== "granted",
+    automation: automationState,
+    microphone: sp?.getMediaAccessStatus?.("microphone") ?? "unknown",
+    app: hostAppLabel(),
+  };
 }
 
 async function requireAccessibility(what) {
+  // The in-app check is live for Accessibility; only ask a helper process when it says no.
+  if (electronApi()?.systemPreferences?.isTrustedAccessibilityClient?.(false)) return;
   const p = await permissions();
   if (p.accessibility === false) throw permissionError("accessibility", what);
+}
+
+/** Asks System Events for something harmless: shows macOS's Automation prompt the first time. */
+async function checkAutomation() {
+  ensureMac();
+  try {
+    await exec(OSASCRIPT, ["-e", 'tell application "System Events" to return name of first application process whose frontmost is true'], { what: "Checking Automation", timeoutMs: 60_000 });
+    automationState = "granted";
+  } catch (error) {
+    if (/Automation/.test(String(error.message))) automationState = "denied";
+    else throw error;
+  }
+  return automationState;
+}
+
+/** A one-pixel capture puts the app in the Screen Recording list (and shows macOS's prompt the first time). */
+async function registerScreenRecording() {
+  const file = path.join(os.tmpdir(), `adt-probe-${randomUUID()}.png`);
+  await exec(SCREENCAPTURE, ["-x", "-R0,0,1,1", file], { what: "Checking Screen Recording", timeoutMs: 15_000 }).catch(() => undefined);
+  fs.rm(file, { force: true }, () => undefined);
 }
 
 async function sipsSize(file) {
@@ -630,14 +667,36 @@ async function appleScript({ source, language = "applescript" } = {}) {
   return { ok: true, output };
 }
 
-exports.register = ({ ipcMain, shell }) => {
+exports.register = ({ app, ipcMain, shell, access }) => {
   const handle = (name, fn) => ipcMain.handle(`adt:mac:${name}`, (_e, payload) => fn(payload ?? {}));
+  /** Anything that acts on the Mac is off in Sandbox mode (looking and permissions still work). */
+  const act = (name, fn) =>
+    handle(name, (payload) => {
+      if (access?.mode === "sandbox") throw new Error("Computer access is set to Sandbox, so bots can't control this Mac.");
+      return fn(payload);
+    });
   handle("status", async () => (SUPPORTED ? { ...(await permissions()), screen: await geometry().catch(() => null) } : { supported: false, platform: process.platform }));
-  handle("permissions", permissions);
-  handle("openSettings", ({ pane }) => {
+  handle("permissions", () => permissions());
+  handle("openSettings", async ({ pane }) => {
     const url = PANES[pane];
     if (!url) throw new Error("Unknown settings pane.");
+    // Make sure ADT Bot is in the list to switch on (macOS only lists apps that have asked).
+    if (SUPPORTED && pane === "accessibility") electronApi()?.systemPreferences?.isTrustedAccessibilityClient?.(true);
+    if (SUPPORTED && pane === "screen-recording") await registerScreenRecording();
     return shell.openExternal(url);
+  });
+  handle("checkAutomation", checkAutomation);
+  handle("requestMicrophone", async () => {
+    ensureMac();
+    const sp = electronApi()?.systemPreferences;
+    // macOS asks only once; after a "no", the switch is in System Settings.
+    if (sp?.getMediaAccessStatus("microphone") === "not-determined") return sp.askForMediaAccess("microphone");
+    await shell.openExternal(PANES.microphone);
+    return sp?.getMediaAccessStatus("microphone") === "granted";
+  });
+  handle("relaunch", () => {
+    app?.relaunch();
+    app?.exit(0);
   });
   handle("requestAccessibility", () => {
     ensureMac();
@@ -645,18 +704,18 @@ exports.register = ({ ipcMain, shell }) => {
   });
   handle("screenshot", screenshot);
   handle("cursor", cursor);
-  handle("move", move);
-  handle("click", click);
-  handle("drag", drag);
-  handle("scroll", scroll);
-  handle("type", typeText);
-  handle("key", key);
+  act("move", move);
+  act("click", click);
+  act("drag", drag);
+  act("scroll", scroll);
+  act("type", typeText);
+  act("key", key);
   handle("apps", listApps);
   handle("frontmost", frontmost);
-  handle("open", openApp);
-  handle("quit", quitApp);
-  handle("openUrl", (payload) => openUrl(shell, payload));
-  handle("applescript", appleScript);
+  act("open", openApp);
+  act("quit", quitApp);
+  act("openUrl", (payload) => openUrl(shell, payload));
+  act("applescript", appleScript);
 };
 
 exports._test = {

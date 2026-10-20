@@ -1,9 +1,9 @@
 import { Mic, MicOff, Settings2, X, Zap } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../lib/store";
-import { speakable, ttsLabel } from "../lib/tts";
+import { speakable, speechLevel, ttsLabel } from "../lib/tts";
 import { VoiceSession, type VoiceState } from "../lib/voice-session";
-import { WHISPER_SIZES } from "../lib/whisper";
+import { WHISPER_SIZES, whisperDownloaded } from "../lib/whisper";
 import { Avatar } from "./Avatar";
 import { openSettings } from "./MessageItem";
 
@@ -24,6 +24,11 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
   const voice = useStore((s) => s.settings.voice);
   const [state, setState] = useState<VoiceState | null>(null);
   const session = useRef<VoiceSession | null>(null);
+  // Loading a downloaded model also reports progress; don't call that a download.
+  const [cached, setCached] = useState(false);
+  useEffect(() => {
+    void whisperDownloaded(voice.localModel).then(setCached, () => undefined);
+  }, [voice.localModel]);
 
   useEffect(() => {
     const s = new VoiceSession({ onState: setState, onClose, initialRequest });
@@ -34,6 +39,24 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
     return () => s.close(false);
     // One session per opening.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // The orb follows the actual sound every frame: the microphone while listening, the bot's voice
+  // while it speaks. Written straight to a CSS variable, so it doesn't re-render the screen.
+  const orb = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    let frame = 0;
+    let level = 0;
+    const tick = () => {
+      const s = session.current;
+      const target = s ? (s.state.phase === "speaking" ? speechLevel() : s.inputLevel()) : 0;
+      // Rise fast, fall slower, like a VU meter.
+      level += (target - level) * (target > level ? 0.45 : 0.12);
+      orb.current?.style.setProperty("--level", level.toFixed(3));
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
   }, []);
 
   // Space = talk / interrupt, M = mute, Esc = end.
@@ -52,8 +75,6 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
 
   if (!state || !bot) return null;
   const { phase } = state;
-  const listening = phase === "listening" || phase === "hearing";
-  const scale = listening || phase === "standby" ? 1 + state.level * 0.45 : 1;
   const callName = bot.nickname?.trim() || bot.name;
 
   const tapLabel =
@@ -69,10 +90,14 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
 
   const status =
     state.download !== null && state.download < 100
-      ? `Downloading speech model (${WHISPER_SIZES[voice.localModel].mb} MB, one time)… ${state.download}%`
+      ? cached
+        ? "Loading speech model…"
+        : `Downloading speech model (${WHISPER_SIZES[voice.localModel].mb} MB, one time)… ${state.download}%`
       : phase === "standby"
         ? `Say “Hey ${state.wakeName}” to continue`
-        : STATUS[phase];
+        : phase === "thinking" && state.activity
+          ? state.activity
+          : STATUS[phase];
 
   const reply = speakable(state.reply);
 
@@ -106,8 +131,8 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
       <div className="voice-center">
         <button
           type="button"
+          ref={orb}
           className={`orb ${phase}`}
-          style={{ transform: `scale(${scale})` }}
           onClick={() => session.current?.tap()}
           aria-label={tapLabel}
         >
@@ -127,7 +152,10 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
               {state.sentence && reply.includes(state.sentence) ? (
                 <>
                   <span className="said">{reply.slice(0, reply.indexOf(state.sentence))}</span>
-                  <mark>{state.sentence}</mark>
+                  <mark>
+                    {state.sentence.slice(0, state.spokenChars)}
+                    <span className="coming">{state.sentence.slice(state.spokenChars)}</span>
+                  </mark>
                   <span className="unsaid">{reply.slice(reply.indexOf(state.sentence) + state.sentence.length)}</span>
                 </>
               ) : (

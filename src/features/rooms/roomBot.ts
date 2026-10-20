@@ -69,7 +69,7 @@ export async function runRoomBot(o: Options) {
       await runToolLoop({
         request,
         tools,
-        context: { bot, conversationId: `room:${o.roomId}`, settings, providers, platform: "desktop", signal: o.signal, progress: () => undefined },
+        context: { bot, conversationId: `room:${o.roomId}`, settings, providers, platform: "desktop", signal: o.signal, progress: () => undefined, shared: true },
         mode: settings.agent.mode,
         maxSteps: Math.min(settings.agent.maxSteps, 6),
         callbacks: { onEvent: handle, onCalls: o.onCalls },

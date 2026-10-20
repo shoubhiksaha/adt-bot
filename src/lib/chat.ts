@@ -1,5 +1,6 @@
 import { generateImage, resolveImageModel } from "./imagine";
 import "./agent/features";
+import { effectiveAccess, runsWithoutAsking } from "./agent/access";
 import { runToolLoop } from "./agent/loop";
 import { toolsFor } from "./agent/tools";
 import { complete, type StreamEvent, streamChat, supportsNativeSearch } from "./llm";
@@ -21,12 +22,17 @@ export type SendOptions = {
   background?: boolean;
   /** Cancels a background run. */
   signal?: AbortSignal;
+  /** Started from a shared chat room (directly or through another bot): Full access doesn't apply. */
+  shared?: boolean;
+  /** Nobody can answer approval cards (voice mode, or a bot asked from it). */
+  unattended?: boolean;
 };
 
 const VOICE_STYLE =
   "This is a live voice conversation: your reply is read aloud. Answer like a person talking: lead with the answer in one " +
   "or two short sentences, then stop unless asked for more. No Markdown, lists, tables, emojis, URLs or code blocks; " +
-  "spell out symbols and numbers naturally.";
+  "spell out symbols and numbers naturally. When a task needs tools, say one short sentence first (like \"On it.\"), then " +
+  "work silently: don't describe your steps, the screen or where things are. When done, say only the result in a sentence or two.";
 
 let controller: AbortController | null = null;
 
@@ -155,12 +161,16 @@ export async function resendFrom(conversationId: string, messageId: string, newT
  * (routines, bots asking other bots). Same flow as a normal message: the bot's model, prompt,
  * knowledge and tools.
  */
-export async function sendInBackground(conversationId: string, text: string, options: { signal?: AbortSignal } = {}): Promise<Message | undefined> {
+export async function sendInBackground(
+  conversationId: string,
+  text: string,
+  options: Pick<SendOptions, "signal" | "shared" | "unattended"> = {},
+): Promise<Message | undefined> {
   const conversation = useStore.getState().conversations[conversationId];
   if (!conversation) throw new Error("That conversation no longer exists.");
   const userMessage: Message = { id: uid(), role: "user", content: text, createdAt: Date.now() };
   updateConversation(conversationId, (c) => ({ ...c, messages: [...c.messages, userMessage], updatedAt: Date.now() }));
-  await runAssistant(conversationId, conversation.botId, { background: true, signal: options.signal });
+  await runAssistant(conversationId, conversation.botId, { background: true, signal: options.signal, shared: options.shared, unattended: options.unattended });
   const messages = useStore.getState().conversations[conversationId]?.messages ?? [];
   return messages.slice(messages.findIndex((m) => m.id === userMessage.id) + 1).find((m) => m.role === "assistant");
 }
@@ -253,7 +263,8 @@ async function runAssistant(conversationId: string, botId: string, opts: SendOpt
     // Tools the bot may use for this answer (voice mode: only ones that never need approval).
     const platform = (await detectEnv()).platform;
     let agentTools = toolsFor({ settings, providers, platform, bot });
-    if (opts.voice) agentTools = agentTools.filter((t) => t.risk === "read" && !t.riskFor);
+    // Voice mode can't show approval cards: only tools that may run without asking.
+    if (opts.voice || opts.unattended) agentTools = agentTools.filter((t) => runsWithoutAsking(t, opts.shared ? { ...settings.agent, access: effectiveAccess(settings.agent, opts) } : settings.agent));
 
     const stream = async (nativeSearch: boolean, query: string) => {
       const context = pages.length || sources.length ? sourcesPrompt(query, sources, pages) : "";
@@ -299,10 +310,12 @@ async function runAssistant(conversationId: string, botId: string, opts: SendOpt
         await runToolLoop({
           request,
           tools: agentTools,
-          context: { bot, conversationId, settings, providers, platform, signal, progress: () => undefined },
+          context: { bot, conversationId, settings, providers, platform, signal, progress: () => undefined, unattended: opts.voice || opts.unattended, shared: opts.shared },
           mode: settings.agent.mode,
           maxSteps: settings.agent.maxSteps,
-          callbacks: { onEvent: handle, onCalls: (toolCalls) => patchReply({ toolCalls, status: undefined }) },
+          // narrationEnd: everything written so far came before (or between) tool steps, so voice mode
+          // doesn't read it aloud; only the text after the last step is the answer.
+          callbacks: { onEvent: handle, onCalls: (toolCalls) => patchReply({ toolCalls, status: undefined, narrationEnd: content.length }) },
         });
       } else {
         for await (const event of streamChat(request)) handle(event);

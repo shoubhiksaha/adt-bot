@@ -5,24 +5,75 @@ import { type MacPermissions, type MacScreenshot, mac } from "./api";
 import { isMacDesktop, setMacControlEnabled, useMacControl } from "./store";
 import { macTools } from "./tools";
 
-const RISK_LABEL = { read: "never asks", write: "asks per your policy", external: "asks per your policy", destructive: "always asks" } as const;
+const RISK_LABEL = { read: "never asks", write: "asks per your policy", external: "asks per your policy", destructive: "always asks (unless turned off under Full access)" } as const;
 
 /** Settings → Computer control. */
+function PermissionRow({
+  ok,
+  title,
+  status,
+  use,
+  action,
+}: {
+  ok: boolean | null;
+  title: string;
+  status: string;
+  use: string;
+  action?: { label: string; onClick: () => void };
+}) {
+  return (
+    <div className="mac-control-perm">
+      <span className={`mac-control-dot ${ok === true ? "ok" : ok === false ? "bad" : ""}`} aria-hidden />
+      <div>
+        <strong>{title}</strong>
+        <div className="small muted">
+          {status} · {use}
+        </div>
+      </div>
+      {action && (
+        <button type="button" className="btn" onClick={action.onClick}>
+          {action.label}
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function MacControlSettings() {
   const enabled = useMacControl((s) => s.enabled);
   const toolsOn = useStore((s) => s.settings.agent.enabled);
+  const access = useStore((s) => s.settings.agent.access ?? "restricted");
   const [perms, setPerms] = useState<MacPermissions | null>(null);
   const [error, setError] = useState("");
   const [preview, setPreview] = useState<{ src: string; note?: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(() => {
-    setError("");
-    void mac<MacPermissions>("status").then(setPerms, (e: Error) => setError(e.message));
+    void mac<MacPermissions>("permissions").then(
+      (p) => {
+        setPerms(p);
+        setError("");
+      },
+      (e: Error) => setError(e.message),
+    );
   }, []);
+  // Stay current while this page is open: re-check every few seconds and when the user comes back
+  // from System Settings, so a switch flipped there shows up here without pressing anything.
   useEffect(() => {
-    if (isMacDesktop()) refresh();
+    if (!isMacDesktop()) return;
+    refresh();
+    const timer = setInterval(() => document.visibilityState === "visible" && refresh(), 2500);
+    const onFocus = () => refresh();
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
   }, [refresh]);
+
+  const run = (work: Promise<unknown>) => void work.catch((e: Error) => setError(e.message)).finally(refresh);
 
   if (!isMacDesktop()) {
     return <p className="muted">Controlling the computer is available in the ADT Bot desktop app on macOS.</p>;
@@ -50,41 +101,51 @@ export function MacControlSettings() {
         checked={enabled}
         onChange={setMacControlEnabled}
         title="Allow bots to control this Mac"
-        hint="Bots can take screenshots, move the pointer, click, type and open apps. Clicking and typing ask according to your approval policy; AppleScript and quitting apps always ask. A banner with a Stop button shows while a bot is in control."
+        hint="Bots can take screenshots, move the pointer, click, type and open apps. Clicking and typing ask according to your approval policy (not with Full access); AppleScript and quitting apps always ask unless you turned that off. A banner with a Stop button shows while a bot is in control."
       />
       {enabled && !toolsOn && <p className="small mac-control-warn">"Let bots use tools" is off in Tools &amp; safety, so bots can't use this yet.</p>}
+      {access === "sandbox" && <p className="small mac-control-warn">Computer access is set to Sandbox in Tools &amp; safety, so screen control is off.</p>}
+      {access === "full" && !enabled && <p className="small muted">Computer access is set to Full access in Tools &amp; safety, so bots can control this Mac even with this off.</p>}
 
-      <Section title="macOS permissions" hint={`macOS asks you to allow ${perms?.app ?? "ADT Bot"} in System Settings. After granting Screen Recording, quit and reopen the app.`}>
-        <div className="mac-control-perm">
-          <span className={`mac-control-dot ${perms?.accessibility ? "ok" : "bad"}`} aria-hidden />
-          <div>
-            <strong>Accessibility</strong>
-            <div className="small muted">{perms ? (perms.accessibility ? "Allowed" : "Not allowed") : "Checking…"} · needed to click, type and press keys</div>
-          </div>
-          <button type="button" className="btn" onClick={() => void mac("openSettings", { pane: "accessibility" })}>
-            Open System Settings
-          </button>
-        </div>
-        <div className="mac-control-perm">
-          <span className={`mac-control-dot ${screenOk ? "ok" : "bad"}`} aria-hidden />
-          <div>
-            <strong>Screen Recording</strong>
-            <div className="small muted">{perms ? (screenOk ? "Allowed" : `Not allowed (${perms.screenRecording})`) : "Checking…"} · needed to see other apps' windows</div>
-          </div>
-          <button type="button" className="btn" onClick={() => void mac("openSettings", { pane: "screen-recording" })}>
-            Open System Settings
-          </button>
-        </div>
-        <div className="mac-control-perm">
-          <span className="mac-control-dot" aria-hidden />
-          <div>
-            <strong>Automation</strong>
-            <div className="small muted">Typing and window titles go through System Events; macOS asks the first time.</div>
-          </div>
-          <button type="button" className="btn" onClick={() => void mac("openSettings", { pane: "automation" })}>
-            Open System Settings
-          </button>
-        </div>
+      <Section title="macOS permissions" hint={`Switch on ${perms?.app ?? "ADT Bot"} in each list in System Settings. This page updates on its own when you come back.`}>
+        <PermissionRow
+          ok={perms ? perms.accessibility === true : null}
+          title="Accessibility"
+          status={perms ? (perms.accessibility ? "Allowed" : "Not allowed") : "Checking…"}
+          use="needed to click, type and press keys"
+          action={{ label: "Open System Settings", onClick: () => run(mac("openSettings", { pane: "accessibility" })) }}
+        />
+        <PermissionRow
+          ok={perms ? screenOk : null}
+          title="Screen Recording"
+          status={perms ? (perms.screenNeedsRestart ? "Allowed: restart ADT Bot to finish" : screenOk ? "Allowed" : "Not allowed") : "Checking…"}
+          use="needed to see other apps' windows"
+          action={
+            perms?.screenNeedsRestart
+              ? { label: "Restart ADT Bot", onClick: () => run(mac("relaunch")) }
+              : { label: "Open System Settings", onClick: () => run(mac("openSettings", { pane: "screen-recording" })) }
+          }
+        />
+        <PermissionRow
+          ok={perms?.automation === "granted" ? true : perms?.automation === "denied" ? false : null}
+          title="Automation"
+          status={perms?.automation === "granted" ? "Allowed" : perms?.automation === "denied" ? "Not allowed" : "Not checked yet"}
+          use="typing and window titles go through System Events"
+          action={
+            perms?.automation === "denied"
+              ? { label: "Open System Settings", onClick: () => run(mac("openSettings", { pane: "automation" })) }
+              : { label: "Check", onClick: () => run(mac("checkAutomation")) }
+          }
+        />
+        <PermissionRow
+          ok={perms ? perms.microphone === "granted" : null}
+          title="Microphone"
+          status={perms ? (perms.microphone === "granted" ? "Allowed" : perms.microphone === "not-determined" ? "Not asked yet" : "Not allowed") : "Checking…"}
+          use="needed for voice mode and dictation"
+          action={
+            perms?.microphone === "granted" ? undefined : { label: perms?.microphone === "not-determined" ? "Allow" : "Open System Settings", onClick: () => run(mac("requestMicrophone")) }
+          }
+        />
         <div className="btn-row">
           <button type="button" className="btn" onClick={refresh}>
             Check again

@@ -1,85 +1,72 @@
 // On-device speech pipeline: Silero VAD on every 32 ms frame, turn detection, and Whisper
 // transcription, all off the main thread. Model files are cached in IndexedDB, so after the first
 // download it works offline and audio never leaves the device.
-import { env, pipeline } from "@huggingface/transformers";
 import { createStore, get, set } from "idb-keyval";
 import * as ort from "onnxruntime-web/webgpu";
 import ortMjs from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.mjs?url";
 import ortWasm from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url";
 import { FRAME, Segmenter, type SegmentEvent } from "./segmenter";
 
-// transformers.js points ONNX Runtime at a CDN by default; use the copies bundled with the app so
-// speech recognition works offline and nothing is fetched from third parties.
-if (env.backends.onnx.wasm) env.backends.onnx.wasm.wasmPaths = { mjs: ortMjs, wasm: ortWasm };
+// Use the copies of ONNX Runtime bundled with the app, so nothing is fetched from a CDN.
+ort.env.wasm.wasmPaths = { mjs: ortMjs, wasm: ortWasm };
+// The detector runs every 32 ms. With a thread pool, the idle threads busy-waited between frames
+// and voice mode held ~3 CPU cores the whole time it was open; one thread is plenty for it.
+ort.env.wasm.numThreads = 1;
 
 const files = createStore("adtbot-models", "files");
-
-env.allowLocalModels = false;
-env.useBrowserCache = false;
-env.useCustomCache = true;
-env.customCache = {
-  async match(url: string) {
-    const hit = await get<{ body: ArrayBuffer; type: string }>(url, files);
-    return hit
-      ? new Response(hit.body, { headers: { "content-type": hit.type, "content-length": String(hit.body.byteLength) } })
-      : undefined;
-  },
-  async put(url: string, response: Response) {
-    const type = response.headers.get("content-type") ?? "application/octet-stream";
-    await set(url, { body: await response.arrayBuffer(), type }, files);
-  },
-};
 
 const post = (message: Record<string, unknown>, transfer: Transferable[] = []) =>
   (self as unknown as { postMessage(m: unknown, t: Transferable[]): void }).postMessage(message, transfer);
 
-// One queue for all model work: ONNX Runtime sessions shouldn't run concurrently.
-let queue: Promise<unknown> = Promise.resolve();
-function serial<T>(task: () => Promise<T>): Promise<T> {
-  const run = queue.then(task, task);
-  queue = run.catch(() => undefined);
-  return run;
+// Whisper ---------------------------------------------------------------------
+// Runs in its own worker (with all the threads it wants), so a transcription never stalls the
+// detector: turn ends and barge-ins are noticed on time, and no live audio is dropped meanwhile.
+
+let transcriber: Worker | null = null;
+let nextJob = 0;
+const jobs = new Map<number, { resolve: (text: string) => void; reject: (error: Error) => void }>();
+
+function getTranscriber(): Worker {
+  if (transcriber) return transcriber;
+  const worker = new Worker(new URL("./transcribe.worker.ts", import.meta.url), { type: "module" });
+  worker.onmessage = (event: MessageEvent) => {
+    const data = event.data;
+    if (data.id === undefined) {
+      post(data); // download progress and "whisper-ready"
+      return;
+    }
+    // Replies are matched to this worker's own jobs; never pass one on, where the id means something else.
+    const job = jobs.get(data.id);
+    if (!job) return;
+    jobs.delete(data.id);
+    if (data.type === "done") job.resolve(data.text);
+    else job.reject(new Error(data.message));
+  };
+  // A crash (e.g. out of memory) fails what's in flight; the next request starts a fresh one.
+  worker.onerror = (event) => {
+    const error = new Error(event.message || "The speech engine crashed");
+    for (const job of jobs.values()) job.reject(error);
+    jobs.clear();
+    worker.terminate();
+    if (transcriber === worker) transcriber = null;
+  };
+  transcriber = worker;
+  return worker;
 }
 
-// Whisper ---------------------------------------------------------------------
-
-type Transcriber = (audio: Float32Array, options: Record<string, unknown>) => Promise<{ text: string } | { text: string }[]>;
-let whisper: { size: string; ready: Promise<Transcriber> } | null = null;
-
-function loadWhisper(size: string): Promise<Transcriber> {
-  if (whisper?.size !== size) {
-    const ready = pipeline("automatic-speech-recognition", `onnx-community/whisper-${size}`, {
-      dtype: "q8",
-      device: "wasm",
-      progress_callback: (info: { status: string; progress?: number; loaded?: number; total?: number }) => {
-        if (info.status === "progress_total") post({ type: "progress", progress: info.progress, loaded: info.loaded, total: info.total });
-      },
-    }).then(async (t) => {
-      const transcriber = t as unknown as Transcriber;
-      // Warm-up run so the first real question isn't slowed by kernel compilation.
-      await transcriber(new Float32Array(16000), { language: "en" });
-      post({ type: "progress", progress: 100 });
-      post({ type: "whisper-ready" });
-      return transcriber;
-    }) as Promise<Transcriber>;
-    whisper = { size, ready };
-    ready.catch(() => (whisper = null));
-  }
-  return whisper.ready;
+function whisperCall(message: Record<string, unknown>): Promise<string> {
+  const id = ++nextJob;
+  return new Promise((resolve, reject) => {
+    jobs.set(id, { resolve, reject });
+    getTranscriber().postMessage({ ...message, id });
+  });
 }
 
 let language = "en";
 let size = "base";
 
-async function transcribe(audio: Float32Array): Promise<string> {
-  const transcriber = await loadWhisper(size);
-  return serial(async () => {
-    const output = await transcriber(audio, { language, task: "transcribe", chunk_length_s: 30, stride_length_s: 5 });
-    const text = (Array.isArray(output) ? output.map((o) => o.text).join(" ") : output.text).trim();
-    // Whisper "hears" these in silence or noise.
-    return /^(\[.*\]|\(.*\)|you|thank you\.?|thanks for watching!?|\.+)$/i.test(text) ? "" : text;
-  });
-}
+const loadWhisper = (modelSize: string) => whisperCall({ type: "load", size: modelSize });
+const transcribe = (audio: Float32Array) => whisperCall({ type: "transcribe", size, language, audio });
 
 // VAD -----------------------------------------------------------------------
 
@@ -113,6 +100,43 @@ async function speechProbability(frame: Float32Array): Promise<number> {
   return (result.output.data as Float32Array)[0];
 }
 
+// Turn model ----------------------------------------------------------------------
+// Smart Turn v3 (pipecat-ai, BSD-2-Clause) in its own worker (see turn.worker.ts), so judging a
+// pause never holds up the detector.
+
+let turnWorker: Worker | null = null;
+let turnJob = 0;
+const turnJobs = new Map<number, (result: { probability: number | null; ms?: number }) => void>();
+
+function getTurnWorker(): Worker {
+  if (turnWorker) return turnWorker;
+  const worker = new Worker(new URL("./turn.worker.ts", import.meta.url), { type: "module" });
+  worker.onmessage = (event: MessageEvent) => {
+    const resolve = turnJobs.get(event.data.id);
+    turnJobs.delete(event.data.id);
+    resolve?.(event.data);
+  };
+  worker.onerror = () => {
+    for (const resolve of turnJobs.values()) resolve({ probability: null });
+    turnJobs.clear();
+    worker.terminate();
+    if (turnWorker === worker) turnWorker = null;
+  };
+  turnWorker = worker;
+  return worker;
+}
+
+const loadTurnModel = () => getTurnWorker().postMessage({ type: "load" });
+
+/** Probability (0–1) that the speaker has finished, or null without the model. */
+function turnFinished(audio: Float32Array): Promise<{ probability: number | null; ms?: number }> {
+  const id = ++turnJob;
+  return new Promise((resolve) => {
+    turnJobs.set(id, resolve);
+    getTurnWorker().postMessage({ type: "judge", id, audio });
+  });
+}
+
 // Live listening ------------------------------------------------------------------
 
 let mode: "local" | "cloud" = "local";
@@ -121,6 +145,16 @@ let muted = false;
 const segmenter = new Segmenter({ endSilenceMs: 700 });
 let speculative: { version: number; text: Promise<string> } | null = null;
 let partialBusy = false;
+/** When the last caption finished, and how much audio it covered. */
+let partialAt = 0;
+let partialSamples = 0;
+/**
+ * Whisper always encodes a 30 s window, so each caption costs a full run: keep them sparse, and
+ * skip short questions, where a caption would only delay the real transcription queued behind it.
+ */
+const PARTIAL_GAP_MS = 700;
+const PARTIAL_MIN_SAMPLES = 14000;
+const PARTIAL_NEW_SAMPLES = 8000;
 let levelTick = 0;
 const frames: Float32Array[] = [];
 let pumping = false;
@@ -132,7 +166,7 @@ async function pump() {
   try {
     while (frames.length) {
       const frame = frames.shift()!;
-      const probability = await serial(() => speechProbability(frame));
+      const probability = await speechProbability(frame);
       if (++levelTick % 2 === 0) {
         let sum = 0;
         for (const s of frame) sum += s * s;
@@ -146,17 +180,40 @@ async function pump() {
 }
 
 function handle(event: SegmentEvent) {
-  if (event.type === "start" || event.type === "speech" || event.type === "discard") post({ type: event.type });
-  else if (event.type === "pause" && mode === "local") {
+  if (event.type === "start" || event.type === "speech" || event.type === "discard") {
+    if (event.type === "start") partialSamples = 0;
+    post({ type: event.type });
+  } else if (event.type === "pause" && mode === "local") {
     // Start transcribing as soon as the speaker pauses; if they carry on, this is discarded.
     speculative = { version: event.version, text: transcribe(event.audio) };
+  } else if (event.type === "silence") {
+    const { version, audio } = event;
+    void turnFinished(audio).then(({ probability, ms }) => {
+      if (probability === null) return;
+      segmenter.decide(version, probability > 0.5);
+      post({ type: "turn", probability: Math.round(probability * 100) / 100, ms });
+    });
   } else if (event.type === "resume") {
     if (speculative?.version === event.version) speculative = null;
-  } else if (event.type === "progress" && partials && mode === "local" && !partialBusy) {
+  } else if (
+    event.type === "progress" &&
+    partials &&
+    mode === "local" &&
+    !partialBusy &&
+    // Not while the detector is behind: catching up on live audio matters more than a caption.
+    frames.length < 4 &&
+    performance.now() - partialAt > PARTIAL_GAP_MS &&
+    event.audio.length >= PARTIAL_MIN_SAMPLES &&
+    event.audio.length - partialSamples >= PARTIAL_NEW_SAMPLES
+  ) {
     partialBusy = true;
+    partialSamples = event.audio.length;
     transcribe(event.audio)
-      .then((text) => text && post({ type: "partial", text }))
-      .finally(() => (partialBusy = false));
+      .then((text) => text && partials && post({ type: "partial", text }))
+      .finally(() => {
+        partialBusy = false;
+        partialAt = performance.now();
+      });
   } else if (event.type === "end") {
     void finish(event);
   }
@@ -197,12 +254,13 @@ self.onmessage = async (event: MessageEvent) => {
       const current = data.port as MessagePort;
       port = current;
       await loadVad();
+      loadTurnModel();
       if (mode === "local") await loadWhisper(size);
       if (port !== current) return;
       current.onmessage = (e: MessageEvent<Float32Array>) => {
         if (muted || port !== current) return;
         frames.push(e.data);
-        // If transcription is busy, don't let a backlog build up beyond ~3 s.
+        // Never more than ~3 s behind (e.g. while the tab was throttled).
         if (frames.length > 100) frames.splice(0, frames.length - 100);
         void pump();
       };
@@ -223,6 +281,7 @@ self.onmessage = async (event: MessageEvent) => {
       for (const e of segmenter.flush()) handle(e);
     } else if (data.type === "load") {
       size = data.size;
+      loadTurnModel();
       await Promise.all([loadVad(), loadWhisper(size)]);
       post({ id: data.id, type: "done", text: "" });
     } else if (data.type === "transcribe") {

@@ -29,6 +29,10 @@ export type ToolContext = {
   signal: AbortSignal;
   /** Short progress line shown under the tool while it runs. */
   progress: (text: string) => void;
+  /** Nobody can answer an approval card (voice mode): calls that would ask are refused instead. */
+  unattended?: boolean;
+  /** The request came from people other than the owner (a chat room): Full access doesn't apply. */
+  shared?: boolean;
 };
 
 export type ToolResult =
@@ -53,6 +57,11 @@ export type AgentTool = ToolSchema & {
   platforms?: Platform[];
   /** Extra runtime check, e.g. "Docker is running" or "an image model is configured". */
   available?: (ctx: Pick<ToolContext, "settings" | "providers" | "platform" | "bot">) => boolean;
+  /**
+   * Sandbox mode: whether this call stays inside the ADT Bot Workspace folder (then it runs
+   * without asking) or reaches outside it (then it's refused). Tools without it follow the policy.
+   */
+  sandboxed?: (args: Record<string, unknown>) => boolean;
   /** Per-call risk: e.g. a GET is read-only, a POST needs approval. */
   riskFor?: (args: Record<string, unknown>) => ToolRisk;
   /** Give up after this long (default 120 s). */

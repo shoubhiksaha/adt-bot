@@ -97,6 +97,9 @@ export async function delegate(options: {
   signal: AbortSignal;
   progress?: (text: string) => void;
   timeoutMs?: number;
+  /** The caller was working for a shared room, or where approvals can't be answered: so is the helper. */
+  shared?: boolean;
+  unattended?: boolean;
 }): Promise<DelegationResult> {
   const { caller, target, task, conversationId, progress } = options;
   if (!task.trim()) throw new Error("Describe the task for the other bot.");
@@ -125,7 +128,11 @@ export async function delegate(options: {
   });
 
   try {
-    const reply = await sendInBackground(conversation.id, delegationPrompt(caller.name, task, options.context), { signal });
+    const reply = await sendInBackground(conversation.id, delegationPrompt(caller.name, task, options.context), {
+      signal,
+      shared: options.shared,
+      unattended: options.unattended,
+    });
     if (options.signal.aborted) throw new DOMException("Aborted", "AbortError");
     const text = reply?.content ?? "";
     const problem = timeout.aborted

@@ -61,6 +61,14 @@ Bots can do things as well as talk. Turn it on or off, and choose what needs you
   **Allow once / Always allow / Deny** in the chat; destructive actions always ask. A deny list blocks commands
   such as `rm -rf /` and `sudo`. Content from the web, files and connectors is marked untrusted so a page can't
   give the bot orders. Every action is in the activity log.
+- **Computer access** (desktop): three levels in **Settings → Tools & safety**.
+  - **Sandbox**: bots only use the `~/ADT Bot Workspace` folder. Commands run there under an OS sandbox: macOS
+    `sandbox-exec`, or `bubblewrap` on Linux (not yet on Windows). The sandbox can't read the rest of your home
+    folder or launch apps, and screen control is off.
+  - **Restrictive** (default): the whole computer, with approvals as above.
+  - **Full access**: bots control the whole computer without asking: commands, files, apps, screen, mouse and
+    keyboard. Destructive actions still ask unless you turn that off, and the deny list still applies. Shared
+    rooms never get more than Restrictive. Voice mode can use these tools too.
 - **Charts and cards**: bar charts, stat tiles, timelines and flow diagrams inline in the chat, plus email,
   message and link cards with Copy / Open in Mail.
 - **Projects (kanban boards)**: Backlog → To do → In progress → Review → Done, with labels, due dates,
@@ -76,7 +84,7 @@ Bots can do things as well as talk. Turn it on or off, and choose what needs you
 - **Coding agents** (desktop): bots can hand work to Claude Code, Codex, Gemini CLI, OpenCode or Aider in a
   folder you choose, and you can watch the live transcript. Claude Code (and the others) can also be picked
   as a bot's model.
-- **Control your Mac** (desktop, macOS, off by default): screenshots the bot can see, clicking, typing, keys,
+- **Control your Mac** (desktop, macOS, off by default; on with Full access): screenshots the bot can see, clicking, typing, keys,
   scrolling, opening apps and AppleScript, with a "Stop" banner while it works. Needs Accessibility and Screen
   Recording permission (**Settings → Computer control** links to the right System Settings pages).
 - **Each bot's own computer** (desktop): a Docker container per bot with a persistent `/workspace`,

@@ -134,6 +134,11 @@ function loadFeatures() {
     /** Push an event to the app UI (channel must start with "adt:"). */
     send: (channel, payload) => mainWindow?.webContents.send(channel, payload),
     userData: app.getPath("userData"),
+    /**
+     * Settings → Tools & safety → Computer access, pushed by the app (adt:system:access). Until it
+     * arrives, assume the strictest mode.
+     */
+    access: { mode: "sandbox" },
   };
   for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".cjs")).sort()) {
     try {

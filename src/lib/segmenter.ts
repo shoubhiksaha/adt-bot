@@ -3,8 +3,12 @@ export const FRAME = 512;
 export const FRAME_MS = (FRAME / 16000) * 1000;
 
 export type SegmenterOptions = {
-  /** Silence after speech that ends a turn. */
+  /** Silence after speech that ends a turn (when no turn model has judged it). */
   endSilenceMs: number;
+  /** Silence after which the audio is offered to a turn model ("silence" event). */
+  settleMs?: number;
+  /** Silence that ends a turn the turn model judged unfinished (the speaker is mid-thought). */
+  patientEndMs?: number;
   /** Speech shorter than this is treated as a noise blip. */
   minSpeechMs?: number;
   /** Audio kept from just before speech starts, so first syllables aren't clipped. */
@@ -28,7 +32,9 @@ export type SegmentEvent =
   | { type: "resume"; version: number }
   | { type: "end"; audio: Float32Array; version: number }
   /** Speech so far, for live captions while the user is still talking. */
-  | { type: "progress"; audio: Float32Array };
+  | { type: "progress"; audio: Float32Array }
+  /** `settleMs` of silence: ask the turn model whether the speaker has finished (see `decide`). */
+  | { type: "silence"; audio: Float32Array; version: number };
 
 /**
  * Turns per-frame voice probabilities into utterances. Pure and synchronous so it can be tested
@@ -44,6 +50,8 @@ export class Segmenter {
   private speechFrames = 0;
   private version = 0;
   private sinceProgress = 0;
+  /** The turn model's verdict on the current pause. */
+  private verdict: { version: number; complete: boolean } | null = null;
 
   constructor(options: SegmenterOptions) {
     this.options = {
@@ -52,6 +60,8 @@ export class Segmenter {
       maxSpeechMs: 30_000,
       startThreshold: 0.6,
       endThreshold: 0.35,
+      settleMs: 200,
+      patientEndMs: 2000,
       ...options,
     };
   }
@@ -71,6 +81,15 @@ export class Segmenter {
     this.above = 0;
     this.silence = 0;
     this.speechFrames = 0;
+    this.verdict = null;
+  }
+
+  /**
+   * The turn model's answer for the pause in utterance `version`: finished ends the turn now;
+   * unfinished waits longer (`patientEndMs`) before ending it. Stale answers are ignored.
+   */
+  decide(version: number, complete: boolean) {
+    if (version === this.version && this.state === "trailing") this.verdict = { version, complete };
   }
 
   /** Ends the current utterance now (e.g. the user tapped "done"), even if it is short. */
@@ -131,12 +150,17 @@ export class Segmenter {
       this.silence++;
     }
 
-    if (this.state === "speech" && ++this.sinceProgress >= frames(1500)) {
+    if (this.state === "speech" && ++this.sinceProgress >= frames(600)) {
       this.sinceProgress = 0;
       events.push({ type: "progress", audio: concat(this.frames) });
     }
+    if (this.state === "trailing" && this.silence === frames(o.settleMs) && this.speechFrames >= frames(o.minSpeechMs)) {
+      events.push({ type: "silence", audio: concat(this.frames), version: this.version });
+    }
 
-    const ended = this.state === "trailing" && this.silence >= frames(o.endSilenceMs);
+    const verdict = this.verdict?.version === this.version ? this.verdict : null;
+    const endAfter = verdict ? (verdict.complete ? Math.min(o.endSilenceMs, o.settleMs) : Math.max(o.endSilenceMs, o.patientEndMs)) : o.endSilenceMs;
+    const ended = this.state === "trailing" && this.silence >= frames(endAfter);
     const tooLong = this.frames.length >= frames(o.maxSpeechMs);
     if (ended || tooLong) {
       const long = this.speechFrames >= frames(o.minSpeechMs);

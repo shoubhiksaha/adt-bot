@@ -292,6 +292,11 @@ describe("delegation", () => {
     expect(useStore.getState().conversations[chatId].botId).toBe("r");
     expect(prompt).toContain("Task from ADT");
     expect(prompt).toContain("Status: done | partial | blocked");
+    // An ordinary chat passes no restrictions on; a shared room's do carry over to the helper.
+    expect(send.mock.calls[0][2]).toMatchObject({ shared: undefined, unattended: undefined });
+    send.mockResolvedValueOnce(reply("ok"));
+    await delegate({ caller: adt, target: researcher, task: "Run X", conversationId: "room:1", signal: new AbortController().signal, shared: true, unattended: true });
+    expect(send.mock.calls[1][2]).toMatchObject({ shared: true, unattended: true });
     // Inside that chat, the researcher can't hand the work back to ADT.
     await expect(delegate({ caller: researcher, target: adt, task: "do it", conversationId: chatId, signal: new AbortController().signal })).rejects.toThrow(/back/);
   });

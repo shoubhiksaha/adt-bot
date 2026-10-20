@@ -79,6 +79,8 @@ export const defaultSettings: Settings = {
   agent: {
     enabled: true,
     approvalPolicy: "ask-first-time",
+    access: "restricted",
+    confirmDestructive: true,
     allowlist: [],
     denylist: ["rm -rf /", "sudo *", "mkfs*", ":(){*", "shutdown*", "reboot*"],
     maxSteps: 12,
@@ -401,7 +403,16 @@ export function importData(json: string) {
     conversations: data.conversations ?? {},
     settings: {
       ...imported,
-      agent: { ...defaultSettings.agent, ...imported.agent, approvalPolicy: agent.approvalPolicy, allowlist: agent.allowlist, denylist: agent.denylist },
+      // An imported file never changes what bots may do on this computer.
+      agent: {
+        ...defaultSettings.agent,
+        ...imported.agent,
+        approvalPolicy: agent.approvalPolicy,
+        allowlist: agent.allowlist,
+        denylist: agent.denylist,
+        access: agent.access,
+        confirmDestructive: agent.confirmDestructive,
+      },
     },
     activeBotId: data.bots?.[0]?.id ?? null,
     activeConversationId: null,

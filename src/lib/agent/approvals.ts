@@ -1,5 +1,6 @@
 import { updateSettings, useStore } from "../store";
-import type { AgentTool } from "./tools";
+import { accessVerdict } from "./access";
+import type { AgentTool, ToolContext } from "./tools";
 import {
   argsKey,
   deniedRuleForCall,
@@ -26,13 +27,19 @@ export type GateResult =
   | { outcome: "deny"; reason: string; refusal: string }
   | { outcome: "ask"; reason: string; summary: string; detail: string; kind: string; allowAlways: boolean };
 
-/** Decides what can run without asking. Read-only tools never ask; destructive ones always do. */
-export function gate(tool: AgentTool, call: ToolCall): GateResult {
+/**
+ * Decides what can run without asking. The deny list wins; then Computer access (Sandbox refuses
+ * anything outside the workspace, Full access runs computer tools unasked); then read-only tools
+ * never ask, destructive ones always do, and the approval policy decides the rest.
+ */
+export function gate(tool: AgentTool, call: ToolCall, context?: Pick<ToolContext, "shared">): GateResult {
   const { agent } = useStore.getState().settings;
   const policySettings = { approvalPolicy: agent.approvalPolicy, allowlist: agent.allowlist, denylist: agent.denylist };
   const denied = deniedRuleForCall(policySettings, call);
   if (denied) return { outcome: "deny", reason: `blocked by your deny rule "${denied}"`, refusal: denyRefusal(call.name, denied) };
   const risk = tool.riskFor?.(call.args) ?? tool.risk;
+  const access = accessVerdict(tool, call.args ?? {}, risk, agent, context);
+  if (access.outcome !== "policy") return access;
   if (risk === "read") return { outcome: "allow", reason: "read-only" };
   const target = targetForCall(call);
   const verdict = evaluate(policySettings, call.name, target, remembered, risk === "destructive", argsKey(call));

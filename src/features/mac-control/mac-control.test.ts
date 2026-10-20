@@ -114,13 +114,17 @@ describe("renderer tools", () => {
   vi.stubGlobal("window", { adtbotDesktop: { platform: "darwin", proxyToken: "", version: "44", invoke } });
   afterAll(() => vi.unstubAllGlobals());
 
-  it("are unavailable until the user allows Mac control", async () => {
+  it("are unavailable until the user allows Mac control or gives full access, and never in the sandbox", async () => {
     const { macTools } = await import("./tools");
     const { setMacControlEnabled } = await import("./store");
-    const ctx = {} as never;
-    expect(macTools.every((t) => t.available?.(ctx) === false)).toBe(true);
+    const ctx = (access: string) => ({ settings: { agent: { access } } }) as never;
+    const all = (access: string) => macTools.every((t) => t.available?.(ctx(access)) === true);
+    const none = (access: string) => macTools.every((t) => t.available?.(ctx(access)) === false);
+    expect(none("restricted")).toBe(true);
+    expect(all("full")).toBe(true);
     setMacControlEnabled(true);
-    expect(macTools.every((t) => t.available?.(ctx) === true)).toBe(true);
+    expect(all("restricted")).toBe(true);
+    expect(none("sandbox")).toBe(true);
     setMacControlEnabled(false);
   });
 

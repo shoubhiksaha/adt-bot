@@ -87,6 +87,14 @@ export type AgentSettings = {
   allowlist: string[];
   /** Patterns that are always refused, whatever the policy. */
   denylist: string[];
+  /**
+   * How much of this computer bots can reach. "sandbox": only the ADT Bot Workspace folder, with
+   * commands confined by the OS. "restricted": everything, asking before changes (approval policy).
+   * "full": everything, without asking (the deny list still applies).
+   */
+  access: "sandbox" | "restricted" | "full";
+  /** Full access still confirms destructive actions (deleting, sudo, AppleScript, quitting apps). */
+  confirmDestructive: boolean;
   /** Safety cap on tool steps per answer. */
   maxSteps: number;
   /** How tools are offered: native tool calling, a text protocol for models without it, or automatic. */
@@ -111,6 +119,8 @@ export type Message = {
   knowledge?: string[];
   /** Tools used while producing this answer, in order. */
   toolCalls?: ToolCallRecord[];
+  /** Length of `content` when the latest tool step started: text before it narrated the work, text after it is the answer. */
+  narrationEnd?: number;
   model?: string;
   error?: string;
   /** Transient progress line, e.g. "Searching the web…". */

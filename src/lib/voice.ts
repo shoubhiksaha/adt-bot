@@ -3,7 +3,7 @@ import { describeHttpError, withCustomHeaders } from "./llm";
 import { providerFetch } from "./transport";
 import { createSpeaker, type Speaker, speakable, takeSentences } from "./tts";
 import type { ProviderConfig, VoiceSettings } from "./types";
-import { Listener, toWav } from "./whisper";
+import { Listener, preloadWhisper, toWav, whisperDownloaded } from "./whisper";
 
 export { speakable, takeSentences };
 
@@ -49,6 +49,14 @@ export function markDeviceRecognizerBroken() {
 }
 
 /** Picks the recognizer for this device and settings. */
+/** Loads the on-device speech engine ahead of voice mode, so it opens listening. Never starts a download. */
+export function warmVoice(voice: VoiceSettings, providers: ProviderConfig[]) {
+  if (resolveEngine(voice, providers) !== "whisper-local") return;
+  void whisperDownloaded(voice.localModel)
+    .then((downloaded) => (downloaded ? preloadWhisper(voice.localModel) : undefined))
+    .catch(() => undefined);
+}
+
 export function resolveEngine(voice: VoiceSettings, providers: ProviderConfig[]): Engine {
   const cloudReady = Boolean(voice.model && providers.some((p) => p.id === voice.providerId));
   const device: Engine | null = deviceRecognizerBroken

@@ -844,9 +844,11 @@ function cancelAll() {
   for (const entry of runs.values()) entry.cancel();
 }
 
-exports.register = ({ app, ipcMain, send }) => {
+exports.register = ({ app, ipcMain, send, access }) => {
   ipcMain.handle("adt:cli:detect", () => detect());
   ipcMain.handle("adt:cli:run", (_e, payload = {}) => {
+    // Coding agents run with your own permissions, outside any sandbox.
+    if (access?.mode === "sandbox") throw new Error("Computer access is set to Sandbox, so coding agents can't run. Change it in Settings → Tools & safety.");
     const runId = String(payload.runId || `run-${Date.now()}`);
     return runAgent({ ...payload, runId, env: undefined, binary: undefined }, (event) => send("adt:cli:event", { runId, event }));
   });

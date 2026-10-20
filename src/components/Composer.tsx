@@ -4,10 +4,17 @@ import { sendMessage, stopStreaming } from "../lib/chat";
 import { ACCEPTED_FILES, fileToAttachment, formatBytes } from "../lib/images";
 import { updateSettings, useStore } from "../lib/store";
 import type { Attachment } from "../lib/types";
-import { listen, type ListenSession, resolveEngine } from "../lib/voice";
+import { listen, type ListenSession, resolveEngine, warmVoice } from "../lib/voice";
 import { onWhisperProgress } from "../lib/whisper";
 
 type Voice = "idle" | "dictating" | "recording" | "transcribing";
+
+/** Hovering the voice-mode button gets its screen and speech engine ready before the click. */
+function warmVoiceMode() {
+  const { settings, providers } = useStore.getState();
+  void import("./VoiceMode");
+  warmVoice(settings.voice, providers);
+}
 
 export function Composer({
   botName,
@@ -250,7 +257,14 @@ export function Composer({
           >
             {voice === "transcribing" ? <Loader2 size={18} className="spin" /> : <Mic size={18} />}
           </button>
-          <button type="button" className="icon-btn voice-btn" title="Voice mode: talk hands-free" onClick={onVoiceMode}>
+          <button
+            type="button"
+            className="icon-btn voice-btn"
+            title="Voice mode: talk hands-free"
+            onClick={onVoiceMode}
+            onPointerEnter={warmVoiceMode}
+            onFocus={warmVoiceMode}
+          >
             <AudioLines size={18} />
           </button>
           {streaming ? (

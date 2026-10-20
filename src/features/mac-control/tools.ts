@@ -1,20 +1,24 @@
-import { type AgentTool, num, registerTool, registerToolGroup, str } from "../../lib/agent/tools";
+import { type AgentTool, num, registerTool, registerToolGroup, str, type ToolContext } from "../../lib/agent/tools";
 import { type MacApp, type MacFrontmost, type MacScreenshot, mac } from "./api";
 import { isMacDesktop, useMacControl, whileControlling } from "./store";
 
 /**
  * Computer use on the user's Mac. Off until the user switches on "Allow bots to control this Mac"
- * (Settings → Computer control). Looking is read-only; acting asks per the approval policy;
- * AppleScript and quitting apps always ask.
+ * (Settings → Computer control) or gives Full access. Looking is read-only; acting asks per the
+ * approval policy (not with Full access); AppleScript and quitting apps are destructive.
  */
 registerToolGroup({
   id: "mac",
   label: "Control this Mac",
-  description: "See the screen, move the pointer, click, type and open apps on this Mac (asks before acting).",
+  description: "See the screen, move the pointer, click, type and open apps on this Mac.",
   platforms: ["desktop"],
 });
 
-const available = () => isMacDesktop() && useMacControl.getState().enabled;
+/** On when "Allow bots to control this Mac" is, or with Full access; never in Sandbox mode. */
+const available = (ctx: Pick<ToolContext, "settings">) => {
+  const access = ctx.settings.agent.access ?? "restricted";
+  return isMacDesktop() && access !== "sandbox" && (useMacControl.getState().enabled || access === "full");
+};
 
 const COORDS = "Coordinates are pixels in the latest mac_screenshot image (top-left is 0,0).";
 const point = { x: { type: "number", description: "X in screenshot pixels" }, y: { type: "number", description: "Y in screenshot pixels" } } as const;

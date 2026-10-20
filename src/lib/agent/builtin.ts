@@ -166,6 +166,8 @@ registerTool({
     required: ["command"],
   },
   riskFor: (args): ToolRisk => (isDangerous(String(args.command ?? "")) ? "destructive" : "write"),
+  // Sandbox mode runs it confined by the OS to the workspace (see electron/features/10-system.cjs).
+  sandboxed: (args) => insideWorkspace(String(args.cwd ?? "")),
   timeoutMs: 300_000,
   async run(args) {
     const result = await desktopInvoke<{ code: number; output: string }>("adt:system:exec", { command: str(args, "command"), cwd: str(args, "cwd") || undefined });
@@ -187,6 +189,7 @@ registerTool({
   description: "Read a text file on this computer. Relative paths are inside the ADT Bot Workspace folder.",
   parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
   riskFor: (args) => (insideWorkspace(String(args.path ?? "")) ? "read" : "write"),
+  sandboxed: (args) => insideWorkspace(String(args.path ?? "")),
   async run(args) {
     const file = await desktopInvoke<{ path: string; binary: boolean; text: string; size: number; truncated?: boolean }>("adt:system:read", { path: str(args, "path") });
     if (file.binary) return `${file.path} is a binary file (${file.size} bytes).`;
@@ -206,6 +209,7 @@ registerTool({
     properties: { path: { type: "string" }, content: { type: "string" }, append: { type: "boolean" } },
     required: ["path", "content"],
   },
+  sandboxed: (args) => insideWorkspace(String(args.path ?? "")),
   async run(args) {
     const result = await desktopInvoke<{ path: string; size: number }>("adt:system:write", { path: str(args, "path"), content: str(args, "content"), append: Boolean(args.append) });
     return `Saved ${result.path} (${result.size} bytes).`;
@@ -220,6 +224,7 @@ registerTool({
   description: "List a folder on this computer (default: the ADT Bot Workspace folder).",
   parameters: { type: "object", properties: { path: { type: "string" } } },
   riskFor: (args) => (insideWorkspace(String(args.path ?? "")) ? "read" : "write"),
+  sandboxed: (args) => insideWorkspace(String(args.path ?? "")),
   async run(args) {
     const result = await desktopInvoke<{ path: string; entries: { name: string; type: string; size: number }[] }>("adt:system:list", { path: str(args, "path") || "." });
     return `${result.path}\n${result.entries.map((e) => `${e.type === "dir" ? "📁" : "📄"} ${e.name}${e.type === "file" ? ` (${e.size} B)` : ""}`).join("\n") || "(empty)"}`;
@@ -234,9 +239,14 @@ registerTool({
   platforms: ["desktop"],
   description: "Open a file, folder or web link on the user's computer with its default app.",
   parameters: { type: "object", properties: { target: { type: "string" } }, required: ["target"] },
+  // Sandbox mode: a web link, or a workspace file, which is only shown in its folder (see 10-system.cjs).
+  sandboxed: (args) => {
+    const target = String(args.target ?? "").trim();
+    return /^https?:\/\//i.test(target) || insideWorkspace(target);
+  },
   async run(args) {
-    await desktopInvoke("adt:system:open", { target: str(args, "target") });
-    return `Opened ${str(args, "target")}.`;
+    const result = await desktopInvoke<{ opened?: string; revealed?: string } | undefined>("adt:system:open", { target: str(args, "target") });
+    return result?.revealed ? `Showed ${result.revealed} in its folder (Sandbox mode doesn't open files).` : `Opened ${str(args, "target")}.`;
   },
 });
 

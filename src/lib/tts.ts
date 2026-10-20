@@ -98,7 +98,44 @@ export function chime(kind: "listen" | "wake" | "error") {
 
 type Clip = { text: string; audio: Promise<AudioBuffer | null> | null };
 
-export type SpeakerHooks = { onSentence?: (text: string) => void; onError?: (message: string) => void };
+export type SpeakerHooks = {
+  /** A sentence starts sounding (not when it's queued: network audio may still be downloading). */
+  onSentence?: (text: string) => void;
+  /** How far into the current sentence the voice is, in characters (for word-by-word captions). */
+  onProgress?: (chars: number) => void;
+  onError?: (message: string) => void;
+};
+
+// Loudness of the bot's voice right now, for the voice-mode orb ------------------------------
+
+let analyser: AnalyserNode | null = null;
+let samples: Float32Array<ArrayBuffer> | null = null;
+let networkPlaying = false;
+/** Device voices can't be measured; their word boundaries drive a pulse instead. */
+let deviceSpeaking = false;
+let lastWordAt = 0;
+
+/** 0–1: how loud the bot is speaking at this moment. Cheap enough to call every animation frame. */
+export function speechLevel(): number {
+  if (networkPlaying && analyser && samples) {
+    analyser.getFloatTimeDomainData(samples);
+    let sum = 0;
+    for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+    return Math.min(1, Math.sqrt(sum / samples.length) * 5);
+  }
+  if (deviceSpeaking) return 0.25 + 0.6 * Math.exp(-(performance.now() - lastWordAt) / 140);
+  return 0;
+}
+
+function outputNode(ctx: AudioContext): AudioNode {
+  if (!analyser || analyser.context !== ctx) {
+    analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    analyser.connect(ctx.destination);
+    samples = new Float32Array(analyser.fftSize);
+  }
+  return analyser;
+}
 
 export type Speaker = {
   say(text: string): void;
@@ -158,7 +195,7 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
     });
   };
 
-  const playBuffer = async (buffer: AudioBuffer) => {
+  const playBuffer = async (buffer: AudioBuffer, text: string) => {
     const ctx = audioOutput();
     // A suspended context never plays, so "ended" would never come.
     if (ctx.state === "suspended") await ctx.resume().catch(() => undefined);
@@ -169,14 +206,26 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
     await new Promise<void>((resolve) => {
       const source = ctx.createBufferSource();
       source.buffer = buffer;
-      source.connect(ctx.destination);
-      // Safety net in case "ended" is lost (device change, sleep).
-      const watchdog = setTimeout(resolve, (buffer.duration + 3) * 1000);
-      source.onended = () => {
+      source.connect(outputNode(ctx));
+      // Network audio has no word events: estimate the position from the share of time played.
+      const startedAt = performance.now();
+      const ticker = setInterval(() => {
+        const share = Math.min(1, (performance.now() - startedAt) / 1000 / buffer.duration);
+        hooks.onProgress?.(Math.round(share * text.length));
+      }, 120);
+      const done = () => {
         clearTimeout(watchdog);
+        clearInterval(ticker);
+        networkPlaying = false;
+        hooks.onProgress?.(text.length);
         resolve();
       };
+      // Safety net in case "ended" is lost (device change, sleep).
+      const watchdog = setTimeout(done, (buffer.duration + 3) * 1000);
+      source.onended = done;
       current = source;
+      hooks.onSentence?.(text);
+      networkPlaying = true;
       source.start();
     });
   };
@@ -187,6 +236,7 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
       const { TextToSpeech } = await import("@capacitor-community/text-to-speech");
       const voices = await listVoices();
       const index = chosen ? voices.findIndex((v) => v.name === chosen.name) : -1;
+      hooks.onSentence?.(text);
       await TextToSpeech.speak({ text, lang: chosen?.lang ?? navigator.language, rate: voice.rate, ...(index >= 0 ? { voice: index } : {}) }).catch(
         (error: Error) => hooks.onError?.(`The device voice failed: ${error.message ?? error}`),
       );
@@ -208,7 +258,23 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
       const finish = () => {
         clearTimeout(watchdog);
         if (activeUtterance === utterance) activeUtterance = null;
+        deviceSpeaking = false;
+        hooks.onProgress?.(text.length);
         resolve();
+      };
+      let started = false;
+      const start = () => {
+        if (started) return;
+        started = true;
+        deviceSpeaking = true;
+        lastWordAt = performance.now();
+        hooks.onSentence?.(text);
+      };
+      utterance.onstart = start;
+      utterance.onboundary = (event) => {
+        start();
+        lastWordAt = performance.now();
+        if (event.name === "word") hooks.onProgress?.(event.charIndex + (event.charLength || 0));
       };
       utterance.onend = finish;
       utterance.onerror = (event) => {
@@ -225,11 +291,10 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
     while (queue.length && !stopped) {
       prefetch();
       const clip = queue.shift()!;
-      hooks.onSentence?.(clip.text);
       spoken += `${clip.text} `;
       if (network) {
         const buffer = await (clip.audio ?? fetchAudio(clip.text));
-        if (buffer && !stopped) await playBuffer(buffer);
+        if (buffer && !stopped) await playBuffer(buffer, clip.text);
       } else {
         await speakDevice(clip.text);
       }
@@ -264,6 +329,8 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
         void import("@capacitor-community/text-to-speech").then(({ TextToSpeech }) => TextToSpeech.stop());
       } else if (!network && "speechSynthesis" in window) speechSynthesis.cancel();
       busy = false;
+      networkPlaying = false;
+      deviceSpeaking = false;
       settle();
     },
     get speaking() {

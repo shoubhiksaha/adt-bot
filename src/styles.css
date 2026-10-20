@@ -1537,6 +1537,21 @@ kbd {
   margin-top: 4px;
   accent-color: var(--ring);
 }
+.access-cards {
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+}
+.radio-card.access-full.active {
+  border-color: var(--destructive, #e5484d);
+}
+.access-warning {
+  border: 1px solid var(--destructive, #e5484d);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin-bottom: 14px;
+}
+.access-warning p {
+  margin: 0 0 10px;
+}
 .shortcuts {
   border-collapse: collapse;
   font-size: 14px;
@@ -1620,7 +1635,9 @@ kbd {
   color: #fff;
   background: radial-gradient(circle at 35% 30%, var(--orb-a, #93c5fd), var(--orb-b, #3b82f6) 45%, var(--orb-c, #6d28d9) 100%);
   box-shadow: 0 0 60px color-mix(in srgb, var(--orb-b, #3b82f6) 45%, transparent), inset 0 -10px 30px rgba(0, 0, 0, 0.25);
-  transition: transform 0.08s linear, filter 0.3s;
+  /* --level (0–1) is set every frame from the real sound (VoiceMode.tsx). */
+  transform: scale(calc(1 + var(--level, 0) * 0.4));
+  transition: filter 0.3s;
 }
 .orb.thinking,
 .orb.transcribing,
@@ -1629,7 +1646,9 @@ kbd {
   animation: orb-breathe 1.4s ease-in-out infinite;
 }
 .orb.speaking {
-  animation: orb-speak 0.9s ease-in-out infinite;
+  box-shadow:
+    0 0 calc(50px + var(--level, 0) * 70px) color-mix(in srgb, var(--orb-c, #8b5cf6) calc(35% + var(--level, 0) * 35%), transparent),
+    inset 0 -10px 30px rgba(0, 0, 0, 0.25);
 }
 .orb.paused,
 .orb.error {
@@ -1642,17 +1661,6 @@ kbd {
   }
   50% {
     transform: scale(1.04);
-  }
-}
-@keyframes orb-speak {
-  0%,
-  100% {
-    transform: scale(1);
-    box-shadow: 0 0 50px color-mix(in srgb, var(--orb-c, #8b5cf6) 40%, transparent);
-  }
-  50% {
-    transform: scale(1.09);
-    box-shadow: 0 0 90px color-mix(in srgb, var(--orb-c, #8b5cf6) 60%, transparent);
   }
 }
 .voice-status {
@@ -1947,7 +1955,8 @@ input[type="color"] {
   color: var(--foreground);
   font-weight: 500;
 }
-.caption-bot .unsaid {
+.caption-bot .unsaid,
+.caption-bot mark .coming {
   opacity: 0.55;
 }
 .voice-hints {

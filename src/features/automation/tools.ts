@@ -338,6 +338,8 @@ const botTools: AgentTool[] = [
         conversationId: ctx.conversationId,
         signal: ctx.signal,
         progress: ctx.progress,
+        shared: ctx.shared,
+        unattended: ctx.unattended,
       });
       return {
         content: `Report from ${found.name} (linked chat "${result.title}"):\n${result.report}\n\nTell the user what ${found.name} found, in your own words, starting with its name.`,

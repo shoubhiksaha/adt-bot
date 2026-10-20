@@ -29,13 +29,18 @@ export type ToolImage = { mediaType: string; data: string };
 /** Only the newest tool images are replayed (they're large); older ones are replaced by a note. */
 const TOOL_IMAGES_KEPT = 2;
 
-/** Tool images to send this step, by call id: the newest few, and only to models that can see images. */
+/**
+ * Tool images to send this step, by call id: only to models that can see images. Claude gets every
+ * one, unchanged: its thinking blocks are bound to the exact conversation before them, so swapping
+ * an older screenshot for a note made the next request fail ("400 … Invalid `signature` in
+ * `thinking` block"). Other providers get the newest few.
+ */
 function toolImages(req: ChatRequest): Map<string, ToolImage> {
   const kept = new Map<string, ToolImage>();
   const info = req.provider.models.find((m) => m.id === req.model);
   if (req.provider.kind === "openai" && !(info?.vision ?? guessVision(req.model))) return kept;
   const withImages = (req.toolTurns ?? []).flatMap((t) => t.results).filter((r) => r.image);
-  for (const r of withImages.slice(-TOOL_IMAGES_KEPT)) kept.set(r.id, r.image!);
+  for (const r of req.provider.kind === "anthropic" ? withImages : withImages.slice(-TOOL_IMAGES_KEPT)) kept.set(r.id, r.image!);
   return kept;
 }
 
@@ -81,6 +86,8 @@ export type ChatRequest = {
   toolTurns?: ToolTurn[];
   /** "native" uses the provider's tool calling; "prompted" a text protocol for models without it. */
   toolMode?: "native" | "prompted";
+  /** Last step of a tool turn: no more tool calls; this note tells the model to answer now. */
+  finalNote?: string;
   signal?: AbortSignal;
 };
 
@@ -172,8 +179,14 @@ export function messageText(m: Message): string {
   return `${blocks.join("\n\n")}\n\n${text}`.trim();
 }
 
-function buildRequest(req: ChatRequest): { url: string; init: FetchInit } {
-  const { provider } = req;
+function buildRequest(original: ChatRequest): { url: string; init: FetchInit } {
+  const { provider } = original;
+  // Claude (native tools) keeps its tools and system prompt unchanged on the last step, because its
+  // thinking blocks are bound to them; it gets tool_choice "none" and the note as an appended
+  // message instead. Elsewhere the step simply has no tools and the note joins the system prompt.
+  const claudeFinal = Boolean(original.finalNote) && provider.kind === "anthropic" && original.toolMode !== "prompted";
+  const req: ChatRequest =
+    original.finalNote && !claudeFinal ? { ...original, tools: [], system: `${original.system}\n\n${original.finalNote}` } : original;
   const base = provider.baseUrl.replace(/\/+$/, "");
   const headers: Record<string, string> = { "content-type": "application/json" };
   const history = req.messages.filter((m) => !m.error && (m.content || m.attachments?.length));
@@ -221,6 +234,14 @@ function buildRequest(req: ChatRequest): { url: string; init: FetchInit } {
       // Cache the system prompt and history so long chats and knowledge files are cheaper and faster.
       body.cache_control = { type: "ephemeral" };
     }
+    if (provider.presetId === "anthropic" && !legacy && nativeTurns.some((t) => Array.isArray(t.raw) && t.raw.some((b: { type?: string }) => b?.type === "thinking"))) {
+      // Replayed tool steps carry thinking blocks bound to the conversation before them. History is
+      // replayed unchanged, but if anything before a block ever differs, drop that block for this
+      // request instead of failing it with a 400.
+      headers["anthropic-beta"] = "thinking-binding-controls-2026-08-01";
+      const thinking = (body.thinking as Record<string, unknown> | undefined) ?? (thinksByDefault(req.model) ? { type: "adaptive" } : undefined);
+      if (thinking) body.thinking = { ...thinking, block_binding: { prefix_mismatch_behavior: "drop_block" } };
+    }
     const anthropicTools: unknown[] = [];
     if (req.nativeSearch) {
       // Server-side web search; the dynamic-filtering version needs Claude 4.6 or newer.
@@ -247,6 +268,12 @@ function buildRequest(req: ChatRequest): { url: string; init: FetchInit } {
           })),
         },
       );
+    }
+    if (claudeFinal) {
+      body.tool_choice = { type: "none" };
+      const last = (body.messages as { role: string; content: unknown[] }[]).at(-1);
+      if (last?.role === "user") last.content = [...last.content, { type: "text", text: req.finalNote! }];
+      else (body.messages as unknown[]).push({ role: "user", content: [{ type: "text", text: req.finalNote! }] });
     }
     applyPrompted(req, body, "anthropic");
     return { url: `${base}/v1/messages`, init: { method: "POST", headers, body: JSON.stringify(body) } };
@@ -635,6 +662,11 @@ export function withCustomHeaders(
     ...Object.fromEntries(Object.entries(headers).filter(([name]) => !overridden.has(name.toLowerCase()))),
     ...custom,
   };
+}
+
+/** Claude models that think even when the request leaves `thinking` out (Opus 5+, Sonnet 5+, Fable, Mythos). */
+function thinksByDefault(model: string): boolean {
+  return /claude-(opus-[5-9]|sonnet-[5-9]|fable|mythos)/.test(model);
 }
 
 /** Claude models from before adaptive thinking still use a fixed budget and accept temperature. */

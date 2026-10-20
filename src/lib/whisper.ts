@@ -113,7 +113,9 @@ export type ListenerEvent =
   | { type: "utterance"; text?: string; audio?: Float32Array; ms?: number }
   | { type: "error"; message: string }
   /** The microphone delivers pure digital silence: blocked by the OS, muted, or the wrong input. */
-  | { type: "silent"; message: string };
+  | { type: "silent"; message: string }
+  /** The turn model judged a pause: probability that the speaker had finished. */
+  | { type: "turn"; probability: number };
 
 /** About 3 s of level reports (one per 64 ms) at exactly zero, right after the microphone opened. */
 const SILENT_REPORTS = 48;

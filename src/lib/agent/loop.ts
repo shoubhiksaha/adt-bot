@@ -2,6 +2,7 @@ import { type ChatRequest, type StreamEvent, streamChat, type ToolTurn } from ".
 import { presetById } from "../providers";
 import type { ToolCallRecord } from "../types";
 import { logActivity } from "./activity";
+import { accessGuidance, isComputerTool } from "./access";
 import { decide, gate, waitForDecision } from "./approvals";
 import { type AgentTool, getTool, type ToolContext, toResult } from "./tools";
 import { markUntrusted, UNTRUSTED_GUIDANCE } from "./vendor/copilotkit/untrusted-content";
@@ -74,7 +75,8 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
   const exposed = new Set(discovery ? tools.filter((t) => CORE_TOOLS.has(t.name)).map((t) => t.name) : tools.map((t) => t.name));
   const records: ToolCallRecord[] = [];
   const turns: ToolTurn[] = [];
-  const system = [request.system, TOOL_GUIDANCE].filter(Boolean).join("\n\n");
+  const computer = tools.some(isComputerTool) ? accessGuidance(context.settings.agent) : "";
+  const system = [request.system, TOOL_GUIDANCE, computer].filter(Boolean).join("\n\n");
 
   const publish = () => callbacks.onCalls(records.map((r) => ({ ...r })));
   const update = (id: string, patch: Partial<ToolCallRecord>) => {
@@ -85,18 +87,18 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
 
   for (let step = 0; step <= options.maxSteps; step++) {
     const last = step === options.maxSteps;
-    const schemas: ToolSchema[] = last
-      ? []
-      : [
-          ...tools.filter((t) => exposed.has(t.name)).map(({ name, description, parameters }) => ({ name, description, parameters })),
-          ...(discovery ? [findToolsSchema] : []),
-        ];
+    // The last step keeps the same tool list (Claude binds its thinking to it) and says "answer now".
+    const schemas: ToolSchema[] = [
+      ...tools.filter((t) => exposed.has(t.name)).map(({ name, description, parameters }) => ({ name, description, parameters })),
+      ...(discovery ? [findToolsSchema] : []),
+    ];
     let asked: Extract<StreamEvent, { type: "tool_calls" }> | null = null;
     try {
       for await (const event of streamChat({
         ...request,
-        system: last ? `${system}\n\nYou've used the maximum number of tool steps for this answer. Answer now with what you have.` : system,
+        system,
         tools: schemas,
+        finalNote: last ? "You've used the maximum number of tool steps for this answer. Answer now with what you have." : undefined,
         toolTurns: turns,
         toolMode: mode,
       })) {
@@ -148,12 +150,20 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
       return { id: call.id, name: call.name, content, isError: true };
     }
 
-    const verdict = gate(tool, call);
+    const verdict = gate(tool, call, context);
     const botName = context.bot.name;
     if (verdict.outcome === "deny") {
       update(call.id, { status: "denied", result: verdict.refusal });
       void logActivity({ bot: botName, tool: call.name, summary: verdict.reason, outcome: "denied", conversationId: context.conversationId });
       return { id: call.id, name: call.name, content: verdict.refusal, isError: true };
+    }
+    if (verdict.outcome === "ask" && context.unattended) {
+      const content =
+        "Refused: this needs the user's approval, and approval cards can't be shown in voice mode. Don't retry it. " +
+        "Tell the user what you wanted to do, and that they can do it from the chat, or allow it under Settings → Tools & safety → Computer access.";
+      update(call.id, { status: "denied", result: "Needs approval (not possible in voice mode)" });
+      void logActivity({ bot: botName, tool: call.name, summary: verdict.summary, outcome: "denied", conversationId: context.conversationId });
+      return { id: call.id, name: call.name, content, isError: true };
     }
     if (verdict.outcome === "ask") {
       update(call.id, {

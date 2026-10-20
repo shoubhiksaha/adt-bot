@@ -6,6 +6,11 @@ export type MacPermissions = {
   platform: string;
   accessibility?: boolean | null;
   screenRecording?: string;
+  /** Allowed in System Settings, but the running app still has macOS's old answer until it restarts. */
+  screenNeedsRestart?: boolean;
+  /** System Events automation: "granted", "denied", or "unknown" until macOS has been asked. */
+  automation?: "granted" | "denied" | "unknown";
+  microphone?: string;
   app?: string;
   screen?: { width: number; height: number; backing: number } | null;
 };

@@ -6,6 +6,30 @@ import { END_SILENCE_MS, type Engine, ENGINE_LABELS, listen, type ListenSession,
 import { isEcho, isLikelyHallucination, isSubstantial, matchWakeWord, parseVoiceCommand } from "./voice-commands";
 import { Listener, type ListenerEvent, onWhisperProgress, toWav } from "./whisper";
 
+/** What the bot is doing during a tool step, for the voice screen. */
+function activityFor(tool: string): string {
+  const known: Record<string, string> = {
+    mac_screenshot: "Looking at the screen",
+    mac_click: "Clicking",
+    mac_type: "Typing",
+    mac_key: "Pressing keys",
+    mac_scroll: "Scrolling",
+    mac_drag: "Dragging",
+    mac_open_app: "Opening an app",
+    mac_list_apps: "Checking open apps",
+    mac_applescript: "Running a script",
+    run_command: "Running a command",
+    read_file: "Reading a file",
+    write_file: "Saving a file",
+    list_files: "Looking at files",
+    open_on_computer: "Opening it",
+    web_search: "Searching the web",
+    read_url: "Reading a page",
+    ask_bot: "Asking another bot",
+  };
+  return `${known[tool] ?? "Working"}…`;
+}
+
 export type VoicePhase = "loading" | "listening" | "hearing" | "thinking" | "speaking" | "standby" | "muted" | "error";
 
 export type VoiceState = {
@@ -17,7 +41,10 @@ export type VoiceState = {
   /** The reply so far, and the sentence being spoken. */
   reply: string;
   sentence: string;
-  level: number;
+  /** How much of `sentence` has been spoken, in characters (word-by-word captions). */
+  spokenChars: number;
+  /** What the bot is doing between tool steps ("Clicking…"), while it works silently. */
+  activity: string;
   error: string | null;
   download: number | null;
   /** Time from the end of the user's turn to the first spoken word. */
@@ -75,7 +102,8 @@ export class VoiceSession {
       heard: "",
       reply: "",
       sentence: "",
-      level: 0,
+      spokenChars: 0,
+      activity: "",
       error: null,
       download: null,
       latencyMs: null,
@@ -87,8 +115,20 @@ export class VoiceSession {
 
   private set(patch: Partial<VoiceState>) {
     if (this.closed) return;
+    // Live captions cost a Whisper run each, so they only run while the user is the one talking.
+    if (patch.phase && patch.phase !== this.state.phase) this.listener?.setPartials(patch.phase === "listening" || patch.phase === "hearing");
     this.state = { ...this.state, ...patch };
     this.hooks.onState(this.state);
+  }
+
+  /**
+   * Microphone loudness, 0–1. Read every animation frame by the orb rather than kept in the state,
+   * which would re-render the whole screen ~16 times a second.
+   */
+  private micLevel = 0;
+  inputLevel(): number {
+    const phase = this.state.phase;
+    return phase === "listening" || phase === "hearing" || phase === "standby" ? this.micLevel : 0;
   }
 
   /** Current phase (a method, so checks after an await aren't narrowed away by TypeScript). */
@@ -187,7 +227,8 @@ export class VoiceSession {
       this.clearIdle();
       this.device?.cancel();
       this.listener?.setMuted(true);
-      this.set({ phase: "muted", partial: "", level: 0 });
+      this.micLevel = 0;
+      this.set({ phase: "muted", partial: "" });
     }
   }
 
@@ -226,7 +267,7 @@ export class VoiceSession {
     if (this.closed) return;
     const { phase } = this.state;
     if (event.type === "level") {
-      if (phase === "listening" || phase === "hearing" || phase === "standby") this.set({ level: event.level });
+      this.micLevel = event.level;
       return;
     }
     if (event.type === "start") {
@@ -454,7 +495,7 @@ export class VoiceSession {
     const turn = ++this.turn;
     this.clearIdle();
     this.listener?.setSensitivity("strict");
-    this.set({ phase: "thinking", reply: "", sentence: "", latencyMs: null, timing: null });
+    this.set({ phase: "thinking", reply: "", sentence: "", spokenChars: 0, activity: "", latencyMs: null, timing: null });
     const startedAt = Date.now();
     const askedAt = performance.now();
     let firstTextAt = 0;
@@ -474,7 +515,10 @@ export class VoiceSession {
             },
           });
         }
-        this.set({ phase: "speaking", sentence });
+        this.set({ phase: "speaking", sentence, spokenChars: 0 });
+      },
+      onProgress: (chars) => {
+        if (turn === this.turn && chars !== this.state.spokenChars) this.set({ spokenChars: chars });
       },
       onError: (message) => this.set({ error: message }),
     });
@@ -492,6 +536,21 @@ export class VoiceSession {
       if (turn !== this.turn) return;
       const message = latest();
       if (!message) return;
+      if (message.toolCalls?.length) {
+        // Working with tools: only the opening line was spoken. Show what it's doing; speak just
+        // the answer that follows the last step, once the reply is complete.
+        const running = message.toolCalls.find((c) => c.status === "running" || c.status === "pending" || c.status === "awaiting");
+        const activity = running ? activityFor(running.name) : "";
+        if (activity !== this.state.activity) this.set({ activity });
+        if (this.state.phase === "speaking" && !speaker.speaking) this.set({ phase: "thinking" });
+        if (!final) return;
+        const answer = stripMemoryTags(splitThink(message.content.slice(message.narrationEnd ?? 0)).text);
+        if (answer && !firstTextAt) firstTextAt = performance.now();
+        this.set({ reply: answer, activity: "" });
+        buffer = "";
+        for (const sentence of takeSentences(answer, true, first).sentences) speaker.say(sentence);
+        return;
+      }
       const visible = stripMemoryTags(splitThink(message.content).text);
       if (visible && !firstTextAt) firstTextAt = performance.now();
       if (visible !== this.state.reply) this.set({ reply: visible });
@@ -549,7 +608,8 @@ export class VoiceSession {
     this.listener?.close();
     this.listener = null;
     this.device?.cancel();
-    this.set({ phase: "error", error: message, level: 0 });
+    this.micLevel = 0;
+    this.set({ phase: "error", error: message });
   }
 }
 
