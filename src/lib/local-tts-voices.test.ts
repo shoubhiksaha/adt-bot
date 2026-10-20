@@ -7,6 +7,8 @@ describe("on-device voice choice", () => {
   it("picks the engine from the reply voice setting", () => {
     expect(localChoice({ ...settings, tts: "local" })).toEqual({ engine: "supertonic", voice: "F1" });
     expect(localChoice({ ...settings, tts: "kokoro", kokoroVoice: "bm_george" })).toEqual({ engine: "kokoro", voice: "bm_george" });
+    // Supertonic 3 shares the Supertonic voice names (and setting).
+    expect(localChoice({ ...settings, tts: "supertonic3", localVoice: "M2" })).toEqual({ engine: "supertonic3", voice: "M2" });
   });
   it("is null for every other kind of voice", () => {
     for (const tts of ["system", "openai", "elevenlabs", "fish", "custom:x"] as const) expect(localChoice({ ...settings, tts })).toBeNull();

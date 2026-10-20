@@ -7,7 +7,7 @@ import type { LocalChoice, LocalEngine } from "./local-tts-voices";
  * few idle minutes to free memory. Kokoro's code (and its phonemizer) only loads when it's chosen.
  */
 export type { LocalChoice, LocalEngine };
-export { KOKORO_MB, KOKORO_VOICES, LOCAL_VOICE_MB, LOCAL_VOICES, localChoice, splitLongText } from "./local-tts-voices";
+export { KOKORO_MB, KOKORO_VOICES, LOCAL_VOICE_MB, LOCAL_VOICES, localChoice, splitLongText, SUPERTONIC3_MB } from "./local-tts-voices";
 
 type Audio = { audio: Float32Array; sampleRate: number };
 type Job = { resolve: (audio: Audio | null) => void; reject: (error: Error) => void };
@@ -91,6 +91,7 @@ const IDLE_MS = 3 * 60_000;
 
 const engines: Record<LocalEngine, Engine> = {
   supertonic: new Engine(() => new Worker(new URL("./local-tts.worker.ts", import.meta.url), { type: "module" })),
+  supertonic3: new Engine(() => new Worker(new URL("./supertonic3.worker.ts", import.meta.url), { type: "module" })),
   kokoro: new Engine(() => new Worker(new URL("./kokoro-tts.worker.ts", import.meta.url), { type: "module" })),
 };
 
@@ -130,6 +131,9 @@ export async function localVoiceDownloaded(engine: LocalEngine): Promise<boolean
   try {
     const stored = (await keys(createStore("adtbot-models", "files"))) as string[];
     if (engine === "kokoro") return stored.some((k) => k.includes("Kokoro-82M-v1.0-ONNX") && k.endsWith("model_quantized.onnx"));
+    if (engine === "supertonic3") {
+      return ["duration_predictor", "text_encoder", "vector_estimator", "vocoder"].every((part) => stored.some((k) => k.includes("supertonic-3/") && k.endsWith(`/${part}.onnx`)));
+    }
     const has = (part: string) => stored.some((k) => k.includes("Supertonic-TTS-ONNX") && k.includes(part));
     return has("text_encoder.onnx_data") && has("latent_denoiser.onnx_data") && has("voice_decoder.onnx_data");
   } catch {

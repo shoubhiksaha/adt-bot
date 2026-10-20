@@ -181,6 +181,7 @@ export type TtsContext = { voice: VoiceSettings; providers: ProviderConfig[]; us
 
 export function ttsLabel(voice: VoiceSettings): string {
   if (voice.tts === "local") return `On-device voice · ${voice.localVoice || "F1"}`;
+  if (voice.tts === "supertonic3") return `Supertonic 3 · ${voice.localVoice || "F1"}`;
   if (voice.tts === "kokoro") return `Kokoro · ${KOKORO_VOICES.find((v) => v.id === voice.kokoroVoice)?.label.split(" (")[0] ?? "Heart"}`;
   if (voice.tts === "openai") return `${voice.ttsModel || "OpenAI"} · ${voice.ttsVoice || "alloy"}`;
   if (voice.tts === "elevenlabs") return "ElevenLabs";

@@ -2,7 +2,7 @@
 // rules can be unit-tested and shared with the voice workers.
 import type { VoiceSettings } from "./types";
 
-export type LocalEngine = "supertonic" | "kokoro";
+export type LocalEngine = "supertonic" | "supertonic3" | "kokoro";
 /** Which on-device voice to speak with. */
 export type LocalChoice = { engine: LocalEngine; voice: string };
 
@@ -12,6 +12,12 @@ export const LOCAL_VOICES: { id: string; label: string }[] = ["F1", "F2", "F3", 
 }));
 /** Download size of the model files (fp32 text encoder, denoiser and decoder). */
 export const LOCAL_VOICE_MB = 262;
+/**
+ * Supertonic 3's download (four fp32 graphs; each voice adds 0.3 MB). Bigger than the first
+ * Supertonic, but it speaks 31 languages. Its 8-bit version (102 MB) ran 1.6× slower on the CPU and
+ * 12× slower on the GPU here, so it isn't used.
+ */
+export const SUPERTONIC3_MB = 398;
 
 /** Kokoro's voices, best-rated first (a = American, b = British English). */
 export const KOKORO_VOICES: { id: string; label: string }[] = [
@@ -49,8 +55,9 @@ export const KOKORO_MB = 92;
 
 /** The on-device voice these settings speak with, or null for any other kind of voice. */
 export function localChoice(voice: Pick<VoiceSettings, "tts" | "localVoice" | "kokoroVoice">): LocalChoice | null {
-  if (voice.tts === "local") {
-    return { engine: "supertonic", voice: LOCAL_VOICES.some((v) => v.id === voice.localVoice) ? voice.localVoice : "F1" };
+  if (voice.tts === "local" || voice.tts === "supertonic3") {
+    // Both Supertonic versions have voices F1–F5 and M1–M5.
+    return { engine: voice.tts === "local" ? "supertonic" : "supertonic3", voice: LOCAL_VOICES.some((v) => v.id === voice.localVoice) ? voice.localVoice : "F1" };
   }
   if (voice.tts === "kokoro") {
     return { engine: "kokoro", voice: KOKORO_VOICES.some((v) => v.id === voice.kokoroVoice) ? voice.kokoroVoice : "af_heart" };

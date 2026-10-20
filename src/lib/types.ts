@@ -151,10 +151,11 @@ export type Conversation = {
 export type SttEngine = "auto" | "device" | "whisper-local" | "whisper-cloud";
 
 /**
- * Natural voices generated on this device (no key, works offline): "local" is Supertonic, "kokoro"
- * is Kokoro (more natural, slower to start each sentence).
+ * Natural voices generated on this device (no key, works offline): "local" is Supertonic (English),
+ * "supertonic3" is Supertonic 3 (31 languages), "kokoro" is Kokoro (more natural, slower to start
+ * each sentence).
  */
-export type TtsEngine = "system" | "local" | "kokoro" | "openai" | "elevenlabs" | CloudTts | `custom:${string}`;
+export type TtsEngine = "system" | "local" | "supertonic3" | "kokoro" | "openai" | "elevenlabs" | CloudTts | `custom:${string}`;
 /** Natural-voice services that only need an API key. */
 export type CloudTts = "fish" | "cartesia" | "deepgram";
 
@@ -170,7 +171,7 @@ export type VoiceSettings = {
   rate: number;
   /** Reply voice engine: device voices, any OpenAI-compatible /audio/speech server, or ElevenLabs. */
   tts: TtsEngine;
-  /** On-device natural voice (Supertonic): F1–F5, M1–M5. */
+  /** On-device natural voice (Supertonic, either version): F1–F5, M1–M5. */
   localVoice: string;
   /** On-device Kokoro voice, e.g. af_heart. */
   kokoroVoice: string;

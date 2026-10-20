@@ -5,7 +5,17 @@ import { CUSTOM_VOICE_TEMPLATES, type CustomVoice, newCustomVoice } from "../../
 import { bestVoice, CLOUD_TTS, customVoiceFor, type DeviceVoice, listVoices, OPENAI_TTS_VOICES, rankVoice } from "../../lib/tts";
 import type { CloudTts, VoiceSettings } from "../../lib/types";
 import { ENGINE_LABELS, resolveEngine, speak, TRANSCRIBE_MODEL_SUGGESTIONS } from "../../lib/voice";
-import { KOKORO_MB, KOKORO_VOICES, LOCAL_VOICE_MB, LOCAL_VOICES, localChoice, localVoiceDownloaded, onLocalVoiceProgress, preloadLocalVoice } from "../../lib/local-tts";
+import {
+  KOKORO_MB,
+  KOKORO_VOICES,
+  LOCAL_VOICE_MB,
+  LOCAL_VOICES,
+  localChoice,
+  localVoiceDownloaded,
+  onLocalVoiceProgress,
+  preloadLocalVoice,
+  SUPERTONIC3_MB,
+} from "../../lib/local-tts";
 import { isMoonshine } from "../../lib/speech-models";
 import { localSpeechModel, onSpeechNotice, onWhisperProgress, preloadWhisper, SPEECH_MODELS, type SpeechModel, whisperDownloaded } from "../../lib/whisper";
 import { ModelInput, Section, Toggle } from "./controls";
@@ -74,7 +84,8 @@ export function VoiceSettings() {
             }}
           >
             <option value="system">Device voice (free, instant)</option>
-            <option value="local">Natural, on this device: Supertonic (free, private, works offline)</option>
+            <option value="local">Natural, on this device: Supertonic (English; free, private, works offline)</option>
+            <option value="supertonic3">Natural, on this device: Supertonic 3 (31 languages; free, private, works offline)</option>
             <option value="kokoro">Natural, on this device: Kokoro (most natural, slower)</option>
             <option value="openai">Natural: OpenAI-compatible (OpenAI, or a self-hosted Kokoro/LocalAI server)</option>
             <option value="elevenlabs">Natural: ElevenLabs</option>
@@ -108,7 +119,7 @@ export function VoiceSettings() {
           </div>
         )}
 
-        {(voice.tts === "local" || voice.tts === "kokoro") && <LocalVoiceFields key={voice.tts} voice={voice} set={set} />}
+        {(voice.tts === "local" || voice.tts === "supertonic3" || voice.tts === "kokoro") && <LocalVoiceFields key={voice.tts} voice={voice} set={set} />}
 
         {voice.tts === "openai" && (
           <>
@@ -459,10 +470,12 @@ function CustomVoiceFields({ voice, set }: { voice: VoiceSettings; set: (patch: 
   );
 }
 
-/** An on-device natural voice (Supertonic or Kokoro): voice choice and a one-time download. */
+/** An on-device natural voice (Supertonic, Supertonic 3 or Kokoro): voice choice and a one-time download. */
 function LocalVoiceFields({ voice, set }: { voice: VoiceSettings; set: (patch: Partial<VoiceSettings>) => void }) {
   const choice = localChoice(voice)!;
   const kokoro = choice.engine === "kokoro";
+  const size = kokoro ? KOKORO_MB : choice.engine === "supertonic3" ? SUPERTONIC3_MB : LOCAL_VOICE_MB;
+  const english = (typeof navigator === "undefined" ? "en" : navigator.language || "en").toLowerCase().startsWith("en");
   const [downloaded, setDownloaded] = useState<boolean | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState("");
@@ -502,7 +515,7 @@ function LocalVoiceFields({ voice, set }: { voice: VoiceSettings; set: (patch: P
           ) : (
             <>
               <button type="button" className="btn" onClick={download} disabled={progress !== null}>
-                {progress !== null ? `Downloading… ${progress}%` : `Download voice (${kokoro ? KOKORO_MB : LOCAL_VOICE_MB} MB, one time)`}
+                {progress !== null ? `Downloading… ${progress}%` : `Download voice (${size} MB, one time)`}
               </button>
               <span className="small muted">Until it's downloaded, replies use the device voice.</span>
             </>
@@ -514,8 +527,17 @@ function LocalVoiceFields({ voice, set }: { voice: VoiceSettings; set: (patch: P
             English only. The most natural on-device voice, but slower than Supertonic to start each sentence: about 3–5 seconds on an M1
             Mac, so replies begin after a pause. Uses the Kokoro-82M model (Apache-2.0) and eSpeak NG (GPL-3.0).
           </span>
+        ) : choice.engine === "supertonic3" ? (
+          <span className="small muted">
+            Speaks 31 languages, including English, Spanish, French, German, Portuguese, Italian, Japanese, Korean, Hindi, Arabic and
+            Russian. Each sentence is read in the language it's written in (your system language for Latin-script text that isn't
+            English). Uses the Supertonic 3 model by Supertone (OpenRAIL-M licence: don't use it to impersonate people or to pass off
+            speech as human).
+          </span>
         ) : (
-          <span className="small muted">English only. Uses the Supertonic model by Supertone (OpenRAIL-M licence).</span>
+          <span className="small muted">
+            English only{english ? "" : ": for your language, choose Supertonic 3"}. Uses the Supertonic model by Supertone (OpenRAIL-M licence).
+          </span>
         )}
       </div>
     </>
