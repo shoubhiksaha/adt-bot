@@ -350,6 +350,11 @@ async function runAssistant(conversationId: string, botId: string, opts: SendOpt
           patchReply({ status: event.text });
           return;
         }
+        if (event.type === "compaction") {
+          // Claude summarised the chat so far; later turns send the summary instead of the full history.
+          patchReply({ compaction: event.block });
+          return;
+        }
         firstMs ??= performance.now() - started;
         if (event.type === "text") content += event.text;
         else reasoning += event.text;

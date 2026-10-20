@@ -142,6 +142,8 @@ describe("voice requests", () => {
     }
     expect(seen.at(-1).output_config).toEqual({ effort: "low" });
     expect(seen.at(-1).cache_control).toEqual({ type: "ephemeral" });
-    expect(seen.at(-1)).not.toHaveProperty("thinking");
+    // Thinking stays the model's default (adaptive; Sonnet 5.5 rejects "disabled"), with no summaries asked for.
+    expect(seen.at(-1).thinking ?? { type: "adaptive" }).toMatchObject({ type: "adaptive" });
+    expect(seen.at(-1).thinking).not.toHaveProperty("display");
   });
 });

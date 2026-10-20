@@ -128,6 +128,8 @@ export type Message = {
   status?: string;
   /** Total time and time to first token, in milliseconds. */
   stats?: { ms: number; firstMs?: number };
+  /** Claude's summary of the conversation up to this reply (server-side compaction), sent back on later turns. */
+  compaction?: Record<string, unknown>;
   createdAt: number;
 };
 

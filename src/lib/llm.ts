@@ -2,7 +2,7 @@ import { BareCallFilter, OPEN as PROMPTED_OPEN, PromptedFilter, promptedProtocol
 import { ToolCallAccumulator, parseToolArgs } from "./agent/vendor/openbot/toolCallAccumulator";
 import { cliModels, streamCliChat } from "./cli-agents/provider";
 import type { ToolCall, ToolSchema } from "./agent/vendor/openbot/types";
-import { guessVision } from "./providers";
+import { guessVision, presetById } from "./providers";
 import { providerFetch, type FetchInit } from "./transport";
 import type { Message, ModelInfo, ProviderConfig, Source, ThinkingLevel } from "./types";
 
@@ -13,7 +13,12 @@ export type StreamEvent =
   | { type: "sources"; sources: Source[] }
   | { type: "status"; text: string }
   /** The model asked for tools. `raw` is its turn in the provider's own format, replayed on the next step. */
-  | { type: "tool_calls"; calls: ToolCall[]; raw: unknown; text: string };
+  | { type: "tool_calls"; calls: ToolCall[]; raw: unknown; text: string }
+  /**
+   * Claude summarised the conversation so far (server-side compaction). Keep the block with the
+   * reply: sent back on later turns, everything before it is replaced by the summary.
+   */
+  | { type: "compaction"; block: Record<string, unknown> };
 
 /** One completed step of a tool loop: what the model said/asked, and what the tools answered. */
 export type ToolTurn = {
@@ -33,14 +38,15 @@ const TOOL_IMAGES_KEPT = 2;
  * Tool images to send this step, by call id: only to models that can see images. Claude gets every
  * one, unchanged: its thinking blocks are bound to the exact conversation before them, so swapping
  * an older screenshot for a note made the next request fail ("400 … Invalid `signature` in
- * `thinking` block"). Other providers get the newest few.
+ * `thinking` block"). Other providers get the newest few, and so does Claude once a long turn had
+ * to be shortened to fit (its thinking is left out then; see fitToContext).
  */
-function toolImages(req: ChatRequest): Map<string, ToolImage> {
+function toolImages(req: ChatRequest, keepAll = req.provider.kind === "anthropic"): Map<string, ToolImage> {
   const kept = new Map<string, ToolImage>();
   const info = req.provider.models.find((m) => m.id === req.model);
   if (req.provider.kind === "openai" && !(info?.vision ?? guessVision(req.model))) return kept;
   const withImages = (req.toolTurns ?? []).flatMap((t) => t.results).filter((r) => r.image);
-  for (const r of req.provider.kind === "anthropic" ? withImages : withImages.slice(-TOOL_IMAGES_KEPT)) kept.set(r.id, r.image!);
+  for (const r of keepAll ? withImages : withImages.slice(-TOOL_IMAGES_KEPT)) kept.set(r.id, r.image!);
   return kept;
 }
 
@@ -139,21 +145,81 @@ function sleep(ms: number, signal?: AbortSignal) {
   });
 }
 
+/** A Claude content block, as streamed and as replayed. */
+type Block = Record<string, any>;
+
+/** How a request is shaped beyond the ChatRequest itself; streamChat adjusts it when retrying. */
+type Shape = {
+  /** Leave out the optional Claude betas (fallbacks, compaction, thinking binding) after a request rejected them. */
+  lean?: boolean;
+  /** Replay tool steps without their thinking blocks: the documented recovery when history no longer matches them. */
+  stripThinking?: boolean;
+  /** An assistant turn the server paused (pause_turn), sent back unchanged so it carries on. */
+  resume?: Block[];
+};
+
+/** Provider + model pairs that rejected an optional beta this session; they get plain requests. */
+const leanTargets = new Set<string>();
+/** A paused server-side search is resumed this many times before the reply says so. */
+const MAX_CONTINUATIONS = 3;
+
+/** A 400 caused by one of the optional Claude features rather than by the conversation itself. */
+function optionalFeatureError(error: unknown): boolean {
+  const e = error as Partial<ProviderError>;
+  return e?.status === 400 && /anthropic-beta|\bbeta\b|fallbacks|context_management|compact|block_binding|citations|Extra inputs are not permitted|web_search_2026|allowed_callers/i.test(String(e.message ?? ""));
+}
+
+/** Replayed thinking that no longer matches the conversation before it (preserved thinking). */
+function thinkingBindingError(error: unknown): boolean {
+  const e = error as Partial<ProviderError>;
+  return e?.status === 400 && /Invalid `?signature`? in `?thinking`? block|bound to a different conversation/i.test(String(e.message ?? ""));
+}
+
 /**
  * Stream a reply from any supported provider as text and reasoning deltas. A request that fails
- * before anything arrived (busy service, rate limit, dropped connection) is tried again.
+ * before anything arrived (busy service, rate limit, dropped connection) is tried again; so is one
+ * that only failed on an optional feature, without it. A web search the server paused is resumed.
  */
 export async function* streamChat(req: ChatRequest): AsyncGenerator<StreamEvent> {
   if (req.provider.kind === "cli") return yield* streamCliChat(req);
+  const key = `${req.provider.id}::${req.model}`;
+  const shape: Shape = { lean: leanTargets.has(key) };
+  for (let continuation = 0; ; continuation++) {
+    const paused = yield* streamWithRetries(req, shape, key);
+    if (!paused) return;
+    if (continuation >= MAX_CONTINUATIONS) {
+      yield { type: "text", text: "\n\n_The web search took too long to finish. Ask again to continue._" };
+      return;
+    }
+    shape.resume = paused;
+  }
+}
+
+async function* streamWithRetries(req: ChatRequest, shape: Shape, key: string): AsyncGenerator<StreamEvent, Block[] | undefined> {
   for (let attempt = 0; ; attempt++) {
     let started = false;
     try {
-      for await (const event of streamOnce(req)) {
+      const stream = streamOnce(req, shape);
+      for (;;) {
+        const next = await stream.next();
+        if (next.done) return next.value;
         started = true;
-        yield event;
+        yield next.value;
       }
-      return;
     } catch (error) {
+      if (!started && !req.signal?.aborted && req.provider.kind === "anthropic") {
+        if (!shape.stripThinking && thinkingBindingError(error)) {
+          shape.stripThinking = true;
+          attempt--;
+          continue;
+        }
+        if (!shape.lean && optionalFeatureError(error)) {
+          shape.lean = true;
+          leanTargets.add(key);
+          attempt--;
+          continue;
+        }
+      }
       const wait = started || req.signal?.aborted ? null : retryDelay(error, attempt);
       if (wait === null) throw error;
       yield { type: "status", text: attempt ? `The service is busy. Trying again (${attempt + 1})…` : "The service is busy. Trying again…" };
@@ -162,13 +228,14 @@ export async function* streamChat(req: ChatRequest): AsyncGenerator<StreamEvent>
   }
 }
 
-async function* streamOnce(req: ChatRequest): AsyncGenerator<StreamEvent> {
-  const { url, init } = buildRequest(req);
+/** One request. Returns the assistant turn so far when the server paused it (pause_turn). */
+async function* streamOnce(req: ChatRequest, shape: Shape = {}): AsyncGenerator<StreamEvent, Block[] | undefined> {
+  const { url, init } = buildRequest(req, shape);
   init.headers = withCustomHeaders(init.headers, req.provider.headers);
   const res = await providerFetch(url, { ...init, signal: req.signal }, req.useProxy);
   if (!res.ok) throw await providerError(res);
 
-  const parser = createParser(req.provider, req);
+  const parser = createParser(req.provider, req, shape);
   const prompted = req.toolMode === "prompted" && req.tools?.length ? new PromptedFilter() : null;
   // OpenAI-compatible servers (Ollama, LM Studio…) sometimes hand back a call as plain JSON text.
   const bare = !prompted && req.tools?.length && req.provider.kind === "openai" ? new BareCallFilter() : null;
@@ -211,6 +278,7 @@ async function* streamOnce(req: ChatRequest): AsyncGenerator<StreamEvent> {
     if (call && !nativeCalls) yield { type: "tool_calls", calls: [call], raw: {}, text: before };
     else if (tail) yield { type: "text", text: tail };
   }
+  return parser.paused?.();
 }
 
 /** Gemini accepts an OpenAPI subset: drop JSON-Schema keywords it rejects. */
@@ -225,12 +293,16 @@ function geminiSchema(schema: unknown): unknown {
   return out;
 }
 
-/** Runs a short request to completion and returns only the answer text (titles, search queries). */
+/**
+ * Runs a short request to completion and returns only the answer text (titles, search queries).
+ * Light reasoning by default: models that always think (Claude Opus 5.5…) would otherwise spend
+ * their default effort on a chat title.
+ */
 export async function complete(
   req: Omit<ChatRequest, "temperature" | "thinking"> & Partial<Pick<ChatRequest, "temperature" | "thinking">>,
 ): Promise<string> {
   let text = "";
-  for await (const event of streamChat({ temperature: null, thinking: "off", ...req })) {
+  for await (const event of streamChat({ temperature: null, thinking: "off", fast: true, ...req })) {
     if (event.type === "text") text += event.text;
   }
   return splitThink(text).text.trim();
@@ -252,18 +324,143 @@ export function messageText(m: Message): string {
   return `${blocks.join("\n\n")}\n\n${text}`.trim();
 }
 
-function buildRequest(original: ChatRequest): { url: string; init: FetchInit } {
+/** Share of the model's context window a request may fill before older material is shortened. */
+const CONTEXT_SHARE = 0.7;
+/** Roughly what one screenshot costs (a ~1 megapixel image on Claude; OpenAI and Gemini cost less). */
+const IMAGE_TOKENS = 1600;
+/** The newest tool steps always go in full, screenshots included. */
+const STEPS_KEPT = 2;
+/** Older steps are shortened this many at a time, so the shortened part stays the same for a few steps (prompt caches). */
+const STEP_CHUNK = 4;
+
+/** A rough token count, on the high side for safety (~3.5 characters a token). */
+const tokensOf = (text: string) => Math.ceil(text.length / 3.5);
+
+/**
+ * The model's context window in tokens: what its /models entry or the catalog says, else a cautious
+ * guess (local servers often run with small windows).
+ */
+export function contextLimit(req: Pick<ChatRequest, "provider" | "model">): number {
+  const known = req.provider.models.find((m) => m.id === req.model)?.context;
+  if (known && known > 0) return known;
+  if (req.provider.kind === "anthropic" && /claude/.test(req.model)) return isLegacyClaude(req.model) ? 200_000 : 1_000_000;
+  const preset = presetById(req.provider.presetId);
+  return preset?.local || preset?.group === "local" || preset?.group === "private" ? 32_000 : 128_000;
+}
+
+/** A tool step with its results replaced by short notes (screenshots dropped). */
+function shortenTurn(turn: ToolTurn): ToolTurn {
+  return {
+    ...turn,
+    results: turn.results.map((r) => {
+      if (r.content.length <= 400 && !r.image) return r;
+      const start = r.content.slice(0, 200).replace(/\s+/g, " ").trim();
+      const { image: _image, ...rest } = r;
+      return { ...rest, content: `[Shortened to save space: this earlier result had ${r.content.length} characters${r.image ? " and an image" : ""}. It began: "${start}…"]` };
+    }),
+  };
+}
+
+/**
+ * Keeps a request inside the model's context window when the provider can't compact it itself.
+ * Under ~70% of the window nothing changes. Above it, older tool results in this turn become short
+ * notes (the newest steps and the latest screenshot stay whole), then the oldest chat messages are
+ * left out with a note; the latest user message always stays.
+ */
+export function fitToContext(req: ChatRequest): { messages: Message[]; toolTurns: ToolTurn[]; trimmed: boolean } {
+  const turns = req.toolTurns ?? [];
+  const budget = Math.floor(contextLimit(req) * CONTEXT_SHARE);
+  const shown = toolImages(req);
+  const messageCost = (m: Message) => tokensOf(messageText(m)) + imagesOf(m).length * IMAGE_TOKENS;
+  const turnCost = (t: ToolTurn) =>
+    tokensOf(t.text) +
+    tokensOf(JSON.stringify(t.calls)) +
+    t.results.reduce((n, r) => n + tokensOf(r.content) + (r.image && shown.has(r.id) ? IMAGE_TOKENS : 0), 0);
+  const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
+  const fixed = tokensOf(req.system) + tokensOf(JSON.stringify(req.tools ?? [])) + tokensOf(req.finalNote ?? "");
+  const messageCosts = req.messages.map(messageCost);
+  let toolTurns = turns;
+  let turnTotal = sum(turns.map(turnCost));
+  if (fixed + sum(messageCosts) + turnTotal <= budget) return { messages: req.messages, toolTurns: turns, trimmed: false };
+
+  const shortenable = Math.max(0, turns.length - STEPS_KEPT);
+  for (let shortened = 0; shortened < shortenable && fixed + sum(messageCosts) + turnTotal > budget; ) {
+    shortened = Math.min(shortenable, shortened + STEP_CHUNK);
+    toolTurns = turns.map((t, i) => (i < shortened ? shortenTurn(t) : t));
+    turnTotal = sum(toolTurns.map(turnCost));
+  }
+
+  let lastUser = req.messages.length - 1;
+  while (lastUser > 0 && req.messages[lastUser].role !== "user") lastUser--;
+  let start = 0;
+  let total = fixed + sum(messageCosts) + turnTotal;
+  while (total > budget && start < lastUser) {
+    total -= messageCosts[start];
+    start++;
+    // Start on a user message, so roles still alternate.
+    while (start < lastUser && req.messages[start].role !== "user") total -= messageCosts[start++];
+  }
+  const messages = start
+    ? [
+        { ...req.messages[start], content: `[Earlier messages in this chat were left out to fit the model's context window.]\n\n${req.messages[start].content}` },
+        ...req.messages.slice(start + 1),
+      ]
+    : req.messages;
+  return { messages, toolTurns, trimmed: true };
+}
+
+/**
+ * Claude models whose thinking blocks are bound to the exact conversation before them ("preserved
+ * thinking", Claude 5.1 and later): after any change to earlier turns, replayed thinking is invalid.
+ */
+function bindsThinking(model: string): boolean {
+  return /claude-(?:(?:opus|sonnet|haiku)-(?:5-[5-9]|[6-9])|(?:fable|mythos)-(?:5-[1-9]|[6-9]))/.test(model);
+}
+
+/** Claude models that can compact the conversation on the server (beta compact-2026-01-12). */
+function compactsOnServer(model: string): boolean {
+  return /claude-(?:(?:opus|sonnet)-4-[6-9]|(?:opus|sonnet)-[5-9]|haiku-[5-9]|fable|mythos)/.test(model);
+}
+
+/**
+ * Claude models that take the server-side refusal fallback (`fallbacks: "default"`): a request a
+ * safety classifier declines is answered by another Claude model instead of stopping.
+ */
+function fallsBackOnServer(model: string): boolean {
+  return /^claude-(?:opus-5(?:-5)?|sonnet-5-5|fable-5(?:-1)?)$/.test(model);
+}
+
+/**
+ * A Claude turn as replayed: unchanged, or without thinking (see `strip` below), or in the plain
+ * form (no citations) when the API turned an optional feature down.
+ */
+function replayed(raw: unknown, strip: boolean, lean: boolean): unknown {
+  if (!Array.isArray(raw)) return raw;
+  const kept = strip ? raw.filter((b: Block) => b?.type !== "thinking" && b?.type !== "redacted_thinking") : raw;
+  return lean ? kept.map((b: Block) => (b?.type === "text" ? { type: "text", text: b.text ?? "" } : b)) : kept;
+}
+
+function buildRequest(original: ChatRequest, shape: Shape = {}): { url: string; init: FetchInit } {
   const { provider } = original;
   // Claude (native tools) keeps its tools and system prompt unchanged on the last step, because its
   // thinking blocks are bound to them; it gets tool_choice "none" and the note as an appended
   // message instead. Elsewhere the step simply has no tools and the note joins the system prompt.
   const claudeFinal = Boolean(original.finalNote) && provider.kind === "anthropic" && original.toolMode !== "prompted";
-  const req: ChatRequest =
+  let req: ChatRequest =
     original.finalNote && !claudeFinal ? { ...original, tools: [], system: `${original.system}\n\n${original.finalNote}` } : original;
+  // Anthropic's API summarises long conversations itself; everything else is kept to size here.
+  const official = provider.kind === "anthropic" && provider.presetId === "anthropic";
+  const serverCompaction = official && !shape.lean && compactsOnServer(req.model);
+  let trimmed = false;
+  if (!serverCompaction) {
+    const fitted = fitToContext(req);
+    trimmed = fitted.trimmed;
+    if (trimmed) req = { ...req, messages: fitted.messages, toolTurns: fitted.toolTurns };
+  }
   const base = provider.baseUrl.replace(/\/+$/, "");
   const headers: Record<string, string> = { "content-type": "application/json" };
   const history = req.messages.filter((m) => !m.error && (m.content || m.attachments?.length));
-  const images = toolImages(req);
+  const images = toolImages(req, provider.kind === "anthropic" && !trimmed);
   // Text-protocol steps are replayed by applyPrompted instead.
   const nativeTurns = req.toolMode === "prompted" ? [] : (req.toolTurns ?? []);
 
@@ -272,6 +469,7 @@ function buildRequest(original: ChatRequest): { url: string; init: FetchInit } {
     headers["anthropic-version"] = "2023-06-01";
     headers["anthropic-dangerous-direct-browser-access"] = "true";
     const legacy = isLegacyClaude(req.model);
+    const betas: string[] = [];
     const body: Record<string, unknown> = {
       model: req.model,
       max_tokens: legacy ? 32000 : 64000,
@@ -279,6 +477,8 @@ function buildRequest(original: ChatRequest): { url: string; init: FetchInit } {
       messages: history.map((m) => ({
         role: m.role,
         content: [
+          // A summary from an earlier turn: the API replaces everything before it with the summary.
+          ...(serverCompaction && m.role === "assistant" && m.compaction ? [m.compaction] : []),
           ...imagesOf(m).map((a) => {
             const { mediaType, data } = splitDataUrl(a.dataUrl);
             return { type: "image", source: { type: "base64", media_type: mediaType, data } };
@@ -288,41 +488,61 @@ function buildRequest(original: ChatRequest): { url: string; init: FetchInit } {
       })),
     };
     if (req.system) body.system = req.system;
+    let thinking: Record<string, unknown> | undefined;
     if (legacy) {
       // Claude 4.5 and older: fixed thinking budget, and sampling params are still accepted.
       if (req.thinking !== "off") {
-        body.thinking = { type: "enabled", budget_tokens: { low: 2048, medium: 8192, high: 24000 }[req.thinking] };
+        thinking = { type: "enabled", budget_tokens: { low: 2048, medium: 8192, high: 24000 }[req.thinking] };
       } else if (req.temperature !== null) {
         body.temperature = req.temperature;
       }
     } else if (req.thinking !== "off") {
       // Current Claude models: adaptive thinking steered by effort; temperature is rejected.
-      body.thinking = { type: "adaptive", display: "summarized" };
+      thinking = { type: "adaptive", display: "summarized" };
       body.output_config = { effort: req.thinking };
     } else if (req.fast) {
-      // Current Claude models think by default; low effort answers much sooner.
+      // "Off" is never sent as thinking: {type: "disabled"} (Opus 5.5, Fable and Sonnet 5.5 reject
+      // it). Current models think by default, and low effort answers much sooner.
       body.output_config = { effort: "low" };
     } else if (thinksByDefault(req.model) && req.tools?.some((t) => t.name.startsWith("mac_"))) {
-      // Thinking "off" with screen control: each step is a small decision, and the default (high)
-      // effort makes every click wait. Same for every step of the turn.
+      // Thinking "off" with screen control: each step is a small decision, and a high default
+      // effort (most models; Opus 5.5 and Haiku 5.5 default to medium) makes every click wait.
+      // Same for every step of the turn.
       body.output_config = { effort: "medium" };
     }
-    if (provider.presetId === "anthropic") {
-      // Cache the system prompt and history so long chats and knowledge files are cheaper and faster.
-      body.cache_control = { type: "ephemeral" };
-    }
-    if (provider.presetId === "anthropic" && !legacy && nativeTurns.some((t) => Array.isArray(t.raw) && t.raw.some((b: { type?: string }) => b?.type === "thinking"))) {
+    if (official && !legacy && !shape.lean) {
       // Replayed tool steps carry thinking blocks bound to the conversation before them. History is
       // replayed unchanged, but if anything before a block ever differs, drop that block for this
-      // request instead of failing it with a 400.
-      headers["anthropic-beta"] = "thinking-binding-controls-2026-08-01";
-      const thinking = (body.thinking as Record<string, unknown> | undefined) ?? (thinksByDefault(req.model) ? { type: "adaptive" } : undefined);
-      if (thinking) body.thinking = { ...thinking, block_binding: { prefix_mismatch_behavior: "drop_block" } };
+      // request instead of failing it with a 400. Sent from the first step so the thinking settings
+      // (part of the prompt cache key) stay the same for the whole turn.
+      const thinks = thinking ?? (thinksByDefault(req.model) ? { type: "adaptive" } : undefined);
+      if (thinks) {
+        thinking = { ...thinks, block_binding: { prefix_mismatch_behavior: "drop_block" } };
+        betas.push("thinking-binding-controls-2026-08-01");
+      }
     }
+    if (thinking) body.thinking = thinking;
+    if (official) {
+      // Cache the history as it grows (top-level automatic caching); the system prompt gets its
+      // own breakpoint below, so it stays cached across compactions and changes later in the chat.
+      body.cache_control = { type: "ephemeral" };
+    }
+    if (serverCompaction) {
+      // Long turns (screen tasks with screenshots) and long chats: past ~150k tokens Claude
+      // summarises the earlier conversation instead of running out of room.
+      body.context_management = { edits: [{ type: "compact_20260112" }] };
+      betas.push("compact-2026-01-12");
+    }
+    if (official && !shape.lean && fallsBackOnServer(req.model)) {
+      // A false positive from a safety classifier is answered by another Claude model instead of a refusal.
+      body.fallbacks = "default";
+      betas.push("server-side-fallback-2026-07-01");
+    }
+    if (betas.length) headers["anthropic-beta"] = betas.join(",");
     const anthropicTools: unknown[] = [];
     if (req.nativeSearch) {
       // Server-side web search; the dynamic-filtering version needs Claude 4.6 or newer.
-      anthropicTools.push({ type: legacy ? "web_search_20250305" : "web_search_20260209", name: "web_search", max_uses: 5 });
+      anthropicTools.push({ type: legacy || shape.lean ? "web_search_20250305" : "web_search_20260209", name: "web_search", max_uses: 5 });
     }
     if (req.tools?.length && req.toolMode !== "prompted") {
       // Claude's own search is named web_search too; ours steps aside when it's on.
@@ -330,10 +550,13 @@ function buildRequest(original: ChatRequest): { url: string; init: FetchInit } {
       anthropicTools.push(...own.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters })));
     }
     if (anthropicTools.length) body.tools = anthropicTools;
+    // Thinking is left out of the replay only when earlier turns had to change (shortened to fit,
+    // or the API said they no longer match): removing all of it is allowed, editing around it isn't.
+    const strip = shape.stripThinking || (trimmed && bindsThinking(req.model));
     // Earlier steps of this turn, replayed exactly (thinking blocks included, as the API requires).
     for (const turn of nativeTurns) {
       (body.messages as unknown[]).push(
-        { role: "assistant", content: turn.raw },
+        { role: "assistant", content: replayed(turn.raw, strip, Boolean(shape.lean)) },
         {
           role: "user",
           content: turn.results.map((r) => ({
@@ -352,7 +575,12 @@ function buildRequest(original: ChatRequest): { url: string; init: FetchInit } {
       if (last?.role === "user") last.content = [...last.content, { type: "text", text: req.finalNote! }];
       else (body.messages as unknown[]).push({ role: "user", content: [{ type: "text", text: req.finalNote! }] });
     }
-    applyPrompted(req, body, "anthropic");
+    applyPrompted(req, body, "anthropic", images);
+    // A search the server paused goes back as the last (assistant) message, unchanged, so it resumes.
+    if (shape.resume?.length) (body.messages as unknown[]).push({ role: "assistant", content: replayed(shape.resume, strip, Boolean(shape.lean)) });
+    if (official && typeof body.system === "string" && body.system) {
+      body.system = [{ type: "text", text: body.system, cache_control: { type: "ephemeral" } }];
+    }
     return { url: `${base}/v1/messages`, init: { method: "POST", headers, body: JSON.stringify(body) } };
   }
 
@@ -360,11 +588,15 @@ function buildRequest(original: ChatRequest): { url: string; init: FetchInit } {
     headers["x-goog-api-key"] = provider.apiKey;
     const generationConfig: Record<string, unknown> = {};
     if (req.temperature !== null) generationConfig.temperature = req.temperature;
+    const gemini3 = Number(/gemini-(\d+)/.exec(req.model)?.[1] ?? 0) >= 3;
     if (req.thinking !== "off") {
-      generationConfig.thinkingConfig = {
-        includeThoughts: true,
-        thinkingBudget: { low: 1024, medium: 8192, high: 24576 }[req.thinking],
-      };
+      // Gemini 3 takes a thinking level (a budget is only kept for older models; sending both is a 400).
+      generationConfig.thinkingConfig = gemini3
+        ? { includeThoughts: true, thinkingLevel: req.thinking }
+        : { includeThoughts: true, thinkingBudget: { low: 1024, medium: 8192, high: 24576 }[req.thinking] };
+    } else if (req.fast && gemini3) {
+      // Gemini 3 always thinks (high by default); voice and short requests want it quick.
+      generationConfig.thinkingConfig = { thinkingLevel: "low" };
     }
     const body: { contents: { role: string; parts: unknown[] }[]; [key: string]: unknown } = {
       ...(req.system ? { systemInstruction: { parts: [{ text: req.system }] } } : {}),
@@ -399,7 +631,7 @@ function buildRequest(original: ChatRequest): { url: string; init: FetchInit } {
         },
       );
     }
-    applyPrompted(req, body, "gemini");
+    applyPrompted(req, body, "gemini", images);
     const model = req.model.replace(/^models\//, "");
     return {
       url: `${base}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`,
@@ -431,8 +663,11 @@ function buildRequest(original: ChatRequest): { url: string; init: FetchInit } {
   }
   const body: Record<string, unknown> = { model: req.model, messages, stream: true };
   if (req.temperature !== null) body.temperature = req.temperature;
-  if (req.thinking !== "off") body.reasoning_effort = req.thinking;
-  else if (req.fast && provider.models.find((m) => m.id === req.model)?.reasoning && /openai|xai|openrouter|groq/.test(provider.presetId)) {
+  const info = provider.models.find((m) => m.id === req.model);
+  // reasoning_effort only goes to models that may reason: OpenAI rejects it for GPT-4o and GPT-4.1.
+  // low/medium/high are the values every reasoning model accepts (none/minimal/xhigh vary by model).
+  if (req.thinking !== "off" && info?.reasoning !== false) body.reasoning_effort = req.thinking;
+  else if (req.fast && info?.reasoning && /openai|xai|openrouter|groq/.test(provider.presetId)) {
     body.reasoning_effort = "low";
   }
   if (req.nativeSearch && (provider.presetId === "openrouter" || base.includes("openrouter.ai"))) {
@@ -460,7 +695,7 @@ function buildRequest(original: ChatRequest): { url: string; init: FetchInit } {
       });
     }
   }
-  applyPrompted(req, body, "openai");
+  applyPrompted(req, body, "openai", images);
   return { url: `${base}/chat/completions`, init: { method: "POST", headers, body: JSON.stringify(body) } };
 }
 
@@ -468,12 +703,11 @@ function buildRequest(original: ChatRequest): { url: string; init: FetchInit } {
  * Text-protocol tools: describe the tools in the system prompt and replay earlier steps as plain
  * messages (assistant: the call markup; user: the result), so any chat model can use tools.
  */
-function applyPrompted(req: ChatRequest, body: Record<string, any>, kind: "openai" | "anthropic" | "gemini") {
+function applyPrompted(req: ChatRequest, body: Record<string, any>, kind: "openai" | "anthropic" | "gemini", images: Map<string, ToolImage>) {
   if (req.toolMode !== "prompted") return;
   // On the last step there are no tools left to describe, but earlier steps are still replayed.
   const protocol = req.tools?.length ? promptedProtocol(req.tools) : "";
   const turns = req.toolTurns ?? [];
-  const images = toolImages(req);
   const replies = (turn: ToolTurn) => ({
     text: turn.results.map((r) => promptedResult(r.name, resultText(r, images, "[Image attached.]"))).join("\n\n"),
     shown: turn.results.flatMap((r) => (images.has(r.id) ? [images.get(r.id)!] : [])),
@@ -508,9 +742,14 @@ function applyPrompted(req: ChatRequest, body: Record<string, any>, kind: "opena
 }
 
 /** Turns provider stream chunks into events. Stateful: sources and citations build up over the stream. */
-type Parser = { parse: (json: any) => Generator<StreamEvent>; finish: () => Generator<StreamEvent> };
+type Parser = {
+  parse: (json: any) => Generator<StreamEvent>;
+  finish: () => Generator<StreamEvent>;
+  /** Claude: the assistant turn so far when the server paused it (pause_turn), to send back. */
+  paused?: () => Block[] | undefined;
+};
 
-function createParser(provider: ProviderConfig, req: ChatRequest): Parser {
+function createParser(provider: ProviderConfig, req: ChatRequest, shape: Shape = {}): Parser {
   const native = Boolean(req.tools?.length) && req.toolMode !== "prompted";
   const sources: Source[] = [];
   const addSource = (url: string | undefined, title?: string, snippet = ""): number => {
@@ -524,17 +763,20 @@ function createParser(provider: ProviderConfig, req: ChatRequest): Parser {
   const blockCitations = new Map<number, Set<number>>();
 
   if (provider.kind === "anthropic") {
-    // The full assistant turn, block by block, so a tool step can be replayed exactly.
-    const blocks: Record<string, any>[] = [];
+    // The full assistant turn, block by block, so a tool step can be replayed exactly. A turn the
+    // server paused and resumed continues from the blocks already received.
+    const prior = shape.resume ?? [];
+    const blocks: Block[] = [];
     const partialJson = new Map<number, string>();
-    let cutOff = false;
-    let text = "";
+    let stop = "";
+    let text = prior.map((b) => (b.type === "text" ? (b.text ?? "") : "")).join("");
     const parse = function* (json: any): Generator<StreamEvent> {
       if (json.type === "content_block_start") {
         const block = json.content_block ?? {};
         blocks[json.index] = { ...block };
         if (block.type === "tool_use" || block.type === "server_tool_use") partialJson.set(json.index, "");
         if (block.type === "server_tool_use") yield { type: "status", text: "Searching the web…" };
+        if (block.type === "compaction") yield { type: "status", text: "Summarising the earlier conversation to make room…" };
         if (block.type === "web_search_tool_result" && Array.isArray(block.content)) {
           for (const r of block.content) addSource(r.url, r.title, r.page_age ? `Updated ${r.page_age}` : "");
           yield { type: "sources", sources: [...sources] };
@@ -553,45 +795,73 @@ function createParser(provider: ProviderConfig, req: ChatRequest): Parser {
         }
         if (delta.type === "signature_delta" && block) block.signature = (block.signature ?? "") + (delta.signature ?? "");
         if (delta.type === "input_json_delta") partialJson.set(json.index, (partialJson.get(json.index) ?? "") + (delta.partial_json ?? ""));
-        if (delta.type === "citations_delta" && delta.citation?.url) {
-          const n = addSource(delta.citation.url, delta.citation.title, delta.citation.cited_text ?? "");
-          if (!blockCitations.has(json.index)) blockCitations.set(json.index, new Set());
-          blockCitations.get(json.index)!.add(n + 1);
+        if (delta.type === "citations_delta" && delta.citation) {
+          // Kept on the block: web search citations go back exactly as received on the next step.
+          if (block) block.citations = [...(Array.isArray(block.citations) ? block.citations : []), delta.citation];
+          if (delta.citation.url) {
+            const n = addSource(delta.citation.url, delta.citation.title, delta.citation.cited_text ?? "");
+            if (!blockCitations.has(json.index)) blockCitations.set(json.index, new Set());
+            blockCitations.get(json.index)!.add(n + 1);
+          }
         }
+        if (delta.type === "compaction_delta" && block) block.content = (typeof block.content === "string" ? block.content : "") + (delta.content ?? "");
       } else if (json.type === "content_block_stop" && blockCitations.has(json.index)) {
         const marks = [...blockCitations.get(json.index)!].map((n) => `[${n}]`).join("");
         blockCitations.delete(json.index);
         yield { type: "sources", sources: [...sources] };
         yield { type: "text", text: ` ${marks}` };
-      } else if (json.type === "message_delta" && json.delta?.stop_reason === "refusal") {
-        yield { type: "text", text: "\n\n_The model declined to answer this request._" };
-      } else if (json.type === "message_delta" && json.delta?.stop_reason === "max_tokens") {
-        cutOff = true;
-      } else if (json.type === "message_delta" && json.delta?.stop_reason === "pause_turn") {
-        yield { type: "text", text: "\n\n_The web search took too long to finish. Ask again to continue._" };
+      } else if (json.type === "message_delta" && json.delta?.stop_reason) {
+        stop = json.delta.stop_reason;
+        if (stop === "refusal") yield { type: "text", text: "\n\n_The model declined to answer this request._" };
       }
       if (json.type === "content_block_stop" && partialJson.has(json.index)) {
         blocks[json.index].input = parseToolArgs(partialJson.get(json.index) ?? "");
         partialJson.delete(json.index);
       }
+      if (json.type === "content_block_stop" && blocks[json.index]?.type === "compaction") {
+        yield { type: "compaction", block: blocks[json.index] };
+      }
+    };
+    /**
+     * The turn as it goes back to the API. After a mid-reply fallback to another model, the
+     * declined part keeps only its text and finished server-tool results (the API's echo rules).
+     */
+    const replay = (): Block[] => {
+      const list = blocks.filter(Boolean).map((b) =>
+        b.type === "text" ? { type: "text", text: b.text ?? "", ...(b.citations?.length ? { citations: b.citations } : {}) } : b,
+      );
+      const boundary = list.findLastIndex((b) => b.type === "fallback");
+      const answered = new Set(list.filter((b) => /_tool_result$/.test(b.type)).map((b) => b.tool_use_id));
+      const kept = list.filter(
+        (b, i) =>
+          i >= boundary ||
+          ["text", "compaction", "fallback"].includes(b.type) ||
+          /_tool_result$/.test(b.type) ||
+          (b.type === "server_tool_use" && answered.has(b.id)),
+      );
+      return [...prior, ...kept];
     };
     const finish = function* (): Generator<StreamEvent> {
-      const calls = blocks.filter((b) => b?.type === "tool_use").map((b) => ({ id: b.id, name: b.name, args: b.input ?? {} }));
-      if (cutOff) {
+      const raw = replay();
+      const calls = raw.filter((b) => b.type === "tool_use").map((b) => ({ id: b.id, name: b.name, args: b.input ?? {} }));
+      if (stop === "max_tokens" || stop === "model_context_window_exceeded") {
+        const full = stop === "model_context_window_exceeded";
         // A tool call cut off mid-way has incomplete arguments: never run it.
-        if (calls.length) throw new Error("The reply hit the model's output limit while asking to use a tool. Try again, or raise the output limit in the bot's settings.");
-        yield { type: "text", text: "\n\n_(Cut off at the output limit.)_" };
+        if (calls.length) {
+          throw new Error(
+            full
+              ? "The conversation filled the model's context window while it was asking to use a tool. Start a new chat, or remove large attachments."
+              : "The reply hit the model's output limit while asking to use a tool. Try again, or raise the output limit in the bot's settings.",
+          );
+        }
+        yield { type: "text", text: full ? "\n\n_(Stopped: the conversation filled the model's context window. Start a new chat to continue.)_" : "\n\n_(Cut off at the output limit.)_" };
         return;
       }
-      if (!native || !calls.length) return;
-      // Citations aren't needed on replay and some fields aren't accepted back.
-      const raw = blocks.filter(Boolean).map((b) => {
-        const { citations: _c, ...rest } = b;
-        return b.type === "text" ? { type: "text", text: b.text ?? "" } : rest;
-      });
+      // A declined reply or a paused search never runs tools: the turn isn't finished.
+      if (stop === "refusal" || stop === "pause_turn" || !native || !calls.length) return;
       yield { type: "tool_calls", calls, raw, text };
     };
-    return { parse, finish };
+    return { parse, finish, paused: () => (stop === "pause_turn" ? replay() : undefined) };
   }
 
   if (provider.kind === "gemini") {
@@ -752,9 +1022,9 @@ export function withCustomHeaders(
   };
 }
 
-/** Claude models that think even when the request leaves `thinking` out (Opus 5+, Sonnet 5+, Fable, Mythos). */
+/** Claude models that think even when the request leaves `thinking` out (Opus 5+, Sonnet 5+, Haiku 5.5+, Fable, Mythos). */
 function thinksByDefault(model: string): boolean {
-  return /claude-(opus-[5-9]|sonnet-[5-9]|fable|mythos)/.test(model);
+  return /claude-(opus-[5-9]|sonnet-[5-9]|haiku-[5-9]|fable|mythos)/.test(model);
 }
 
 /** Claude models from before adaptive thinking still use a fixed budget and accept temperature. */
