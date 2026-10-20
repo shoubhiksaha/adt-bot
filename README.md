@@ -206,7 +206,12 @@ or Groq) and set “Reply after you pause for” to *Short*.
 - **How bots should answer**: tone, length, units, language.
 - **Shared knowledge**: upload documents every bot can use, such as a handbook, price list, FAQs or product docs
   (PDF, Word, Markdown, HTML, text, CSV, JSON). Small files go to the AI in full; for large ones only the passages
-  relevant to each question are sent (BM25 ranking, works offline with any model). Answers show which files they used.
+  relevant to each question are sent (keyword ranking, plus meaning with Smarter memory search; works offline with
+  any model). Answers show which files they used.
+- **Smarter memory search** (optional, 123 MB download, works offline): finds memories and knowledge passages by
+  meaning as well as by words, in 50+ languages, so "what's my sister's name" finds "Riya is my sibling". It uses
+  an on-device model (IBM Granite Embedding 97M Multilingual R2); your text never leaves the device. Large memories
+  are then recalled by relevance instead of filling every prompt.
 
 **Bot settings** (sliders icon → Bot settings) add a **nickname/wake word**, a **picture**, **instructions from a
 file**, and **knowledge files just for that bot**.
@@ -377,6 +382,10 @@ src/lib/tts.ts            Reply voices: device, OpenAI-compatible, ElevenLabs, F
 src/lib/custom-tts.ts     Voice services you add yourself (templates: Sarvam, Google Cloud, Azure)
 src/lib/voice.ts          Speech engines (browser, Android, Whisper, cloud) for dictation
 src/lib/knowledge.ts      Knowledge files: storage, chunking, BM25 retrieval
+src/lib/semantic.ts       Smarter memory search: background indexing, on-device embeddings (embed.worker.ts)
+src/lib/vector-index.ts   On-device vector index (IndexedDB, brute-force cosine)
+src/lib/hybrid.ts         Keyword + vector fusion (reciprocal rank fusion)
+src/lib/memory-recall.ts  Which memories go with a question
 src/lib/theme.ts          Theme engine (contrast-safe palettes from brand colours)
 src/lib/brand-import.ts   Brand detection from logos, documents, CSS/tokens and websites
 scripts/brand.mjs         Rebrands installers and mobile apps from a brand kit

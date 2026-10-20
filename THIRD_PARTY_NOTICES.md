@@ -38,6 +38,7 @@ These aren't bundled with the app; they download on first use and are cached on 
 | [Silero VAD](https://github.com/snakers4/silero-vad) | MIT | Voice activity detection |
 | [Whisper](https://github.com/openai/whisper) (ONNX by onnx-community) | MIT | On-device speech recognition |
 | [Moonshine](https://github.com/moonshine-ai/moonshine) by Useful Sensors ([ONNX](https://huggingface.co/onnx-community/moonshine-base-ONNX) by onnx-community) | MIT | On-device speech recognition for English (optional, Settings → Voice) |
+| [Granite Embedding 97M Multilingual R2](https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2) by IBM ([ONNX](https://huggingface.co/onnx-community/granite-embedding-97m-multilingual-r2-ONNX) by onnx-community) | Apache-2.0 | "Smarter memory search" (optional, Settings → Workspace; `src/lib/embed.worker.ts`) |
 | [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) by hexgrad ([ONNX](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX) by onnx-community) | Apache-2.0 | "Kokoro" on-device reply voice (`src/lib/kokoro-tts.worker.ts`) |
 
 ## Bundled in the desktop app (auto-update)
