@@ -36,6 +36,24 @@ function discoveryThreshold(request: LoopOptions["request"], mode: "native" | "p
   return local ? DISCOVERY_THRESHOLD.small : DISCOVERY_THRESHOLD.large;
 }
 
+/**
+ * Pure lookups: an identical call later in the same turn reuses the first result. Nothing that reads
+ * the screen, apps or files (their state changes), and not the clock.
+ */
+const REUSABLE = new Set(["web_search", "read_url", "search_knowledge"]);
+
+/** JSON with sorted keys, so {a, b} and {b, a} are the same call. */
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${stableJson((value as Record<string, unknown>)[k])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
 /** Models that rejected native tools this session; they use the text protocol from now on. */
 const promptedFallback = new Set<string>();
 
@@ -58,6 +76,7 @@ export const COMPUTER_GUIDANCE = [
   "- The user may be using the Mac at the same time. Stay in the background: name the app (app: \"WhatsApp\"), press by name, type with mac_set_text. Tools that need the front app wait for the user to pause and refuse if there's none (\"busy\"): wait a moment and try again, don't fight for the keyboard.",
   "- Sending: use mac_set_text with submit:true, which sends only if the field still holds your text in the same app. If it reports the text is still there, press the app's Send button by name. Never press enter on its own to send: the user may have switched chats, and Return would send whatever they were typing.",
   "- Check the result before saying it's done (e.g. the sent message appears in the chat, in the right chat). If something didn't work, try another way: a different element, a shortcut, or a screenshot to see what happened.",
+  "- When you say a task is done, say in a few words what you saw that shows it (e.g. \"your message now shows in the chat with Sam\"). If you couldn't confirm it, say so instead of claiming success.",
   "- Don't describe each step to the user. Ask before sending messages, emails or payments only when the user didn't clearly ask for that exact action.",
 ].join("\n");
 
@@ -94,6 +113,7 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
   const exposed = new Set(discovery ? tools.filter((t) => CORE_TOOLS.has(t.name) || ALWAYS_LISTED.has(t.group)).map((t) => t.name) : tools.map((t) => t.name));
   const records: ToolCallRecord[] = [];
   const turns: ToolTurn[] = [];
+  const reusable = new Map<string, Promise<ToolTurn["results"][number]>>();
   const computer = tools.some(isComputerTool) ? accessGuidance(context.settings.agent, context) : "";
   const screen = tools.some((t) => t.group === "mac" || t.controlsComputer);
   const system = [request.system, TOOL_GUIDANCE, computer, screen ? COMPUTER_GUIDANCE : ""].filter(Boolean).join("\n\n");
@@ -143,12 +163,66 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
     if (!asked || !asked.calls.length) return;
     if (asked.text) callbacks.onEvent({ type: "text", text: "\n\n" });
 
+    turns.push({ raw: asked.raw, text: asked.text, calls: asked.calls, results: await runStep(asked.calls) });
+  }
+
+  /**
+   * Runs one step's calls, results in the model's order. Neighbouring calls that only read and
+   * never ask (searches, page reads) run at the same time; anything that may ask for approval,
+   * changes something or touches the computer runs on its own, in order.
+   */
+  async function runStep(calls: ToolCall[]): Promise<ToolTurn["results"]> {
     const results: ToolTurn["results"] = [];
-    for (const call of asked.calls) {
-      const content = await runCall(call);
-      results.push(content);
+    for (let i = 0; i < calls.length; ) {
+      let end = i;
+      while (end < calls.length && runsAlongside(calls[end])) end++;
+      if (end - i > 1) {
+        results.push(...(await Promise.all(calls.slice(i, end).map(runOnce))));
+        i = end;
+      } else {
+        results.push(await runOnce(calls[i]));
+        i++;
+      }
     }
-    turns.push({ raw: asked.raw, text: asked.text, calls: asked.calls, results });
+    return results;
+  }
+
+  function runsAlongside(call: ToolCall): boolean {
+    const tool = getTool(call.name);
+    if (!tool || !tools.includes(tool)) return false;
+    const risk = tool.riskFor?.(call.args) ?? tool.risk;
+    if (risk !== "read" || isComputerTool(tool) || tool.kind === "computer") return false;
+    return gate(tool, call, context).outcome === "allow";
+  }
+
+  /**
+   * Same-turn reuse: an identical call to a pure lookup (same search, same page) gets the earlier
+   * result instead of fetching again. Never for the screen or apps, whose state changes.
+   */
+  function runOnce(call: ToolCall): Promise<ToolTurn["results"][number]> {
+    if (!REUSABLE.has(call.name)) return runCall(call);
+    const key = `${call.name}:${stableJson(call.args)}`;
+    const earlier = reusable.get(key);
+    if (!earlier) {
+      const running = runCall(call);
+      reusable.set(key, running);
+      // Errors aren't reused: trying again may work.
+      void running.then((r) => r.isError && reusable.delete(key));
+      return running;
+    }
+    // Listed straight away, so the chat shows calls in the order the model made them.
+    const record: ToolCallRecord = { id: call.id, name: call.name, args: call.args, status: "running", startedAt: Date.now() };
+    records.push(record);
+    publish();
+    return earlier.then((r) => {
+      if (r.isError) {
+        records.splice(records.indexOf(record), 1);
+        return runCall(call);
+      }
+      update(call.id, { status: "done", result: "Same as an earlier call in this answer (result reused).", ms: 0 });
+      const { image: _image, ...rest } = r;
+      return { ...rest, id: call.id, content: `${r.content}\n\n[Same call as earlier in this answer: the earlier result is repeated here.]` };
+    });
   }
 
   async function runCall(call: ToolCall): Promise<ToolTurn["results"][number]> {
