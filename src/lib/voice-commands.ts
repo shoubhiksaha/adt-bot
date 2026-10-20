@@ -145,3 +145,19 @@ export function isLikelyHallucination(text: string): boolean {
 export function isSubstantial(text: string): boolean {
   return normalize(text).split(" ").filter((w) => w.length > 2).length >= 3;
 }
+
+const YES = /^(yes|yeah|yea|yep|yup|sure|ok|okay|alright|go ahead|do it|allow( it)?|please do|of course|haan?|ha|hya|ji( haan)?|theek hai|thik ache|thik ase|korো|kor)\b/;
+const NO = /^(no|nope|nah|don'?t|do not|stop|cancel|deny|never ?mind|nahi|nahin|na|naa|mat( karo)?|thak|dorkar nei)\b/;
+
+/** A spoken answer to "Can I …? Say yes or no.": "allow", "deny", or null when it's neither. */
+export function yesOrNo(text: string): "allow" | "deny" | null {
+  const t = text.toLowerCase().replace(/[^\p{L}\p{N}' ]+/gu, " ").replace(/\s+/g, " ").trim();
+  if (!t || t.split(" ").length > 8) return null;
+  const yes = YES.test(t);
+  const no = NO.test(t);
+  // "Yes… no, wait": unclear, so ask again rather than guess.
+  const mixed = (yes && /\b(no|not|don'?t|nahi|nahin)\b/.test(t)) || (no && /\b(yes|yeah|sure|okay|ok|haan)\b/.test(t));
+  if (mixed || yes === no) return null;
+  return yes ? "allow" : "deny";
+}
+

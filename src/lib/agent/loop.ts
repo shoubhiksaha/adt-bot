@@ -3,7 +3,8 @@ import { presetById } from "../providers";
 import type { ToolCallRecord } from "../types";
 import { logActivity } from "./activity";
 import { accessGuidance, isComputerTool } from "./access";
-import { decide, gate, waitForDecision } from "./approvals";
+import { askAloudText } from "./asks";
+import { decide, gate, waitForDecision, isPending, type Decision } from "./approvals";
 import { type AgentTool, getTool, type ToolContext, toResult } from "./tools";
 import { insideWorkspace } from "./builtin";
 import { desktopInvoke } from "../desktop";
@@ -57,10 +58,16 @@ function stableJson(value: unknown): string {
 /** Models that rejected native tools this session; they use the text protocol from now on. */
 const promptedFallback = new Set<string>();
 
+/** Resolves "deny" when the turn is stopped (so a pending question never outlives it). */
+function abortedAsDeny(signal: AbortSignal): Promise<"deny"> {
+  return new Promise((resolve) => (signal.aborted ? resolve("deny") : signal.addEventListener("abort", () => resolve("deny"), { once: true })));
+}
+
 export const TOOL_GUIDANCE = [
   "You can use tools to act and to look things up. Use them when they genuinely help; for simple chat, just answer.",
   "When you use a tool, briefly say what you're doing. After the results arrive, answer the user directly.",
   "If a tool fails or is declined, explain and suggest another way rather than repeating the same call unchanged.",
+  "For anything at a later time or on a schedule (reminders, daily summaries, recurring jobs), use create_routine: it's the app's own scheduler. Don't write cron jobs, launchd agents or scripts for it.",
   UNTRUSTED_GUIDANCE,
 ].join(" ");
 
@@ -309,7 +316,7 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
       void logActivity({ bot: botName, tool: call.name, summary: verdict.reason, outcome: "denied", conversationId: context.conversationId });
       return { id: call.id, name: call.name, content: verdict.refusal, isError: true };
     }
-    if (verdict.outcome === "ask" && context.unattended) {
+    if (verdict.outcome === "ask" && context.unattended && !context.askAloud) {
       const content =
         "Refused: this needs the user's approval, and approval cards can't be shown in voice mode. Don't retry it. " +
         "Tell the user what you wanted to do, and that they can do it from the chat, or allow it under Settings → Tools & safety → Computer access.";
@@ -322,7 +329,20 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
         status: "awaiting",
         approval: { summary: verdict.summary, detail: verdict.detail, reason: verdict.reason, kind: verdict.kind, allowAlways: verdict.allowAlways },
       });
-      const decision = await waitForDecision(call.id, context.signal);
+      let decision: Decision;
+      if (context.unattended && context.askAloud) {
+        // Voice mode: asked aloud; the card in the chat answers too, whichever comes first.
+        const settle = new AbortController();
+        const fromCard = waitForDecision(call.id, settle.signal);
+        const aloud = context
+          .askAloud({ summary: askAloudText(call), reason: verdict.reason, signal: settle.signal })
+          .then((answer): Decision => (answer === "allow" ? "once" : "deny"));
+        decision = await Promise.race([fromCard, aloud, abortedAsDeny(context.signal)]);
+        if (isPending(call.id)) decide(tool, call, decision);
+        settle.abort();
+      } else {
+        decision = await waitForDecision(call.id, context.signal);
+      }
       if (decision === "deny") {
         const content = "The user declined this action. Don't retry it; tell them what you were trying to do or suggest another way.";
         update(call.id, { status: "denied", result: "Declined", approval: undefined });

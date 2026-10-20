@@ -1,3 +1,4 @@
+import { isDangerous } from "../../lib/agent/danger";
 import { type AgentTool, getTool, num, registerTool, registerToolGroup, str, type ToolContext, type ToolRisk, toResult } from "../../lib/agent/tools";
 import { type MacApp, type MacFrontmost, type MacScreenshot, mac } from "./api";
 import { deleteRecipe, fill, findRecipe, highestRisk, markRun, missingParams, recipeLine, saveRecipe, useRecipes, validateRecipe } from "./recipes";
@@ -88,6 +89,25 @@ function pressRisk(args: Record<string, unknown>): AgentTool["risk"] {
 }
 
 // macOS app names, plus Windows ones (process names such as "WindowsTerminal", "powershell", "cmd").
+/** AppleScript/JXA that deletes, quits, shuts down or hides a shell command we can't read. */
+const DESTRUCTIVE_SCRIPT =
+  /\b(delete|remove|erase|empty\s+(the\s+)?trash|move\b[^\n]*\bto\s+(the\s+)?trash|shut\s*down|restart|log\s*out|quit|saving\s+no|eject|format|with\s+administrator\s+privileges|administratorPrivileges)\b|\.delete\(/i;
+const SHELL_IN_SCRIPT = /do\s+shell\s+script\s+"((?:[^"\\]|\\.)*)"|doShellScript\(\s*(["'`])((?:(?!\2)[^\\]|\\.)*)\2/gi;
+
+/**
+ * How risky a script is: shell commands inside it are judged like run_command, and anything that
+ * deletes, quits, shuts down, needs admin rights or builds its shell command at run time always asks.
+ * The rest (reading, opening, typing, arranging windows) follows Computer access like other actions.
+ */
+export function appleScriptRisk(script: string): AgentTool["risk"] {
+  if (DESTRUCTIVE_SCRIPT.test(script)) return "destructive";
+  const literal = [...script.matchAll(SHELL_IN_SCRIPT)];
+  const shellCalls = (script.match(/do\s+shell\s+script|doShellScript\(/gi) ?? []).length;
+  if (shellCalls > literal.length) return "destructive"; // A command assembled from variables: can't be checked.
+  if (literal.some((m) => isDangerous((m[1] ?? m[3] ?? "").replace(/\\(.)/g, "$1")))) return "destructive";
+  return "write";
+}
+
 const TERMINALS = /^(terminal|iterm2?|warp|ghostty|alacritty|kitty|wezterm|hyper|tabby|windows ?terminal|wt|powershell|pwsh|cmd|command prompt|conhost|wsl|mintty|git bash)$/i;
 const point = { x: { type: "number", description: "X in screenshot pixels" }, y: { type: "number", description: "Y in screenshot pixels" } } as const;
 
@@ -371,8 +391,10 @@ export const macTools: AgentTool[] = [
   macTool({
     name: "mac_applescript",
     risk: "destructive",
+    riskFor: (args) => appleScriptRisk(str(args, "script")),
     timeoutMs: 90_000,
-    description: "Run an AppleScript (or JavaScript for Automation) on this Mac and return its output. Always asks the user first. Prefer the other mac_ tools when they can do the job.",
+    description:
+      "Run an AppleScript (or JavaScript for Automation) on this Mac and return its output. Scripts that delete, quit apps, shut down, need admin rights or run risky shell commands always ask the user first. Prefer the other mac_ tools when they can do the job.",
     parameters: {
       type: "object",
       properties: { script: { type: "string" }, language: { type: "string", enum: ["applescript", "javascript"] } },

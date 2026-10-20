@@ -39,7 +39,13 @@ export function Composer({
   const [reading, setReading] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  /** The message in the box was spoken with the mic button (see Settings → Voice → read replies aloud). */
+  const dictatedRef = useRef(false);
   const sessionRef = useRef<ListenSession | null>(null);
+  // Cleared the box and typed instead: no longer a dictated message.
+  useEffect(() => {
+    if (!text) dictatedRef.current = false;
+  }, [text]);
   const [download, setDownload] = useState<number | null>(null);
 
   useEffect(() => onWhisperProgress((p) => setDownload(p ? Math.round(p.progress) : null)), []);
@@ -83,7 +89,8 @@ export function Composer({
   const submit = () => {
     if (streaming || reading || (!text.trim() && !attachments.length)) return;
     sessionRef.current?.stop();
-    void sendMessage(text, attachments, { search: modes.search, think: modes.think, imagine });
+    void sendMessage(text, attachments, { search: modes.search, think: modes.think, imagine, dictated: dictatedRef.current });
+    dictatedRef.current = false;
     setText("");
     setAttachments([]);
     setImagine(false);
@@ -112,7 +119,10 @@ export function Composer({
       );
       sessionRef.current = session;
       const spoken = await session.result;
-      if (spoken) setText(base + spoken);
+      if (spoken) {
+        setText(base + spoken);
+        dictatedRef.current = true;
+      }
     } catch (error) {
       setNotice((error as Error).message);
     } finally {

@@ -1734,6 +1734,24 @@ kbd {
   color: var(--destructive);
   max-width: 520px;
 }
+.voice-approval {
+  max-width: 520px;
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--card, var(--background));
+  text-align: left;
+}
+.voice-approval-q {
+  margin: 0 0 6px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.voice-approval .btn-row {
+  margin-top: 10px;
+  justify-content: flex-end;
+}
 .voice-bottom {
   display: flex;
   justify-content: space-between;

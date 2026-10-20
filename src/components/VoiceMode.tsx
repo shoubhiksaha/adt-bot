@@ -183,6 +183,23 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
           {(phase === "standby" || phase === "muted") && (phase === "muted" ? <MicOff size={34} /> : <Mic size={34} />)}
         </button>
         <div className="voice-status">{status}</div>
+        {state.approval && (
+          <div className="voice-approval" role="alertdialog" aria-label="The bot is asking for your OK">
+            <p className="voice-approval-q">{state.approval.question.replace(/ Say yes or no\.$/, "")}</p>
+            <p className="small muted">
+              {/* Policy names ("ask-first-time") aren't explanations; real reasons are sentences. */}
+              {state.approval.reason.includes(" ") ? `Asking because ${state.approval.reason}. ` : ""}Say “yes” or “no”, or:
+            </p>
+            <div className="btn-row">
+              <button type="button" className="btn primary" onClick={() => session.current?.answerApproval("allow")}>
+                Allow
+              </button>
+              <button type="button" className="btn" onClick={() => session.current?.answerApproval("deny")}>
+                Don't allow
+              </button>
+            </div>
+          </div>
+        )}
         {state.error && (
           <div className="voice-error" role="alert">
             {state.error}

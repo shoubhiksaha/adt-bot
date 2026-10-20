@@ -215,6 +215,7 @@ const VARIABLE_RISK: Record<string, string> = {
   mac_browser: "reading runs on its own; clicking and typing ask per your policy; payments, deletes and passwords always ask",
   mac_recipes: "listing runs on its own; saving asks per your policy",
   mac_recipe_run: "asks like its riskiest step",
+  mac_applescript: "follows your Computer access; scripts that delete, quit apps, shut down, need admin rights or run risky shell commands always ask",
 };
 
 function Recipes() {

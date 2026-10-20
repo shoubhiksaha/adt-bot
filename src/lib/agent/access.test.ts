@@ -13,6 +13,9 @@ const { getTool } = await import("./tools");
 await import("./builtin");
 await import("../../features/mac-control/tools");
 await import("../cli-agents/tool");
+await import("../../features/automation/tools");
+const { taintSensitive } = await import("./approvals");
+const { appleScriptRisk } = await import("../../features/mac-control/tools");
 
 const tool = (name: string) => getTool(name) as AgentTool;
 const verdict = (name: string, args: Record<string, unknown>, access: "sandbox" | "restricted" | "full", confirmDestructive = true, shared = false) => {
@@ -45,15 +48,18 @@ describe("computer access modes", () => {
     expect(verdict("web_search", { query: "x" }, "restricted")).toBe("policy");
   });
 
-  it("full: computer tools run unasked, destructive ones ask unless turned off", () => {
+  it("full: computer tools and the app's own actions run unasked, destructive ones ask unless turned off", () => {
     expect(verdict("run_command", { command: "brew install jq" }, "full")).toBe("allow");
     expect(verdict("write_file", { path: "/tmp/x", content: "x" }, "full")).toBe("allow");
     expect(verdict("mac_type", { text: "hi" }, "full")).toBe("allow");
     expect(verdict("run_command", { command: "sudo rm -rf /tmp/x" }, "full")).toBe("policy");
-    expect(verdict("mac_applescript", { script: "beep" }, "full")).toBe("policy");
+    expect(verdict("mac_applescript", { script: "beep" }, "full")).toBe("allow");
+    expect(verdict("mac_applescript", { script: 'tell application "Finder" to delete file "a"' }, "full")).toBe("policy");
     expect(verdict("run_command", { command: "sudo rm -rf /tmp/x" }, "full", false)).toBe("allow");
-    // Only computer tools: paid or connector tools still follow the policy.
-    expect(verdict("create_image", { prompt: "x" }, "full")).toBe("policy");
+    // The app's own actions too: scheduling, images.
+    expect(verdict("create_image", { prompt: "x" }, "full")).toBe("allow");
+    expect(verdict("create_routine", { name: "News", instruction: "Summarise AI news", schedule_type: "daily", time: "08:00" }, "full")).toBe("allow");
+    expect(verdict("create_routine", { name: "News", instruction: "x", schedule_type: "daily" }, "restricted")).toBe("policy");
   });
 
   it("chat rooms never get more than Restrictive", () => {
@@ -69,7 +75,36 @@ describe("computer access modes", () => {
     expect(runsWithoutAsking(tool("run_command"), agent("sandbox"))).toBe(true);
     expect(runsWithoutAsking(tool("mac_click"), agent("sandbox"))).toBe(false);
     expect(runsWithoutAsking(tool("web_search"), agent("restricted"))).toBe(true);
-    expect(runsWithoutAsking(tool("create_image"), agent("full"))).toBe(false);
+    expect(runsWithoutAsking(tool("create_image"), agent("full"))).toBe(true);
+    // Scheduling by voice works with Full access.
+    expect(runsWithoutAsking(tool("create_routine"), agent("full"))).toBe(true);
+    expect(runsWithoutAsking(tool("create_routine"), agent("restricted"))).toBe(false);
+  });
+});
+
+describe("after reading outside content", () => {
+  it("still asks before scheduling or using connectors, even with Full access", () => {
+    expect(taintSensitive(tool("create_routine"), "write")).toBe(true);
+    expect(taintSensitive({ ...tool("create_image"), kind: "mcp", group: "connectors" } as AgentTool, "external")).toBe(true);
+    expect(taintSensitive(tool("create_image"), "external")).toBe(false);
+    expect(taintSensitive(tool("web_search"), "read")).toBe(false);
+  });
+});
+
+describe("AppleScript risk", () => {
+  it("asks for scripts that delete, quit, shut down, need admin or run risky or unreadable shell commands", () => {
+    expect(appleScriptRisk('tell application "Notes" to make new note with properties {body:"hi"}')).toBe("write");
+    expect(appleScriptRisk('display notification "Done" with title "ADT"')).toBe("write");
+    expect(appleScriptRisk('do shell script "ls ~/Desktop"')).toBe("write");
+    expect(appleScriptRisk('do shell script "rm -rf ~/Documents"')).toBe("destructive");
+    expect(appleScriptRisk('do shell script "echo hi" with administrator privileges')).toBe("destructive");
+    expect(appleScriptRisk('set c to "rm -rf ~"\ndo shell script c')).toBe("destructive");
+    expect(appleScriptRisk('tell application "Finder" to empty the trash')).toBe("destructive");
+    expect(appleScriptRisk('tell application "Safari" to quit')).toBe("destructive");
+    expect(appleScriptRisk('tell application "System Events" to shut down')).toBe("destructive");
+    expect(appleScriptRisk('Application("Finder").delete(Path("/tmp/a"))')).toBe("destructive");
+    expect(appleScriptRisk('app.doShellScript("rm -rf /tmp/x")')).toBe("destructive");
+    expect(appleScriptRisk('app.doShellScript("date")')).toBe("write");
   });
 });
 

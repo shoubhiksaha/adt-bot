@@ -1,10 +1,10 @@
-import { type EarlyReply, sendMessage, setVoiceModeActive, startEarlyReply, stopStreaming, stripMemoryTags } from "./chat";
+import { type EarlyReply, sendMessage, setVoiceApprover, setVoiceModeActive, startEarlyReply, stopStreaming, stripMemoryTags } from "./chat";
 import { splitThink } from "./llm";
 import { selectBot, startNewChat, updateSettings, useStore } from "./store";
 import { localChoice, localVoiceReady } from "./local-tts";
 import { chime, createSpeaker, duckSpeech, type Speaker, takeSentences } from "./tts";
 import { END_SILENCE_MS, type Engine, ENGINE_LABELS, listen, type ListenSession, resolveEngine, stopReadAloud, transcribe } from "./voice";
-import { isEcho, isLikelyHallucination, isSubstantial, matchWakeWord, normalize, parseVoiceCommand } from "./voice-commands";
+import { isEcho, isLikelyHallucination, isSubstantial, matchWakeWord, normalize, parseVoiceCommand, yesOrNo } from "./voice-commands";
 import { Listener, type ListenerEvent, localSpeechModel, onWhisperProgress, SPEECH_MODELS, toWav } from "./whisper";
 
 /** What the bot is doing during a tool step, for the voice screen. */
@@ -57,6 +57,8 @@ export type VoiceState = {
   timing: { turn: number; stt: number; model: number; speech: number; early?: number } | null;
   engineLabel: string;
   wakeName: string;
+  /** A tool waiting for the user's OK, asked aloud (answer by voice or with the buttons). */
+  approval: { question: string; reason: string } | null;
 };
 
 const IDLE_TO_STANDBY_MS = 60_000;
@@ -110,6 +112,10 @@ export class VoiceSession {
   private ducked = false;
   /** A reply started during a pause that probably ended the turn; kept if the turn ends with the same words. */
   private early: EarlyReply | null = null;
+  /** The question a tool is waiting on (see askApproval). */
+  private approval: { resolve: (answer: "allow" | "deny") => void; timer: ReturnType<typeof setTimeout> } | null = null;
+  /** When the user last answered one (a tool asking isn't silence worth a "Still working on it"). */
+  private approvalEndedAt = 0;
 
   constructor(private hooks: { onState: (state: VoiceState) => void; onClose: () => void; initialRequest?: string }) {
     const { settings, providers } = useStore.getState();
@@ -130,6 +136,7 @@ export class VoiceSession {
       engineLabel:
         this.engine === "whisper-local" ? `${SPEECH_MODELS[localSpeechModel(settings.voice.localModel)].label.split(":")[0]} on this device (private, offline)` : ENGINE_LABELS[this.engine],
       wakeName: this.wakeNames()[0] ?? "ADT",
+      approval: null,
     };
   }
 
@@ -174,6 +181,7 @@ export class VoiceSession {
 
   async start() {
     setVoiceModeActive(true);
+    setVoiceApprover((request) => this.askApproval(request));
     stopReadAloud();
     // Retrying after an error: release the previous microphone first.
     this.listener?.close();
@@ -226,8 +234,53 @@ export class VoiceSession {
     // Speech turned down for a cut-in must not stay quiet for read-aloud or the next session.
     this.ducked = false;
     duckSpeech(false);
+    this.answerApproval("deny");
+    setVoiceApprover(null);
     setVoiceModeActive(false);
     if (notify) this.hooks.onClose();
+  }
+
+  /**
+   * A tool needs the user's OK in the middle of a reply: ask aloud with the reply's voice, show the
+   * question with Allow / Don't allow, and take the next thing they say as the answer. No answer in
+   * a minute counts as no.
+   */
+  private askApproval({ summary, reason, signal }: { summary: string; reason: string; signal: AbortSignal }): Promise<"allow" | "deny"> {
+    if (this.closed) return Promise.resolve("deny");
+    this.answerApproval("deny");
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => this.answerApproval("deny"), 60_000);
+      const pending = { resolve, timer };
+      this.approval = pending;
+      // Answered from the chat's card instead: drop the question here.
+      signal.addEventListener("abort", () => this.approval === pending && this.answerApproval("deny"), { once: true });
+      this.clearIdle();
+      this.dropEarly();
+      this.unduck();
+      this.set({ approval: { question: summary, reason }, phase: "speaking", sentence: summary, spokenChars: 0 });
+      const speaker = this.speaker ?? createSpeaker(this.context(), { onError: (message) => this.set({ error: message }) });
+      this.speaker = speaker;
+      speaker.say(summary);
+      void speaker.idle().then(() => {
+        if (this.approval !== pending) return;
+        this.lastSpoken = speaker.spoken;
+        this.speechEndedAt = performance.now();
+        this.listener?.setSensitivity("normal");
+        this.set({ phase: "listening", partial: "" });
+      });
+    });
+  }
+
+  /** The user's answer to askApproval, spoken or from the buttons. */
+  answerApproval(answer: "allow" | "deny") {
+    const pending = this.approval;
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.approval = null;
+    this.approvalEndedAt = performance.now();
+    this.listener?.setSensitivity("strict");
+    if (!this.closed) this.set({ approval: null, phase: "thinking", partial: "", activity: answer === "allow" ? "" : "Okay, skipping that." });
+    pending.resolve(answer);
   }
 
   /** The big button: finish talking, interrupt, or wake up, depending on the moment. */
@@ -311,7 +364,7 @@ export class VoiceSession {
     }
     if (event.type === "speech") {
       // A quarter second of clear speech (not a cough or click): the user may be cutting in.
-      if (phase === "speaking" && this.bargeMode() === "instant") {
+      if (phase === "speaking" && this.bargeMode() === "instant" && !this.approval) {
         if (this.speaker?.inPageAudio) {
           // Turn the bot right down now; stop it once the words show it isn't our own echo.
           this.ducked = true;
@@ -427,6 +480,7 @@ export class VoiceSession {
    * shows, is saved or runs until then. Only for a plain question to the bot while it's quiet.
    */
   private startEarly(text: string) {
+    if (this.approval) return;
     if (!this.context().voice.earlyReply || this.phase() !== "hearing" || this.segmentDuringSpeech) return;
     if (this.early && sameWords(this.early.text, text)) return;
     this.dropEarly();
@@ -450,6 +504,15 @@ export class VoiceSession {
     if (early && !(phase === "hearing" && sameWords(early.text, text) && !parseVoiceCommand(text, useStore.getState().bots))) {
       early.discard();
       early = null;
+    }
+    // A tool is waiting on the user's OK: this is the answer (or our own question coming back).
+    if (this.approval && text) {
+      early?.discard();
+      if (isEcho(text, this.lastSpoken)) return;
+      const answer = yesOrNo(text);
+      if (answer) this.answerApproval(answer);
+      else this.set({ heard: text, partial: "" });
+      return;
     }
     if (!text || isLikelyHallucination(text)) {
       early?.discard();
@@ -697,7 +760,7 @@ export class VoiceSession {
     const ticker = setInterval(() => {
       if (turn !== this.turn || this.closed) return;
       if (steps && this.state.phase === "speaking" && !speaker.speaking) this.set({ phase: "thinking" });
-      if (steps && this.state.phase === "thinking" && !speaker.speaking && reminders < 2 && performance.now() - lastSoundAt > STILL_WORKING_MS) {
+      if (steps && this.state.phase === "thinking" && !speaker.speaking && reminders < 2 && performance.now() - Math.max(lastSoundAt, this.approvalEndedAt) > STILL_WORKING_MS) {
         reminders++;
         speak(reminders === 1 ? "Still working on it." : "Almost there.");
       }

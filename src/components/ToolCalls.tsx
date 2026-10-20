@@ -1,4 +1,5 @@
 import { Ban, Check, ChevronRight, Loader2, MessageSquare, ShieldAlert, Undo2, Wrench, X } from "lucide-react";
+import { askTitle, mainArg } from "../lib/agent/asks";
 import { useEffect, useState } from "react";
 import { isPending, onApprovalsChanged } from "../lib/agent/approvals";
 import { describeRewind, type RewindResult, type TurnChanges } from "../lib/agent/rewind";
@@ -43,43 +44,16 @@ const LABELS: Record<string, string> = {
   mac_find_text: "Read the screen",
   mac_recipes: "Recipes",
   mac_recipe_run: "Ran a recipe",
+  create_routine: "Scheduled",
+  update_routine: "Changed a routine",
+  delete_routine: "Deleted a routine",
+  list_routines: "Checked routines",
 };
 
-/** What a bot asks to do, for approval cards: "Allow the bot to run a command?" */
-const ASKS: Record<string, string> = {
-  run_command: "run a command",
-  read_file: "read a file",
-  write_file: "write a file",
-  list_files: "look in a folder",
-  read_url: "open a web page",
-  open_on_computer: "open something on your computer",
-  create_image: "create an image",
-  mac_press: "press",
-  mac_set_text: "type into a field",
-  mac_type: "type on your Mac",
-  mac_key: "press keys on your Mac",
-  mac_click: "click on your Mac",
-  mac_scroll: "scroll on your Mac",
-  mac_drag: "drag on your Mac",
-  mac_open_app: "open",
-  mac_applescript: "run an AppleScript",
-  mac_browser: "use your browser",
-  mac_recipes: "save a recipe",
-  mac_recipe_run: "run a recipe",
-  delegate_to_cli_agent: "hand a task to a coding agent",
-  create_routine: "create a routine",
-  rewind: "undo file changes",
-};
 
 /** Tools whose file changes the desktop side keeps per turn, so the turn can be undone. */
 const FILE_TOOLS = new Set(["write_file", "run_command"]);
 
-const MAIN_ARGS = ["query", "url", "command", "path", "fact", "expression", "prompt", "target", "task", "app", "element", "text", "field", "combo", "script", "name"];
-
-function mainArg(call: ToolCallRecord): string | undefined {
-  const value = MAIN_ARGS.map((k) => call.args[k]).find((v) => typeof v === "string" && v) as string | undefined;
-  return value && (value.length > 90 ? `${value.slice(0, 90)}…` : value);
-}
 
 function label(call: ToolCallRecord): string {
   const base = LABELS[call.name] ?? call.name.replace(/^mcp_/, "").replace(/[_-]+/g, " ");
@@ -89,11 +63,6 @@ function label(call: ToolCallRecord): string {
   return main ? `${base}: ${main}` : base;
 }
 
-function askTitle(call: ToolCallRecord): string {
-  const what = ASKS[call.name] ?? `use “${call.name.replace(/^mcp_/, "").replace(/[_-]+/g, " ")}”`;
-  const main = mainArg(call);
-  return `Allow the bot to ${what}${main ? `: ${main}` : ""}?`;
-}
 
 function StatusIcon({ status }: { status: ToolCallRecord["status"] }) {
   if (status === "running" || status === "pending") return <Loader2 size={14} className="spin" />;

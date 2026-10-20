@@ -248,7 +248,7 @@ export type Settings = {
   customInstructions: string;
   /** Name chats from their first exchange using the chat's own model. */
   smartTitles: boolean;
-  /** Read every reply aloud when it finishes. */
+  /** Read the answer aloud when the question was dictated with the mic button (typed questions never are). */
   autoSpeak: boolean;
   search: { engine: SearchEngine; apiKey: string; url: string; readPages: boolean; native: boolean };
   /** Provider + model used for "Imagine". Empty = pick automatically. */

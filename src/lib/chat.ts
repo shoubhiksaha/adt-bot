@@ -2,7 +2,7 @@ import { generateImage, resolveImageModel } from "./imagine";
 import "./agent/features";
 import { effectiveAccess, runsWithoutAsking } from "./agent/access";
 import { runToolLoop } from "./agent/loop";
-import { toolsFor, type TurnTaint } from "./agent/tools";
+import { toolsFor, type TurnTaint, type ToolContext } from "./agent/tools";
 import { complete, type StreamEvent, streamChat, supportsNativeSearch } from "./llm";
 import { desktopInvoke, desktopOn, isDesktop } from "./desktop";
 import { detectEnv } from "./transport";
@@ -20,6 +20,8 @@ export type SendOptions = {
   imagine?: boolean;
   /** Spoken conversation: short answers, lighter reasoning, optional faster voice model. */
   voice?: boolean;
+  /** The user spoke this message with the mic button (only then is the reply read aloud outside voice mode). */
+  dictated?: boolean;
   /** Routines and bot-to-bot work: runs alongside the visible chat (no stop button, no read-aloud). */
   background?: boolean;
   /** Cancels a background run. */
@@ -127,6 +129,13 @@ function parseCommand(text: string): { command?: "remember" | "imagine" | "searc
   if (!match) return { rest: text.trim() };
   const name = match[1].toLowerCase();
   return { command: name === "image" ? "imagine" : (name as "remember" | "imagine" | "search"), rest: match[2].trim() };
+}
+
+/** Voice mode registers how to ask the user aloud, so tools that need an OK can still run there. */
+type VoiceApprover = NonNullable<ToolContext["askAloud"]>;
+let voiceApprover: VoiceApprover | null = null;
+export function setVoiceApprover(approver: VoiceApprover | null) {
+  voiceApprover = approver;
 }
 
 export async function sendMessage(text: string, attachments: Attachment[] = [], options: SendOptions = {}) {
@@ -451,8 +460,9 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
     // Tools the bot may use for this answer (voice mode: only ones that never need approval).
     const platform = (await detectEnv()).platform;
     let agentTools = toolsFor({ settings, providers, platform, bot });
-    // Voice mode can't show approval cards: only tools that may run without asking.
-    if (opts.voice || opts.unattended) agentTools = agentTools.filter((t) => runsWithoutAsking(t, opts.shared ? { ...settings.agent, access: effectiveAccess(settings.agent, opts) } : settings.agent));
+    // Nobody to ask (routines, bot-to-bot), or voice mode without a way to ask aloud: only tools
+    // that may run without asking.
+    if (opts.unattended || (opts.voice && !voiceApprover)) agentTools = agentTools.filter((t) => runsWithoutAsking(t, opts.shared ? { ...settings.agent, access: effectiveAccess(settings.agent, opts) } : settings.agent));
 
     const stream = async (nativeSearch: boolean, query: string) => {
       // Knowledge, linked pages and search results go with the latest message, not in the system
@@ -528,6 +538,7 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
             // File changes are kept under this reply's id, for "Undo this turn's file changes".
             turnId: reply.id,
             unattended: opts.voice || opts.unattended,
+            askAloud: opts.voice && !opts.unattended ? (voiceApprover ?? undefined) : undefined,
             shared: opts.shared,
             taint,
           },
@@ -584,7 +595,8 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
       sources: sources.length ? sources : undefined,
       stats: { ms: Math.round(performance.now() - started), firstMs: firstMs && Math.round(firstMs) },
     });
-    if (settings.autoSpeak && finalText && !signal.aborted && !voiceModeActive && !opts.background) {
+    // Typed questions get text only; a dictated one is read back when the user asked for that.
+    if (settings.autoSpeak && opts.dictated && finalText && !signal.aborted && !voiceModeActive && !opts.background) {
       speak(finalText, { voice: settings.voice, providers, useProxy: settings.useProxy });
     }
     if (!signal.aborted && conversationId) void autoTitle(conversationId);

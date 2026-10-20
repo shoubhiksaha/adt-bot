@@ -47,8 +47,13 @@ export function accessVerdict(
   agent: Pick<AgentSettings, "access" | "confirmDestructive">,
   context?: Pick<ToolContext, "shared">,
 ): AccessVerdict {
-  if (!isComputerTool(tool)) return { outcome: "policy" };
   const access = effectiveAccess(agent, context);
+  if (!isComputerTool(tool)) {
+    // Full access covers the app's own actions too (routines, projects, images, connectors); a turn
+    // that read outside content still asks before scheduling or sending anything (approvals.ts).
+    if (access === "full" && (risk !== "destructive" || !agent.confirmDestructive)) return { outcome: "allow", reason: "full access" };
+    return { outcome: "policy" };
+  }
   if (access === "sandbox") {
     const refuse = (what: string) => ({
       outcome: "deny" as const,
@@ -77,8 +82,8 @@ export function accessVerdict(
 export function runsWithoutAsking(tool: AgentTool, agent: Pick<AgentSettings, "access" | "confirmDestructive">): boolean {
   // Calls that turn out riskier (riskFor) are refused at run time in voice mode, so offer these.
   if (tool.risk === "read") return true;
-  if (!isComputerTool(tool)) return false;
   if (agent.access === "full") return true;
+  if (!isComputerTool(tool)) return false;
   return agent.access === "sandbox" && tool.group === "local" && Boolean(tool.sandboxed);
 }
 
@@ -88,7 +93,7 @@ export function accessGuidance(agent: Pick<AgentSettings, "access" | "confirmDes
     case "sandbox":
       return "Computer access: Sandbox. You can only work inside the ADT Bot Workspace folder (use relative paths); commands run isolated there, with no access to the user's other files, and you can't see or control the screen.";
     case "full":
-      return `Computer access: Full. You can run commands, read and change any file, open and quit apps, and see and control the screen without asking${agent.confirmDestructive ? " (destructive actions still ask the user)" : ""}. Act carefully: check the screen after acting, and never delete or overwrite anything the user didn't ask you to.`;
+      return `Computer access: Full. You can run commands, read and change any file, open and quit apps, see and control the screen, and create routines, projects and images without asking${agent.confirmDestructive ? " (destructive actions still ask the user)" : ""}. Act carefully: check the screen after acting, and never delete or overwrite anything the user didn't ask you to.`;
     default:
       return "Computer access: Restrictive. You can reach the whole computer, but the user approves actions that change things.";
   }

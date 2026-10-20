@@ -35,6 +35,8 @@ export type ToolContext = {
   turnId?: string;
   /** Nobody can answer an approval card (voice mode): calls that would ask are refused instead. */
   unattended?: boolean;
+  /** Voice mode: ask the user aloud (and on screen) instead of refusing. Resolves with their answer. */
+  askAloud?: (request: { summary: string; reason: string; signal: AbortSignal }) => Promise<"allow" | "deny">;
   /** The request came from people other than the owner (a chat room): Full access doesn't apply. */
   shared?: boolean;
   /** Outside content this turn has taken in (shared by every step of one turn). */

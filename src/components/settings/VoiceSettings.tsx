@@ -183,7 +183,7 @@ export function VoiceSettings() {
           </button>
           {testError && <span className="small error-text">{testError}</span>}
         </div>
-        <Toggle checked={autoSpeak} onChange={(v) => updateSettings({ autoSpeak: v })} title="Read every reply aloud" hint="Also speak answers in normal chats, not just in voice mode." />
+        <Toggle checked={autoSpeak} onChange={(v) => updateSettings({ autoSpeak: v })} title="Read the answer aloud when you dictate" hint="When you speak a message with the mic button, its answer is read aloud too. Typed messages always get text only, and voice mode always speaks." />
       </Section>
 
       <Section title="Conversation">

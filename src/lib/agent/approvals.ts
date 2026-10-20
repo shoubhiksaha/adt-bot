@@ -46,7 +46,8 @@ export function taintSensitive(tool: AgentTool, risk: AgentTool["risk"]): boolea
   if (risk === "read") return false;
   // Routines run again later with the same tools: an injected instruction must not schedule itself.
   if (tool.group === "routines") return true;
-  if (!isComputerTool(tool)) return false;
+  // Connector tools can send what the turn has seen to someone else.
+  if (!isComputerTool(tool)) return tool.kind === "mcp";
   // Screen control (built in, or a Mac-control connector) stays usable: that's what Full access is for.
   if (tool.controlsComputer) return false;
   return tool.group !== "mac" || tool.name === "mac_applescript";

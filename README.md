@@ -66,7 +66,7 @@ Bots can do things as well as talk. Turn it on or off, and choose what needs you
   **Allow once / Always allow / Deny** in the chat; destructive actions always ask. A deny list blocks commands
   such as `rm -rf /` and `sudo`. Content from the web, files, connectors and room guests is marked as untrusted
   data and kept out of the system prompt. Models can still be fooled by it, so once a reply has read outside
-  content, commands, file changes and new routines ask first, even with Full access. Images in replies load only
+  content, commands, file changes, new routines and connector tools ask first, even with Full access. Images in replies load only
   when you click them. **⌘⇧⎋** (Ctrl+Alt+Shift+Esc elsewhere) stops every bot from any app. Every action is in
   the activity log.
 - **Computer access** (desktop): three levels in **Settings → Tools & safety**.
@@ -76,8 +76,12 @@ Bots can do things as well as talk. Turn it on or off, and choose what needs you
     (MCP servers) you add run as you configured them, outside the sandbox.
   - **Restrictive** (default): the whole computer, with approvals as above.
   - **Full access**: bots control the whole computer without asking: commands, files, apps, screen, mouse and
-    keyboard. Destructive actions still ask unless you turn that off, and the deny list still applies. Shared
-    rooms never get more than Restrictive. Voice mode can use these tools too.
+    keyboard, and the app's own actions (scheduling routines, projects, images). AppleScripts run unasked unless
+    they delete, quit apps, shut down, need admin rights or run risky shell commands. Destructive actions still
+    ask unless you turn that off, and the deny list still applies. Shared rooms never get more than Restrictive.
+- **Approvals in voice mode**: when something needs your OK mid-conversation, the bot asks aloud ("Can I create a
+  routine: Weekly planning? Say yes or no.") and shows Allow / Don't allow; answer either way. No answer in a
+  minute counts as no.
 - **Charts and cards**: bar charts, stat tiles, timelines and flow diagrams inline in the chat, plus email,
   message and link cards with Copy / Open in Mail.
 - **Projects (kanban boards)**: Backlog → To do → In progress → Review → Done, with labels, due dates,
@@ -169,6 +173,8 @@ Click the **sound-wave button** next to the mic for a hands-free conversation:
   impersonating people without consent, and don't pass its speech off as a human's.
 - **Interrupt any time** by talking (instantly with natural voices; device voices check it isn't hearing itself), by
   tapping the orb, or by pressing Space.
+- **Typed messages get text answers.** Only voice mode speaks, plus, if you turn on Settings → Voice → "Read the
+  answer aloud when you dictate", answers to messages you spoke with the mic button.
 - **Voice commands:** “stop”, “new chat”, “switch to Coder”, “search for …”, “draw …”, “repeat that”,
   “slower”/“faster”, “goodbye”.
 - **Wake word:** after a quiet spell it goes to standby. Say “Hey <nickname>” (each bot's nickname, set in bot

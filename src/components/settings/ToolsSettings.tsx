@@ -76,7 +76,7 @@ export function ToolsSettings() {
               checked={agent.confirmDestructive}
               onChange={(confirmDestructive) => set({ confirmDestructive })}
               title="Still ask before destructive actions"
-              hint="Deleting files, sudo, disk and system commands, AppleScript and quitting apps wait for your OK, even with full access. Voice mode can't ask, so it skips them."
+              hint="Deleting files, sudo, disk and system commands, AppleScripts that delete or quit, and quitting apps wait for your OK, even with full access. In voice mode the bot asks aloud; answer yes or no."
             />
           )}
           {access === "sandbox" && (
@@ -91,7 +91,7 @@ export function ToolsSettings() {
 
       <Section
         title="Approvals"
-        hint="Reading and searching never asks. Anything that changes things, costs money or reaches outside asks according to this policy; destructive actions always ask. With Full access, computer actions skip it."
+        hint="Reading and searching never asks. Anything that changes things, costs money or reaches outside asks according to this policy; destructive actions always ask. With Full access, computer actions and the app's own actions (routines, projects, images) skip it, except scheduling or connector tools right after a bot read web content."
       >
         <div className="field">
           <select
