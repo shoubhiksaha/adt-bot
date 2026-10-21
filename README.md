@@ -20,7 +20,14 @@ database or server stack to run.
 | Think mode | Yes | Yes (reasoning effort for OpenAI-style, Claude, Gemini and DeepSeek models; shows the thought process) |
 | Image creation | Yes | Yes, via OpenRouter, OpenAI, xAI, Gemini or any `/images/generations` server |
 | Reads PDFs, documents, code, links | Yes | Yes: PDFs, text and code files, images, and any link you paste |
-| Personalities | A few built-in modes and companions | Unlimited bots, each with its own personality, model and memory |
+| Personalities | A few built-in modes and companions | Unlimited bots, each with its own personality, model and memory, plus a gallery of ready-made bots and shareable bot templates |
+| Learns from you | Remembers preferences and past work | Notes on every chat and lasting facts, recalled when relevant; all on your device, visible and editable on the Memory screen (facts must be in your own words) |
+| Skills | Reusable how-tos | Skills in the open SKILL.md format: bots save and reuse them, `/name` hands one over, import and export files |
+| Bots working together | Group chats of bots | Group chats of 2–6 bots (discussion, debate or panel) with a summary, bots handing tasks to bots, and bots starting discussions themselves |
+| Your apps | Gmail, Calendar, Drive, Outlook, Slack, X… | Gmail, Calendar, Drive, Outlook, OneDrive, any IMAP mail, Slack and X with your own app keys, plus any MCP server |
+| Runs on its own | Schedules, email and app triggers | Schedules and cron, or when an email arrives (plus-addresses too), a Slack or X message, a feed item, a page change, a webhook or a folder change |
+| Deep research | DeepSearch | Research mode with any model: plans, reads many sources, fills gaps, writes a cited report |
+| Audit trail | Enterprise plans | Agent log of every action: why it was allowed, what it was given and what came back, with export |
 | Voice | Yes | Hands-free voice mode with wake word (“Hey <nickname>”), voice commands, interrupting, live captions, Gemini Live speech-to-speech, natural voices (OpenAI, ElevenLabs, Fish Audio, Cartesia, Deepgram, Sarvam, Google, Azure, self-hosted Kokoro, or any voice API you add) or free device voices, on every platform |
 | Your company's look | No | Your name, logo and theme, imported from a logo, brand guide, CSS file or website |
 | Knows your business | Limited | “About us”, custom instructions and knowledge files (PDF, Word, Markdown, HTML…), shared or per bot |
@@ -47,6 +54,26 @@ database or server stack to run.
 - Streaming replies with a live thought process, syntax-highlighted code with copy buttons, edit and resend,
   regenerate, retry, stop (Esc), response time and speed, a jump-to-latest button, and dark and light themes.
 - Backup and restore everything as a JSON file. Keys are left out, or sealed with a password you choose.
+
+## Learning, memory, skills and templates
+
+- **Learns from your chats**: when a chat goes quiet (or you leave it), the bot writes itself a short note on what it
+  was about and saves lasting facts and preferences you mentioned. Later chats get the notes that matter, and bots
+  can search them ("what did we decide about the Lisbon trip?"). A fact is only saved if it's in your own words, so
+  a web page can't plant one. Private chats, routines and bot-to-bot tasks aren't learned from. Turn it off per bot
+  ("Learn from our chats").
+- **Memory screen**: everything each bot remembers, plus facts every bot knows. Search, edit, delete, import and
+  export as Markdown.
+- **Skills**: reusable how-tos (the steps for a weekly report, how you like trips planned). Bots see the list and
+  fetch the steps when a task matches; type `/name` (a `/` menu lists them) to hand one over; ask a bot to "save
+  this as a skill". Skills use the SKILL.md format, so you can import them from other agents. Imported skills, and
+  ones a bot wrote after reading outside content, stay marked "not checked" until you've read them.
+- **Bot templates**: eight ready-made bots (Inbox Assistant, Research Analyst, Daily Briefing, Writing Coach,
+  Travel Planner, Meeting Prep, Social Media Manager, Coding Buddy), each with its skill and, off until you switch
+  it on, a routine. Share your own bots as a file ("Share as template"): only what you tick goes in, never chats or
+  keys.
+- **Agent log**: every action bots took or were refused, with why it was allowed, its arguments (secrets hidden)
+  and what came back. Filter by bot, outcome and time; export CSV or JSON.
 
 ## Bots that act: tools, computers and teams
 
@@ -96,8 +123,27 @@ Bots can do things as well as talk. Turn it on or off, and choose what needs you
 - **Routines**: "every weekday at 8:00, summarise the AI news". Once, daily, weekly, every N minutes or cron,
   in any time zone, with run history, catch-up rules and notifications. Runs that find nothing new stay quiet.
   On desktop, the app can keep running in the menu bar for them.
-- **Bots working together**: a bot can hand a task to another bot (`ask_bot`) and gets back a short report.
-  Loop guards stop bots passing work back and forth.
+- **Bots working together**: a bot can hand a task to another bot (`ask_bot`) and gets back a short report, or
+  have several bots talk something through (`discuss_with_bots`). Loop guards stop bots passing work back and forth.
+- **Group chats** (the people-and-arrow button next to Bots): 2 to 6 bots in one chat. *Discussion*: each answers
+  in turn, building on the others; *Debate*: they take sides and challenge each other; *Panel*: independent first
+  answers, then reactions. 1–5 rounds per message (a round where nobody adds anything ends it), and one bot can sum
+  up. Each bot uses its own model, instructions and tools.
+- **Connected apps** (desktop, **Settings → Apps**): Gmail, Google Calendar and Drive; Outlook mail and calendar and
+  OneDrive; any other mail account over IMAP/SMTP with an app password (Gmail, iCloud, Yahoo, Fastmail, Zoho or your
+  company's); Slack; and X. Google, Microsoft and X sign in through your browser with your own app registration (the
+  steps are in the app); sign-ins are encrypted with your system keychain and never leave the desktop side. Bots can
+  search, read, draft and send email, list and add calendar events, search, read and create files, read and post
+  in Slack, and search, read mentions and messages, post and message on X. Everything they read is outside
+  content; sending, posting and creating ask first, and the approval card says exactly what will happen.
+- **Routines that run when something happens**: an email arrives (filter on sender, subject, or a plus-address like
+  you+receipts@gmail.com so each routine has its own address), a Slack message, a mention or message on X, a new
+  item in an RSS/Atom feed (blogs, news, GitHub releases), a web page changes, a webhook is called
+  (`http://127.0.0.1:17345/hook/<secret>`), or files change in a folder. What arrived goes to the bot as outside
+  content; at most 12 runs an hour; mail the account sends itself never triggers. Bots can set these up too.
+- **Deep research** (the Research button, or `/research`): with any model, it plans the sub-questions, searches
+  several queries, reads the best pages from different sites, takes notes, looks for gaps and searches again, then
+  writes a report with a bottom line, findings and disagreements, citing every claim. The steps show under the reply.
 - **Connectors (MCP)**: add any MCP server (remote URL with a token, or a local command on desktop) in
   **Settings → Connectors**; its tools become bot tools, and screenshots they return are shown to the model.
   ADT Bot speaks the newest MCP version a server supports: 2026-07-28, or 2025-11-25 down to 2024-11-05 for

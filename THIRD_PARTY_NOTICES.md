@@ -64,6 +64,28 @@ These aren't bundled with the app; they download on first use and are cached on 
 | ms | MIT |
 | sax | BlueOak-1.0.0 |
 
+## Bundled in the desktop app (connected apps: email)
+
+Used by `electron/apps/` to read and send email over IMAP and SMTP.
+
+| Package | License |
+| --- | --- |
+| imapflow 2.5.9 | MIT |
+| nodemailer 10.1.7 | MIT-0 |
+| mailparser 3.10.0 | MIT |
+| @zone-eu/mailsplit | MIT (dual-licensed MIT OR EUPL-1.1+; used under MIT) |
+| libmime, libbase64, libqp, encoding-japanese | MIT |
+| html-to-text, htmlparser2, he, selderee, @selderee/plugin-htmlparser2, parseley, leac, peberminta | MIT |
+| domhandler, domutils, domelementtype, entities | BSD-2-Clause |
+| dom-serializer | MIT |
+| deepmerge-ts | BSD-3-Clause |
+| linkify-it, uc.micro, punycode.js, tlds | MIT |
+| iconv-lite, safer-buffer | MIT |
+| pino, pino-abstract-transport, pino-std-serializers, @pinojs/redact, sonic-boom, thread-stream, real-require, on-exit-leak-free, atomic-sleep, quick-format-unescaped, safe-stable-stringify, process-warning | MIT |
+| split2 | ISC |
+| socks, smart-buffer, ip-address | MIT |
+| tslib | 0BSD |
+
 ## Adapted ideas
 
 - **windows-cua-jev** (https://github.com/foklepoint/windows-cua-jev): MIT License, Copyright (c) 2026

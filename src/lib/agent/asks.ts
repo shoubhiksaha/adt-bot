@@ -2,7 +2,19 @@
  * How an action a bot wants to take is put to the user: on approval cards ("Allow the bot to run a
  * command: npm test?") and, in voice mode, aloud.
  */
+import { getTool } from "./tools";
+
 type Call = { name: string; args: Record<string, unknown> };
+
+/** The tool's own plain-words description of this call ("send an email to bob@…: “Lunch?”"), if it has one. */
+function toolSummary(call: Call): string | undefined {
+  try {
+    const text = getTool(call.name)?.summary?.(call.args ?? {});
+    return text ? `${text.charAt(0).toLowerCase()}${text.slice(1)}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** What a bot asks to do, for approval cards: "Allow the bot to run a command?" */
 export const ASKS: Record<string, string> = {
@@ -38,6 +50,8 @@ export function mainArg(call: Call): string | undefined {
 }
 
 export function askTitle(call: Call): string {
+  const summary = toolSummary(call);
+  if (summary) return `Allow the bot to ${summary}?`;
   const what = ASKS[call.name] ?? `use “${call.name.replace(/^mcp_/, "").replace(/[_-]+/g, " ")}”`;
   const main = mainArg(call);
   return `Allow the bot to ${what}${main ? `: ${main}` : ""}?`;
@@ -60,6 +74,8 @@ export function askAloudDetail(call: Call): string {
 
 /** The same question, worded to be spoken: no quotes; a long command is cut and the rest pointed to on screen. */
 export function askAloudText(call: Call): string {
+  const summary = toolSummary(call)?.replace(/[“”"`]/g, "");
+  if (summary) return `Can I ${summary}? Say yes or no.`;
   const what = ASKS[call.name] ?? (call.name === "update_routine" ? "change a routine" : `use ${call.name.replace(/^mcp_/, "").replace(/[_-]+/g, " ")}`);
   const main = askAloudDetail(call).replace(/[“”"`]/g, "").replace(/\s+/g, " ").trim();
   const long = main.length > SPOKEN_CHARS;
