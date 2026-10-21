@@ -97,6 +97,9 @@ describe("bot tools", () => {
     expect(useStore.getState().skills[0].outside).toBe(true);
     updateSkill(skill.id, { outside: false });
     expect(useStore.getState().skills[0].outside).toBeUndefined();
+    // Without a description (small models leave it out), one is made from the name.
+    expect(await tool.run({ name: "packing", instructions: "Clothes, chargers, documents." }, ctx())).toMatch(/Saved the skill \/packing/);
+    expect(useStore.getState().skills.find((s) => s.name === "packing")?.description).toBe("Use when the user asks for packing.");
   });
 
   it("saving a skill asks first once a turn has read outside content, even with Full access", () => {

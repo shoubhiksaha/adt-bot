@@ -37,36 +37,94 @@ export function parsePromptedCall(text: string, tools: ToolSchema[]): { text: st
   return { text: [before, after].filter(Boolean).join("\n"), call };
 }
 
-/** Lenient parse, plus a repair for a slip small models make: a list wrapped in quotes ("days": "["mon"]"). */
+/** Slips small models make in calls, repaired in turn (each on top of the ones before). */
+const REPAIRS: ((text: string) => string)[] = [
+  // A list wrapped in quotes: "days": "["mon"]".
+  (text) => text.replace(/"\[([^[\]]*)\]"/g, "[$1]"),
+  // Quotes escaped as if inside a string: "parameters\":{\"x\":1}.
+  (text) => text.replace(/\\"/g, '"'),
+  // A link without quotes: "url": https://example.com.
+  (text) => text.replace(/:\s*(https?:\/\/[^\s"',}\]]+)/g, ':"$1"'),
+];
+
+/** Lenient parse, then the repairs above. */
 function parseCallJson(text: string): Record<string, unknown> | null {
-  return parseObjectLoose(text) ?? parseObjectLoose(text.replace(/"\[([^[\]]*)\]"/g, "[$1]"));
+  let current = text;
+  const parsed = parseObjectLoose(current);
+  if (parsed) return parsed;
+  for (const repair of REPAIRS) {
+    const next = repair(current);
+    if (next === current) continue;
+    current = next;
+    const repaired = parseObjectLoose(current);
+    if (repaired) return repaired;
+  }
+  return null;
 }
 
-/** {"name": "...", "arguments"|"args"|"parameters": {...}} → a call, if it names one of the tools. */
+/**
+ * The one required argument given under another name ({"query": "https://…"} for read_url's "url"),
+ * a common small-model slip: renamed when it's the only unknown key and the only one missing.
+ */
+export function fitArgs(args: Record<string, unknown>, parameters: ToolSchema["parameters"]): Record<string, unknown> {
+  const allowed = parameters.properties ?? {};
+  const missing = (parameters.required ?? []).filter((k) => !Object.prototype.hasOwnProperty.call(args, k));
+  const stray = Object.keys(args).filter((k) => !Object.prototype.hasOwnProperty.call(allowed, k));
+  if (missing.length !== 1 || stray.length !== 1) return args;
+  const { [stray[0]]: value, ...rest } = args;
+  return { ...rest, [missing[0]]: value };
+}
+
+/**
+ * {"name": "...", "arguments"|"args"|"parameters": {...}} → a call, if it names one of the tools.
+ * Also the OpenAI-style shapes models copy: {"type": "function", "name": …} and {"function": {"name": …}}.
+ */
 function callFromRecord(record: Record<string, unknown>, tools: ToolSchema[]): ToolCall | undefined {
-  const name = typeof record.name === "string" ? record.name : typeof record.tool === "string" ? record.tool : "";
+  const fn = record.function;
+  const inner = fn && typeof fn === "object" && !Array.isArray(fn) ? (fn as Record<string, unknown>) : record;
+  const name = typeof inner.name === "string" ? inner.name : typeof record.tool === "string" ? record.tool : "";
   const schema = tools.find((t) => t.name === name);
   if (!schema) return undefined;
-  const nested = record.arguments ?? record.args ?? record.parameters;
+  const nested = inner.arguments ?? inner.args ?? inner.parameters;
   const candidate =
     nested && typeof nested === "object" && !Array.isArray(nested)
       ? (nested as Record<string, unknown>)
       : typeof nested === "string"
         ? (parseObjectLoose(nested) ?? {})
-        : Object.fromEntries(Object.entries(record).filter(([k]) => !["name", "tool"].includes(k)));
+        : Object.fromEntries(Object.entries(inner).filter(([k]) => !["name", "tool", "type", "function"].includes(k)));
   // Small models invent keys; only pass what the tool's schema advertises.
   const allowed = schema.parameters.properties ?? {};
-  const args = Object.fromEntries(Object.entries(candidate).filter(([k]) => Object.prototype.hasOwnProperty.call(allowed, k)));
+  const args = Object.fromEntries(Object.entries(fitArgs(candidate, schema.parameters)).filter(([k]) => Object.prototype.hasOwnProperty.call(allowed, k)));
   return { id: `prompted_${crypto.randomUUID().slice(0, 12)}`, name, args };
 }
 
-/** Where a bare JSON call starts: `{"name":` (Llama 3.x writes calls this way when native parsing misses). */
-const BARE_START = /(?:```(?:json)?\s*)?\{\s*"name"\s*:/;
+/**
+ * The name of a tool a call-shaped object asks for that isn't one of the tools ({"name": "write_order",
+ * "parameters": {…}}), or "". Plain JSON in an answer ({"name": "Bob", "age": 3}) isn't call-shaped.
+ */
+function inventedTool(record: Record<string, unknown>, tools: ToolSchema[]): string {
+  const fn = record.function;
+  const inner = fn && typeof fn === "object" && !Array.isArray(fn) ? (fn as Record<string, unknown>) : record;
+  const name = typeof inner.name === "string" ? inner.name.trim() : "";
+  const callShaped = inner !== record || record.type === "function" || ["parameters", "arguments", "args"].some((k) => k in inner);
+  return name && callShaped && /^[\w.-]{1,64}$/.test(name) && !tools.some((t) => t.name === name) ? name : "";
+}
+
+/** How a bare JSON call starts (whitespace removed): Llama 3.x writes calls these ways when native parsing misses. */
+const CALL_STARTS = ['{"name":', '{"type":"function","name":', '{"type":"function","function":{"name":', '{"function":{"name":'];
+
+/** Whether text from a "{" on is the start of a call ("yes"), could still grow into one ("maybe"), or isn't ("no"). */
+function callStart(text: string): "yes" | "maybe" | "no" {
+  const squashed = text.slice(0, 120).replace(/\s+/g, "");
+  if (CALL_STARTS.some((start) => squashed.startsWith(start))) return "yes";
+  return CALL_STARTS.some((start) => start.startsWith(squashed)) ? "maybe" : "no";
+}
 
 /**
  * Some local models (notably Llama 3.x behind Ollama) sometimes print a tool call as plain JSON
- * instead of using the native tool_calls field. This holds back text from `{"name":` on, and at the
- * end turns it into a real call when it names one of the tools; otherwise the text is released.
+ * instead of using the native tool_calls field. This holds back text from a call's opening
+ * (`{"name":`, `{"type":"function",…`, maybe in a ``` fence) on, and at the end turns it into a
+ * real call when it names one of the tools; otherwise the text is released.
  */
 export class BareCallFilter {
   private full = "";
@@ -77,31 +135,50 @@ export class BareCallFilter {
     this.full += text;
     if (this.start >= 0) return "";
     const rest = this.full.slice(this.emitted);
-    const match = BARE_START.exec(rest);
-    if (match) {
-      this.start = this.emitted + match.index;
-      const out = this.full.slice(this.emitted, this.start);
-      this.emitted = this.start;
+    for (let i = rest.indexOf("{"); i >= 0; i = rest.indexOf("{", i + 1)) {
+      const state = callStart(rest.slice(i));
+      if (state === "no") continue;
+      // A ``` or ```json fence just before belongs to the call.
+      const fence = /```(?:json)?\s*$/.exec(rest.slice(0, i));
+      const at = fence ? fence.index : i;
+      const out = rest.slice(0, at);
+      this.emitted += out.length;
+      if (state === "yes") this.start = this.emitted;
+      // "maybe": held back from here until it's clear.
       return out;
     }
-    // Hold back a tail that could still grow into `{"name":` (or an opening ``` fence).
-    const tail = rest.search(/(?:`{1,3}(?:j(?:s(?:o(?:n)?)?)?)?\s*)?(?:\{\s*(?:"(?:n(?:a(?:m(?:e(?:"\s*)?)?)?)?)?)?)?$/);
-    const hold = tail >= 0 && tail < rest.length ? rest.length - tail : 0;
-    const out = rest.slice(0, rest.length - hold);
+    // Hold back what could still become an opening fence ("`", "```js"…).
+    const fenceTail = /`{1,3}(?:j(?:s(?:o(?:n)?)?)?)?\s*$/.exec(rest);
+    const out = fenceTail ? rest.slice(0, fenceTail.index) : rest;
     this.emitted += out.length;
     return out;
   }
 
-  /** The call (if the held text is one), plus any held text that should be shown after all. */
-  finish(tools: ToolSchema[]): { tail: string; call?: ToolCall; before: string } {
+  /**
+   * The call (if the held text is one), plus any held text that should be shown after all.
+   * `unknown`: the text is a call to a tool that doesn't exist (small models invent them).
+   */
+  finish(tools: ToolSchema[]): { tail: string; call?: ToolCall; before: string; unknown?: string } {
     const held = this.full.slice(this.emitted);
     if (this.start >= 0) {
-      const record = parseCallJson(held.replace(/^```(?:json)?/, "").replace(/```\s*$/, ""));
+      const body = held.replace(/^```(?:json)?/, "").replace(/```\s*$/, "");
+      // A wrapper the model didn't close ({"type": "function", "function": {"name": …}} or): the call inside it.
+      const inner = body.search(/\{\s*"name"\s*:/);
+      const record = parseCallJson(body) ?? (inner > 0 ? parseCallJson(body.slice(inner)) : null);
       const call = record ? callFromRecord(record, tools) : undefined;
       if (call) return { tail: "", call, before: this.full.slice(0, this.start).trim() };
+      const name = record ? inventedTool(record, tools) : "";
+      if (name) return { tail: held, before: this.full.slice(0, this.start).trim(), unknown: name };
     }
     return { tail: held, before: this.full };
   }
+}
+
+/** A call printed as text, read against these tools (e.g. a tool that exists but wasn't listed this step). */
+export function parseBareCall(text: string, tools: ToolSchema[]): ToolCall | undefined {
+  const filter = new BareCallFilter();
+  filter.push(text);
+  return filter.finish(tools).call;
 }
 
 /**

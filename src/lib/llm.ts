@@ -18,7 +18,12 @@ export type StreamEvent =
    * Claude summarised the conversation so far (server-side compaction). Keep the block with the
    * reply: sent back on later turns, everything before it is replaced by the summary.
    */
-  | { type: "compaction"; block: Record<string, unknown> };
+  | { type: "compaction"; block: Record<string, unknown> }
+  /**
+   * The model wrote a call, as text, to a tool that doesn't exist (small local models invent them).
+   * The tool loop tells it once; `text` is what it wrote, shown if it does it again.
+   */
+  | { type: "bad_call"; name: string; text: string; before: string };
 
 /** One completed step of a tool loop: what the model said/asked, and what the tools answered. */
 export type ToolTurn = {
@@ -156,10 +161,21 @@ type Shape = {
   stripThinking?: boolean;
   /** An assistant turn the server paused (pause_turn), sent back unchanged so it carries on. */
   resume?: Block[];
+  /** Send no reasoning settings: the model said it can't think (Ollama's llama3.2, for one). */
+  noThinking?: boolean;
 };
 
 /** Provider + model pairs that rejected an optional beta this session; they get plain requests. */
 const leanTargets = new Set<string>();
+/** Provider + model pairs (OpenAI-compatible) that rejected thinking this session: asked without it. */
+const noThinkingTargets = new Set<string>();
+
+/** A 400 because the model can't reason, not because of the conversation (e.g. Ollama: "does not support thinking"). */
+export function thinkingUnsupportedError(error: unknown): boolean {
+  const e = error as Partial<ProviderError>;
+  return e?.status === 400 && /does not support (thinking|reasoning)|(thinking|reasoning)(_effort)? (is )?not supported|unsupported (parameter|value)[^.]{0,40}reasoning|unrecognized[^.]{0,40}reasoning_effort/i.test(String(e.message ?? ""));
+}
+
 /** A paused server-side search is resumed this many times before the reply says so. */
 const MAX_CONTINUATIONS = 3;
 
@@ -183,7 +199,7 @@ function thinkingBindingError(error: unknown): boolean {
 export async function* streamChat(req: ChatRequest): AsyncGenerator<StreamEvent> {
   if (req.provider.kind === "cli") return yield* streamCliChat(req);
   const key = `${req.provider.id}::${req.model}`;
-  const shape: Shape = { lean: leanTargets.has(key) };
+  const shape: Shape = { lean: leanTargets.has(key), noThinking: noThinkingTargets.has(key) };
   for (let continuation = 0; ; continuation++) {
     const paused = yield* streamWithRetries(req, shape, key);
     if (!paused) return;
@@ -207,6 +223,13 @@ async function* streamWithRetries(req: ChatRequest, shape: Shape, key: string): 
         yield next.value;
       }
     } catch (error) {
+      if (!started && !req.signal?.aborted && req.provider.kind === "openai" && !shape.noThinking && req.thinking !== "off" && thinkingUnsupportedError(error)) {
+        // The bot's thinking setting asks more than this model can do: answer without it.
+        shape.noThinking = true;
+        noThinkingTargets.add(key);
+        attempt--;
+        continue;
+      }
       if (!started && !req.signal?.aborted && req.provider.kind === "anthropic") {
         if (!shape.stripThinking && thinkingBindingError(error)) {
           shape.stripThinking = true;
@@ -274,8 +297,9 @@ async function* streamOnce(req: ChatRequest, shape: Shape = {}): AsyncGenerator<
     if (call) yield { type: "tool_calls", calls: [call], raw: text, text: text.slice(0, text.indexOf(PROMPTED_OPEN)).trim() };
   }
   if (bare && req.tools) {
-    const { tail, call, before } = bare.finish(req.tools);
+    const { tail, call, before, unknown } = bare.finish(req.tools);
     if (call && !nativeCalls) yield { type: "tool_calls", calls: [call], raw: {}, text: before };
+    else if (unknown && !nativeCalls) yield { type: "bad_call", name: unknown, text: tail, before };
     else if (tail) yield { type: "text", text: tail };
   }
   return parser.paused?.();
@@ -448,6 +472,7 @@ function buildRequest(original: ChatRequest, shape: Shape = {}): { url: string; 
   const claudeFinal = Boolean(original.finalNote) && provider.kind === "anthropic" && original.toolMode !== "prompted";
   let req: ChatRequest =
     original.finalNote && !claudeFinal ? { ...original, tools: [], system: `${original.system}\n\n${original.finalNote}` } : original;
+  if (shape.noThinking) req = { ...req, thinking: "off" };
   // Anthropic's API summarises long conversations itself; everything else is kept to size here.
   const official = provider.kind === "anthropic" && provider.presetId === "anthropic";
   const serverCompaction = official && !shape.lean && compactsOnServer(req.model);

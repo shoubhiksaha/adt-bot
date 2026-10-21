@@ -26,6 +26,9 @@ database or server stack to run.
 | Bots working together | Group chats of bots | Group chats of 2–6 bots (discussion, debate or panel) with a summary, bots handing tasks to bots, and bots starting discussions themselves |
 | Your apps | Gmail, Calendar, Drive, Outlook, Slack, X… | Gmail, Calendar, Drive, Outlook, OneDrive, any IMAP mail, Slack and X with your own app keys, plus any MCP server |
 | Runs on its own | Schedules, email and app triggers, in xAI's cloud | Schedules and cron, or when an email arrives (plus-addresses too), a Slack or X message, a feed item, a page change, a webhook or a folder change; and on your own always-on server while your computers are off |
+| A browser that works while you're away | A cloud computer per account | Your always-on server's own browser: routines read and use websites; sign in to sites once from the app and they stay signed in; it only reaches the public internet |
+| Email your bots | An email address per bot | Each bot can have its own plus-address on your account (you+adt@gmail.com): email it a task from your phone and the answer comes back by email; mail from anyone else is ignored |
+| Fewer approval questions | Auto Review | An optional AI reviewer answers clear-cut approvals and blocks actions that don't match what you asked; it never approves deleting or anything after a bot read outside content |
 | Your devices | Synced through xAI | Synced through your own server, end-to-end encrypted |
 | Teach by showing | Record a browser task | Record any Mac app task once; it becomes a recipe and a skill |
 | Video | Grok Imagine | Google Gemini Omni Flash or xAI Grok Imagine Video, with your key |
@@ -86,8 +89,11 @@ Bots can do things as well as talk. Turn it on or off, and choose what needs you
 
 - **Tool use with every model**: native tool calling for OpenAI-style, Claude and Gemini models. For local
   models without it, a text protocol is used, and calls a model prints as plain JSON (common with Llama 3.x)
-  are caught too. Cloud models see the full tool list; local models see the everyday tools plus a
-  "find tools" search, so long catalogs don't confuse them. Lookups in one step (searches, reading pages) run at
+  are caught too, including the slips small models make (OpenAI-style wrappers, escaped or missing quotes, an
+  argument under the wrong name, a made-up tool, which gets one correction). Cloud models see the full tool list;
+  local models see the everyday tools, the tools your message names ("save this as a skill", "check my email")
+  and a "find tools" search, so long catalogs don't confuse them. A bot set to think on a model that can't is
+  answered without thinking instead of failing. Lookups in one step (searches, reading pages) run at
   the same time; anything that needs approval or controls the computer still runs one at a time.
 - **Long conversations and long tasks**: with Claude on Anthropic's API, long chats and long screen tasks are
   summarised by Claude itself once they get very long, so they never run out of room; other providers keep the
@@ -103,6 +109,13 @@ Bots can do things as well as talk. Turn it on or off, and choose what needs you
   always asks, and bots can never operate ADT Bot's own window (its settings and approval buttons). Images in replies load only
   when you click them. **⌘⇧⎋** (Ctrl+Alt+Shift+Esc elsewhere) stops every bot from any app. Every action is in
   the activity log.
+- **AI reviewer** (optional, **Settings → Tools & safety**): a second model looks at an action next to what you
+  asked. It answers approval cards for actions that plainly match your request (so routines and voice mode need
+  you less), blocks ones that plainly don't, and leaves anything unclear to you; in "extra check" mode it also
+  double-checks commands, file changes and sending your rules already allow. It never approves deleting, anything
+  after a bot read outside content, requests from people in a chat room, or typing into a terminal, and if it
+  fails the usual rules decide. Use the bot's own model or a small, fast one; its decisions show under each action
+  and in the agent log.
 - **Computer access** (desktop): three levels in **Settings → Tools & safety**.
   - **Sandbox**: bots only use the `~/ADT Bot Workspace` folder. Commands run there under an OS sandbox: macOS
     `sandbox-exec`, or `bubblewrap` on Linux (not yet on Windows). The sandbox can't read the rest of your home
@@ -140,6 +153,12 @@ Bots can do things as well as talk. Turn it on or off, and choose what needs you
   search, read, draft and send email, list and add calendar events, search, read and create files, read and post
   in Slack, and search, read mentions and messages, post and message on X. Everything they read is outside
   content; sending, posting and creating ask first, and the approval card says exactly what will happen.
+- **Email your bots** (desktop, the bot's settings): give a bot its own address on a connected account, made with
+  a plus tag (you+adt@gmail.com). Email it a task from your phone, another computer, or by forwarding something,
+  and it does the task in a new chat and emails you the answer. Only mail you sent from that same account counts:
+  ADT Bot checks it really left your account (Gmail's SENT label, or a copy in Sent addressed to the bot), so a
+  forged sender is ignored; what you forward or quote is treated as information, never as instructions; replies go
+  only to you. Checked every 2 minutes while ADT Bot is open, at most 20 tasks an hour.
 - **Routines that run when something happens**: an email arrives (filter on sender, subject, or a plus-address like
   you+receipts@gmail.com so each routine has its own address), a Slack message, a mention or message on X, a new
   item in an RSS/Atom feed (blogs, news, GitHub releases), a web page changes, a webhook is called
@@ -423,7 +442,7 @@ Platform notes for private servers:
 | --- | --- | --- |
 | Web (dev) | `npm run dev` | http://localhost:5173 |
 | Web (self-hosted) | `npm run build && npm start` | http://127.0.0.1:8787 |
-| Web (Docker) | `docker build -t adt-bot . && docker run -p 8787:8787 adt-bot` | http://localhost:8787 |
+| Web (Docker) | `docker build -t adt-bot . && docker run -p 8787:8787 adt-bot` (add `--build-arg BROWSER=1` for the server's browser) | http://localhost:8787 |
 | Web (static hosting) | `npm run build`, then upload `dist/` to any static host | see the CORS note below |
 | Desktop app (run) | `npm run desktop` | Electron window |
 | macOS installer | `npm run dist:mac` | `release/*.dmg`, `.zip` |
@@ -461,6 +480,8 @@ HOST=0.0.0.0 PORT=8787 npm start
 | `ADT_AGENT_TOKEN` | Run routines here while your computers are off (24+ random characters; enter the same token in the app). |
 | `ADT_NTFY_URL` | With always-on routines: ping your phone through [ntfy](https://ntfy.sh) when a run has news, e.g. `https://ntfy.sh/<your-secret-topic>`. |
 | `ADT_DATA_DIR` | Where sync and routine data live (default `~/.adt-bot-server`). |
+| `ADT_BROWSER` | With always-on routines: the Chromium (or Chrome) the server's browser uses. Found automatically in the usual places; `off` leaves the browser out. |
+| `ADT_BROWSER_NO_SANDBOX=1` | Run that browser without Chromium's sandbox, for containers that can't give it user namespaces. The container is then its only sandbox: keep it for ADT Bot alone. |
 
 When bound to `127.0.0.1` (the default), the relay may reach any host, but it only accepts requests from
 pages opened on `localhost`. Once you expose the server with `HOST=0.0.0.0`, only the cloud providers above
@@ -475,6 +496,16 @@ anywhere, unlike the desktop app's local webhook). The app sends the bot's instr
 model; that provider's key is stored on the server, encrypted. Runs can search the web, read public pages
 (never the server's own network or cloud metadata), use a calculator and the bot's skills; nothing else on
 the server. Results come back into the routine's chat when the app next opens.
+
+With Chromium installed on the server (or the Docker image built with `--build-arg BROWSER=1`), runs also get a
+real browser, for pages that need JavaScript, clicking or forms. Open it from the app (**Settings → Sync & server
+→ Open the server browser**) to sign in to sites once; routines stay signed in. Its rules: it reaches only the
+public internet (a proxy on the server checks every connection, so it never reaches the server's own network or
+cloud metadata); a run may read any public page and follow links, but presses buttons, types and picks options
+only on the exact sites its instruction names, types only text that's in its instruction (so nothing it read can be sent
+on), and never types passwords. It doesn't press buttons on a page that came from a link it found with a form
+already filled in by someone else, and it checks a control is still the one it read (and not covered) before
+clicking. Downloads are refused, and the browser closes after a few idle minutes.
 
 **Sync** (`ADT_SYNC=1`): your bots, chats, skills, memories and profile on every device with the same sync
 code, end-to-end encrypted. The code (20 random characters) makes the encryption key and the vault's address;
@@ -525,13 +556,15 @@ src/lib/transport.ts   Chooses relay, direct or native HTTP per platform
 src/lib/store.ts       App state, persisted to IndexedDB (throttled writes; private chats never saved)
 src/lib/secrets.ts     What counts as a secret; keychain storage on desktop (electron/secrets.cjs)
 electron/features/90-updates.cjs  Signed auto-updates (scripts/sign-update-manifest.mjs signs the manifests)
-src/lib/agent/         Tool registry, tool loop (native and text protocol), approvals, activity log, built-in tools
+src/lib/agent/         Tool registry, tool loop (native and text protocol), approvals, AI reviewer, activity log, built-in tools
 src/lib/visualize/     Charts and cards (visualize tool, ```chart / ```card blocks)
 src/lib/mcp/           MCP client (2026-07-28 and older; Streamable HTTP, SSE, stdio via desktop), tasks, questions, tool-safety checks
 src/lib/cli-agents/    Coding-agent tool and "local CLI" provider
 src/features/          Projects, routines + delegation, rooms, connectors, coding agents, Mac control, computers
 electron/features/     Desktop side of those features (IPC "adt:<feature>:*")
 server/rooms.mjs       LAN room server and guest page
+server/agent.mjs       Always-on routines; server/browser.mjs: the server's browser and its public-only proxy
+src/features/apps/bot-mail.ts  Emailing your bots (each bot's plus-address on a connected account)
 src/components/        React UI
 server/                Static server and provider relay (web, Docker, dev)
 electron/              Desktop shell (macOS, Windows, Linux)

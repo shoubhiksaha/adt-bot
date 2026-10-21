@@ -83,6 +83,23 @@ describe("what gets learned", () => {
     expect(facts).toEqual(["The user is a nurse in Pune.", "The user prefers metric units."]);
   });
 
+  it("takes plain-sentence facts (small models) only when they're mostly the user's words", () => {
+    const said = "Hi! I'm Asha, I work as a nurse in Pune, and I drink filter coffee every morning. What is 17 times 23?";
+    const facts = checkFacts(
+      [
+        "Asha drinks filter coffee every morning.",
+        "The assistant provided a calculation of 17 times 23 using the skill 'calculate'.",
+        "The user is a pilot.",
+        "The user banks with HDFC and their nurse friend lives in Mumbai.",
+      ],
+      said,
+      [],
+    );
+    expect(facts).toEqual(["Asha drinks filter coffee every morning."]);
+    // A chat that read outside content needs the quote.
+    expect(checkFacts(["Asha drinks filter coffee every morning."], said, [], false)).toEqual([]);
+  });
+
   it("reads the model's note, even wrapped in prose or a code fence", () => {
     const lesson = parseLesson('Here you go:\n```json\n{"summary": "The user planned a 5-day Lisbon trip on €1,200.", "facts": [{"fact": "The user lives in Kolkata.", "quote": "I live in Kolkata"}]}\n```', "I live in Kolkata and want to see Lisbon", []);
     expect(lesson).toEqual({ summary: "The user planned a 5-day Lisbon trip on €1,200.", facts: ["The user lives in Kolkata."] });

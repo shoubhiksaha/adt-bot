@@ -6,8 +6,9 @@ import { useStore } from "../store";
 import type { Bot, ProviderConfig, ToolCallRecord } from "../types";
 import { decide } from "./approvals";
 import { calculate } from "./builtin";
-import { runToolLoop } from "./loop";
-import { BareCallFilter, parsePromptedCall, PromptedFilter } from "./prompted";
+import { runToolLoop, toolsForMessage } from "./loop";
+import { BareCallFilter, fitArgs, parsePromptedCall, PromptedFilter } from "./prompted";
+import type { ToolSchema } from "./vendor/openbot/types";
 import { type AgentTool, registerTool } from "./tools";
 
 vi.mock("../transport", () => ({ providerFetch: (url: string, init: RequestInit) => fetch(url, init), detectEnv: async () => ({ platform: "web", proxy: false }) }));
@@ -255,8 +256,26 @@ describe("tool discovery", () => {
     expect(await exposedNames(provider("openai", base, "openai"))).toHaveLength(31);
   });
 
-  it("gives a local model the core tools plus find_tools", async () => {
-    expect(await exposedNames(provider("openai", base, "ollama"))).toEqual(["find_tools"]);
+  it("gives a local model the core tools, the tool its message names, and find_tools", async () => {
+    // "Where is order 42?" names lookup_order; the 30 extra tools stay behind find_tools.
+    expect(await exposedNames(provider("openai", base, "ollama"))).toEqual(["lookup_order", "find_tools"]);
+  });
+
+  it("also lists the tools the user's message names", () => {
+    const tool = (name: string, description: string) => ({ name, description });
+    const catalog = [
+      tool("save_skill", "Save steps as a skill bots reuse later."),
+      tool("use_skill", "Follow one of the saved skills."),
+      tool("create_routine", "Schedule a task to run later."),
+      tool("email_search", "Search the user's email."),
+      tool("email_send", "Send an email."),
+      tool("list_files", "List files in a folder."),
+      tool("calculate", "Do math."),
+    ];
+    expect(toolsForMessage(catalog, "Please save this as a skill called weekly-check")).toEqual(["save_skill", "use_skill"]);
+    expect(toolsForMessage(catalog, "check my emails")).toEqual(expect.arrayContaining(["email_search", "email_send"]));
+    // Only generic words of a name ("list", "create") or core tools: nothing extra.
+    expect(toolsForMessage(catalog, "list three wins and create a plan, then calculate it")).toEqual([]);
   });
 });
 
@@ -283,6 +302,12 @@ describe("bare JSON calls (Llama 3.x via Ollama)", () => {
     expect(filter.finish([echo]).call?.args).toEqual({ id: ["42"] });
   });
 
+  it("repairs quotes escaped as if inside a string (seen from llama3.2)", () => {
+    const filter = new BareCallFilter();
+    filter.push('{"name":"lookup_order","parameters\\":{\\"id\\":\\"17\\"}}');
+    expect(filter.finish([echo]).call?.args).toEqual({ id: "17" });
+  });
+
   it("releases JSON that isn't a tool call", () => {
     const filter = new BareCallFilter();
     const shown = filter.push('Here: {"name": "Bob", "age": 3}') + filter.push(" done");
@@ -297,5 +322,115 @@ describe("bare JSON calls (Llama 3.x via Ollama)", () => {
     expect(filter.push("x}")).toBe("{x}");
     expect(filter.push(" ```js")).toBe(" ");
     expect(filter.push("\nlet a")).toBe("```js\nlet a");
+  });
+});
+
+describe("small-model call repairs", () => {
+  const readUrl: ToolSchema = { name: "read_url", description: "Read a page", parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } };
+  const visualize: ToolSchema = { name: "visualize", description: "Chart", parameters: { type: "object", properties: { kind: { type: "string" }, title: { type: "string" } } } };
+
+  it("quotes a bare link and puts it under the argument the tool needs", () => {
+    const filter = new BareCallFilter();
+    filter.push('{"name":"read_url","parameters":{"query":https://slack.com/}} \n{"type":"function-call"}');
+    expect(filter.finish([readUrl]).call).toMatchObject({ name: "read_url", args: { url: "https://slack.com/" } });
+  });
+
+  it("repairs escaped quotes and a trailing comma together, inside a fence", () => {
+    const filter = new BareCallFilter();
+    filter.push('```\n{"name":"visualize","parameters":{"kind":"bar","title":\\"Tools\\",}}\n```');
+    expect(filter.finish([visualize]).call?.args).toEqual({ kind: "bar", title: "Tools" });
+  });
+
+  it("renames only when it's clear which argument was meant", () => {
+    expect(fitArgs({ query: "https://a.example" }, readUrl.parameters)).toEqual({ url: "https://a.example" });
+    expect(fitArgs({ query: "a", page: 2 }, readUrl.parameters)).toEqual({ query: "a", page: 2 });
+    expect(fitArgs({ url: "https://a.example", extra: 1 }, readUrl.parameters)).toEqual({ url: "https://a.example", extra: 1 });
+  });
+});
+
+describe("bare calls in the shapes llama3.2 writes", () => {
+  it("catches {\"type\": \"function\", \"name\": …} in a fence, without flashing any of it", () => {
+    const filter = new BareCallFilter();
+    let shown = "";
+    for (const piece of ["```", "\n{\"ty", "pe\":\"function\",", "\"name\":\"lookup_order\",\"parameters\":{\"id\":\"9\"}}", "\n```"]) shown += filter.push(piece);
+    const end = filter.finish([echo]);
+    expect(shown).toBe("");
+    expect(end.call).toMatchObject({ name: "lookup_order", args: { id: "9" } });
+  });
+
+  it("catches the nested OpenAI shape", () => {
+    const filter = new BareCallFilter();
+    filter.push('{"type": "function", "function": {"name": "lookup_order", "arguments": "{\\"id\\": \\"5\\"}"}}');
+    expect(filter.finish([echo]).call?.args).toEqual({ id: "5" });
+  });
+
+  it("lets ordinary braces through once it's clear they aren't a call", () => {
+    const filter = new BareCallFilter();
+    const shown = filter.push("Use {x} or {\"type\": \"bar\"}") + filter.push(" here.");
+    const end = filter.finish([echo]);
+    expect(end.call).toBeUndefined();
+    expect(shown + end.tail).toBe('Use {x} or {"type": "bar"} here.');
+  });
+
+  it("ignores joining words and the app's added context when picking tools", () => {
+    const catalog = [{ name: "discuss_with_bots", description: "Have bots discuss" }, { name: "email_search", description: "Search email" }];
+    expect(toolsForMessage(catalog, "Check my email. What does Priya want?")).toEqual(["email_search"]);
+  });
+});
+
+describe("calls to tools that don't exist", () => {
+  it("tells the model once and shows its plain answer", async () => {
+    bodies.length = 0;
+    ran.length = 0;
+    script = (_b, n) =>
+      n === 1
+        ? sse([{ choices: [{ delta: { content: '{"name":"write_order", "parameters":{"who":"Meera"}}' } }] }, "[DONE]"])
+        : sse([{ choices: [{ delta: { content: "Meera ordered 1 cold coffee for 3.20 EUR." } }] }, "[DONE]"]);
+    const { text } = await run(provider("openai", base, "ollama"), [echo], "native");
+    expect(text).toBe("Meera ordered 1 cold coffee for 3.20 EUR.");
+    expect(bodies).toHaveLength(2);
+    expect(JSON.stringify(bodies[1].messages.at(-1))).toContain('there\'s no tool called \\"write_order\\"');
+  });
+
+  it("shows what it wrote if it does it again, and leaves ordinary JSON alone", async () => {
+    bodies.length = 0;
+    script = () => sse([{ choices: [{ delta: { content: '{"name":"write_order","parameters":{}}' } }] }, "[DONE]"]);
+    expect((await run(provider("openai", base, "ollama"), [echo], "native")).text).toContain("write_order");
+    bodies.length = 0;
+    script = () => sse([{ choices: [{ delta: { content: 'Here: {"name": "Bob", "age": 3}' } }] }, "[DONE]"]);
+    expect((await run(provider("openai", base, "ollama"), [echo], "native")).text).toBe('Here: {"name": "Bob", "age": 3}');
+    expect(bodies).toHaveLength(1);
+  });
+});
+
+describe("a call inside a wrapper the model didn't close", () => {
+  it("still finds the call (seen from llama3.2)", () => {
+    const filter = new BareCallFilter();
+    filter.push('{"type":"function","function":{"name":"lookup_order","description":"Look up","parameters":{"id":"77"}} or {"type":"function","name":"other"');
+    expect(filter.finish([echo]).call).toMatchObject({ name: "lookup_order", args: { id: "77" } });
+  });
+});
+
+describe("a call to one of the bot's tools that wasn't listed this step", () => {
+  it("runs it (approvals still apply) instead of calling it made up", async () => {
+    bodies.length = 0;
+    ran.length = 0;
+    const many: AgentTool[] = Array.from({ length: 30 }, (_, i) => ({ ...echo, name: `extra_tool_${i}` }));
+    script = (_b, n) => (n === 1 ? sse([{ choices: [{ delta: { content: '{"type":"function","name":"lookup_order","parameters":{"id":"8"}}' } }] }, "[DONE]"]) : sse([{ choices: [{ delta: { content: "Order 8 shipped." } }] }, "[DONE]"]));
+    // A message that doesn't name it, so only find_tools would have listed it.
+    const events: StreamEvent[] = [];
+    const controller = new AbortController();
+    const p = provider("openai", base, "ollama");
+    await runToolLoop({
+      request: { provider: p, model: "m", system: "sys", messages: [{ id: "u", role: "user", content: "Is my parcel on its way?", createdAt: 0 }], temperature: null, thinking: "off", useProxy: false, signal: controller.signal },
+      tools: [...many, echo],
+      context: { bot, conversationId: "c", settings: useStore.getState().settings, providers: [p], platform: "web", signal: controller.signal, progress: () => undefined },
+      mode: "native",
+      maxSteps: 4,
+      callbacks: { onEvent: (e) => events.push(e), onCalls: () => undefined },
+    });
+    expect((bodies[0].tools ?? []).map((t: any) => t.function.name)).not.toContain("lookup_order");
+    expect(ran).toEqual([{ id: "8" }]);
+    expect(events.filter((e) => e.type === "text").map((e) => (e as { text: string }).text).join("")).toBe("Order 8 shipped.");
   });
 });

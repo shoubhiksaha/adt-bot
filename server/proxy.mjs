@@ -85,7 +85,8 @@ export function isPrivateAddress(address) {
       const low = parseInt(embedded[3], 16);
       return isPrivateAddress(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
     }
-    return /^f[cd]/.test(ip) || /^fe[89ab]/.test(ip);
+    // Unique-local, link-local, the old site-local range, and local-use NAT64 (64:ff9b:1::/48).
+    return /^f[cd]/.test(ip) || /^fe[89a-f]/.test(ip) || /^64:ff9b:1:/.test(ip);
   }
   return false;
 }

@@ -39,7 +39,9 @@ registerTool({
   },
   async run(args, ctx) {
     const name = skillName(str(args, "name"));
-    const input = { name, description: str(args, "description"), instructions: str(args, "instructions") };
+    // Small models often leave out when to use it: say so from the name rather than refuse.
+    const description = str(args, "description").trim() || (name ? `Use when the user asks for ${name.replace(/-/g, " ")}.` : "");
+    const input = { name, description, instructions: str(args, "instructions") };
     // Written while the chat had read outside content: its steps stay marked that way.
     const outside = Boolean(ctx.taint?.sources.size);
     const existing = useStore.getState().skills.find((s) => s.name === name);

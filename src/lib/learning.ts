@@ -108,22 +108,41 @@ const COMMON = new Set(
 );
 const contentWords = (text: string) => new Set(normalise(text).split(" ").filter((w) => w.length >= 4 && !COMMON.has(w)));
 
+/** The quote is in the user's own messages and shares words with the fact. */
+function quotedByUser(fact: string, quote: string, said: string): boolean {
+  if (quote.length < 3 || !said.includes(` ${quote} `)) return false;
+  const factWords = contentWords(fact);
+  const quoteWords = [...contentWords(quote)];
+  return !quoteWords.length || quoteWords.some((w) => factWords.has(w) || [...factWords].some((f) => f.startsWith(w.slice(0, 5))));
+}
+
 /**
- * Keeps the facts the user really stated: the quote must be in the user's own messages and share
- * words with the fact, and the fact must pass the memory screen and be new.
+ * Without a usable quote (small models often give facts as plain sentences): most of the fact's
+ * words must be ones the user said, so a page's or the assistant's claims can't pass as the user's.
  */
-export function checkFacts(raw: unknown, userText: string, known: string[]): string[] {
+function inUserWords(fact: string, userWords: Set<string>): boolean {
+  const words = [...contentWords(fact)];
+  if (words.length < 2) return false;
+  const stems = new Set([...userWords].map((w) => w.slice(0, 5)));
+  const found = words.filter((w) => userWords.has(w) || stems.has(w.slice(0, 5)));
+  return found.length / words.length >= 0.6;
+}
+
+/**
+ * Keeps the facts the user really stated: quoted from the user's own messages (or, without a quote,
+ * mostly in the user's words, only when `loose`: the chat read nothing from outside), passing the
+ * memory screen, and new.
+ */
+export function checkFacts(raw: unknown, userText: string, known: string[], loose = true): string[] {
   if (!Array.isArray(raw)) return [];
   const said = ` ${normalise(userText)} `;
+  const userWords = contentWords(userText);
   const kept: string[] = [];
   for (const item of raw.slice(0, 10)) {
-    if (!item || typeof item !== "object") continue;
-    const fact = String((item as { fact?: unknown }).fact ?? "").trim();
-    const quote = normalise(String((item as { quote?: unknown }).quote ?? ""));
-    if (!fact || quote.length < 3 || !said.includes(` ${quote} `)) continue;
-    const factWords = contentWords(fact);
-    const quoteWords = [...contentWords(quote)];
-    if (quoteWords.length && !quoteWords.some((w) => factWords.has(w) || [...factWords].some((f) => f.startsWith(w.slice(0, 5))))) continue;
+    if (!item || (typeof item !== "object" && typeof item !== "string")) continue;
+    const fact = (typeof item === "string" ? item : String((item as { fact?: unknown }).fact ?? "")).trim();
+    const quote = typeof item === "string" ? "" : normalise(String((item as { quote?: unknown }).quote ?? ""));
+    if (!fact || !(quotedByUser(fact, quote, said) || (loose && inUserWords(fact, userWords)))) continue;
     const screening = screen(fact);
     if (!screening.ok || !screening.text) continue;
     if (isDuplicate(screening.text, [...known, ...kept])) continue;
@@ -134,13 +153,13 @@ export function checkFacts(raw: unknown, userText: string, known: string[]): str
 }
 
 /** Reads the model's answer: a summary and checked facts. Null when it isn't usable. */
-export function parseLesson(answer: string, userText: string, known: string[]): Lesson | null {
+export function parseLesson(answer: string, userText: string, known: string[], loose = true): Lesson | null {
   const json = extractJsonObject(answer) ?? answer;
   const data = (safeJsonParse<Record<string, unknown>>(json) ?? parseObjectLoose(json)) as Record<string, unknown> | null;
   if (!data) return null;
   const summary = clip(String(data.summary ?? "").replace(/\s+/g, " ").trim(), SUMMARY_CHARS);
   if (!summary) return null;
-  return { summary, facts: checkFacts(data.facts, userText, known) };
+  return { summary, facts: checkFacts(data.facts, userText, known, loose) };
 }
 
 /** Adds or replaces the note for a chat; the oldest notes go once there are too many. */
@@ -184,7 +203,8 @@ export async function learnFrom(conversationId: string, signal?: AbortSignal): P
   } catch {
     return false;
   }
-  const lesson = parseLesson(answer, userText, bot.memory);
+  // After outside content, a fact needs the user's own words quoted: a page's text can't slip in by overlap.
+  const lesson = parseLesson(answer, userText, bot.memory, !readOutside(conversation));
   if (!lesson) return false;
   // The chat may have been deleted, or the bot turned learning off, while the model was writing.
   const now = useStore.getState();

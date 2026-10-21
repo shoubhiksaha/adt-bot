@@ -44,3 +44,16 @@
   grid-template-columns: 1fr 90px;
   gap: 8px;
 }
+
+/* Bot settings → Email this bot. */
+.bot-email .field-row {
+  margin-top: 6px;
+}
+.bot-email input[aria-invalid="true"] {
+  border-color: var(--destructive);
+}
+.bot-email-status .link-btn {
+  display: inline;
+  margin: 0;
+  padding: 0;
+}

@@ -87,14 +87,7 @@ export function gate(
   const risk = tool.riskFor?.(call.args) ?? tool.risk;
   const target = targetForCall(call);
   const kind = tool.kind ?? kindForTool(call.name);
-  const ask = (reason: string, allowAlways: boolean): GateResult => {
-    askedScope.set(call.id, scope);
-    let summary = summarise(call.name, call, target);
-    try {
-      summary = tool.summary?.(call.args ?? {}) || summary;
-    } catch {}
-    return { outcome: "ask", reason, summary, detail: detailFor(call), kind, allowAlways: allowAlways && !scope };
-  };
+  const ask = (reason: string, allowAlways: boolean): GateResult => askFor(tool, call, reason, allowAlways, context);
   const tainted = context?.taint?.sources.size ? [...context.taint.sources][0] : "";
   const checkTaint = (allowed: GateResult): GateResult => {
     if (allowed.outcome !== "allow") return allowed;
@@ -110,6 +103,33 @@ export function gate(
   if (verdict.outcome === "allow") return checkTaint({ outcome: "allow", reason: verdict.reason });
   if (verdict.outcome === "deny") return { outcome: "deny", reason: verdict.reason, refusal: denyRefusal(call.name, verdict.reason) };
   return ask(verdict.reason, risk !== "destructive" && derivePattern(kind, call.name, target) !== null);
+}
+
+/** The call in plain words, for an approval card (the tool's own summary when it has one). */
+export function callSummary(tool: AgentTool, call: ToolCall): string {
+  let summary = summarise(call.name, call, targetForCall(call));
+  try {
+    summary = tool.summary?.(call.args ?? {}) || summary;
+  } catch {}
+  return summary;
+}
+
+/** An approval card for this call (in its room's scope when it came from a chat room). */
+export function askFor(
+  tool: AgentTool,
+  call: ToolCall,
+  reason: string,
+  allowAlways: boolean,
+  context?: Pick<ToolContext, "shared"> & { conversationId?: string },
+): GateResult {
+  const scope = context?.shared ? `room:${context.conversationId ?? ""}` : "";
+  askedScope.set(call.id, scope);
+  return { outcome: "ask", reason, summary: callSummary(tool, call), detail: detailFor(call), kind: tool.kind ?? kindForTool(call.name), allowAlways: allowAlways && !scope };
+}
+
+/** An approval card that won't be shown after all (the AI reviewer decided instead). */
+export function forgetAsk(callId: string) {
+  askedScope.delete(callId);
 }
 
 /** Waits for the user's decision on an approval card (resolved from the chat UI). */

@@ -86,6 +86,13 @@ Used by `electron/apps/` to read and send email over IMAP and SMTP.
 | socks, smart-buffer, ip-address | MIT |
 | tslib | 0BSD |
 
+## Used if you install it (not bundled)
+
+- **Chromium** (https://www.chromium.org): BSD-3-Clause and others (see its own credits page,
+  chrome://credits). The always-on server's browser (`server/browser.mjs`) drives a Chromium you install on
+  your server, or that the Docker image adds with `--build-arg BROWSER=1` (Alpine's `chromium` package). ADT Bot
+  doesn't include or distribute it.
+
 ## Adapted ideas
 
 - **windows-cua-jev** (https://github.com/foklepoint/windows-cua-jev): MIT License, Copyright (c) 2026

@@ -1,0 +1,36 @@
+/* Settings → Sync & server → Server browser. Uses the app's tokens from src/styles.css. */
+.server-browser-closed {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 12px;
+}
+.server-browser {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+.server-browser-screen {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--accent);
+  min-height: 120px;
+  display: grid;
+  place-items: center;
+}
+.server-browser-screen img {
+  display: block;
+  width: 100%;
+  height: auto;
+  cursor: pointer;
+}
+.server-browser .input-group {
+  flex-wrap: wrap;
+}
+.server-browser .input-group .input {
+  min-width: 0;
+  flex: 1 1 180px;
+}

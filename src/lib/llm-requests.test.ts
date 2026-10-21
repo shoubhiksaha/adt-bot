@@ -410,3 +410,25 @@ describe("keeping requests inside the context window (providers without server-s
     expect(seen[0].body.messages[2].content[0].content).toMatch(/^result 1/);
   });
 });
+
+describe("OpenAI-compatible models that can't think", () => {
+  it("a bot set to think is answered without it (Ollama's llama3.2), and that's remembered", async () => {
+    const p = provider("openai", "ollama");
+    const openaiText = (text: string) => sse([{ choices: [{ delta: { content: text } }] }, "[DONE]"]);
+    reply = (body) => (body.reasoning_effort ? { status: 400, error: '"llama3.2:3b" does not support thinking' } : openaiText("ok"));
+    const out = await collect(request(p, "llama3.2:3b", { thinking: "medium" }));
+    expect(out.text).toBe("ok");
+    expect(seen).toHaveLength(2);
+    expect(seen[1].body).not.toHaveProperty("reasoning_effort");
+    await collect(request(p, "llama3.2:3b", { thinking: "high" }));
+    expect(seen).toHaveLength(3);
+    expect(seen[2].body).not.toHaveProperty("reasoning_effort");
+  });
+
+  it("other 400s aren't mistaken for it", async () => {
+    const p = provider("openai", "ollama");
+    reply = () => ({ status: 400, error: "messages: too long" });
+    await expect(collect(request(p, "m", { thinking: "medium" }))).rejects.toThrow(/too long/);
+    expect(seen).toHaveLength(1);
+  });
+});

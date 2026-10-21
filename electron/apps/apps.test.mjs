@@ -99,6 +99,7 @@ describe("Google", () => {
         const from = id === "spoof" ? '"attacker@evil.example, Bob" <bob@co.example>' : undefined;
         return { json: { id, threadId: "t1", labelIds: ["UNREAD"], raw: Buffer.from(RAW(`Message ${id}`, from)).toString("base64url") } };
       }
+      if (id === "selfsent") return { json: { id, labelIds: ["INBOX", "SENT"], payload: { headers: [{ name: "Message-ID", value: "<self@gmail.com>" }] } } };
       return { json: { id, threadId: "t1", internalDate: "1792576800000", snippet: "Hi &amp; bye", labelIds: ["INBOX", "UNREAD"], payload: { headers: [{ name: "From", value: "Alice <alice@example.com>" }, { name: "Subject", value: `Message ${id}` }, { name: "To", value: "me@gmail.com" }] } } };
     },
     "GET /gmail/v1/users/me/messages": () => ({ json: { messages: [{ id: "m1" }, { id: "m2" }] } }),
@@ -195,6 +196,9 @@ describe("Google", () => {
     expect(next.messages.map((m) => m.id)).toEqual(["m3"]);
     // A cursor Gmail has forgotten starts over.
     expect(await mail.arrivals({ account: id, cursor: "1" })).toEqual({ cursor: "100", messages: [] });
+    // Mail you sent your bot carries Gmail's SENT label; mail from outside doesn't.
+    expect(await mail.sentByMe({ account: id, id: "selfsent", to: "me+adt@gmail.com" })).toEqual({ sent: true, copy: "selfsent", messageId: "<self@gmail.com>" });
+    expect(await mail.sentByMe({ account: id, id: "m1", to: "me+adt@gmail.com" })).toEqual({ sent: false });
   });
 
   it("lists and creates calendar events (no invitations unless asked)", async () => {
@@ -235,6 +239,8 @@ describe("Google", () => {
 
 describe("Microsoft", () => {
   const sentMail = [];
+  const patched = [];
+  const repliesSent = [];
   const ms = fakeService({
     "POST /common/oauth2/v2.0/token": ({ body }) => (new URLSearchParams(body).get("client_secret") ? { status: 400, json: { error: "public client" } } : { json: { access_token: "ms-at", refresh_token: "ms-rt", expires_in: 3600 } }),
     "GET /v1.0/me/mailFolders/inbox/messages": ({ url }) => ({
@@ -248,6 +254,17 @@ describe("Microsoft", () => {
     "GET /download/f1": ({ headers }) => ({ text: headers.authorization ? "LEAKED" : "file body" }),
     "GET /v1.0/me/drive/items/f1": () => ({ json: { id: "f1", name: "notes.txt", file: { mimeType: "text/plain" } } }),
     "GET /v1.0/me": () => ({ json: { mail: "me@outlook.com" } }),
+    "POST /v1.0/me/messages/o1/createReply": () => ({ json: { id: "draft1" } }),
+    "PATCH /v1.0/me/messages/draft1": ({ body }) => (patched.push(JSON.parse(body)), { json: { id: "draft1" } }),
+    "POST /v1.0/me/messages/draft1/send": () => (repliesSent.push("draft1"), { status: 202, text: "" }),
+    "GET /v1.0/me/messages/self1": () => ({ json: { internetMessageId: "<s1@outlook.com>", from: { emailAddress: { address: "Me@Outlook.com" } } } }),
+    "GET /v1.0/me/messages/forged1": () => ({ json: { internetMessageId: "<old@outlook.com>", from: { emailAddress: { address: "me@outlook.com" } } } }),
+    "GET /v1.0/me/mailFolders/sentitems/messages": ({ url }) => {
+      const filter = url.searchParams.get("$filter") ?? "";
+      if (filter.includes("<s1@outlook.com>")) return { json: { value: [{ id: "sent-s1", internetMessageId: "<s1@outlook.com>", toRecipients: [{ emailAddress: { address: "me+adt@outlook.com" } }] }] } };
+      if (filter.includes("<old@outlook.com>")) return { json: { value: [{ internetMessageId: "<old@outlook.com>", toRecipients: [{ emailAddress: { address: "friend@example.com" } }] }] } };
+      return { json: { value: [] } };
+    },
   });
   let base;
   beforeAll(async () => {
@@ -269,6 +286,13 @@ describe("Microsoft", () => {
     expect((await mail.read({ account: account.id, id: "o1" })).text).toBe("Hello from Invoice.");
     await mail.send({ account: account.id, to: "a@example.com, B <b@example.com>", subject: "Hi", body: "Yo" });
     expect(sentMail[0].message.toRecipients).toEqual([{ emailAddress: { address: "a@example.com" } }, { emailAddress: { address: "b@example.com" } }]);
+    // Sent by you to your bot (a copy in Sent addressed to it), or forged with an old Message-ID of yours.
+    expect(await mail.sentByMe({ account: account.id, id: "self1", to: "me+adt@outlook.com" })).toEqual({ sent: true, copy: "sent-s1", messageId: "<s1@outlook.com>" });
+    expect(await mail.sentByMe({ account: account.id, id: "forged1", to: "me+adt@outlook.com" })).toEqual({ sent: false });
+    // A reply goes to exactly who the approval card said (Outlook's own reply would choose for itself).
+    await mail.send({ account: account.id, reply_to: "o1", to: "me@outlook.com", body: "Here's the answer." });
+    expect(patched[0]).toEqual({ toRecipients: [{ emailAddress: { address: "me@outlook.com" } }], ccRecipients: [] });
+    expect(repliesSent).toEqual(["draft1"]);
     const arrivals = await mail.arrivals({ account: account.id, cursor: "2026-10-21T00:00:00Z" });
     expect(arrivals.cursor).toBe("2026-10-21T10:00:00Z");
     const cal = createCalendar({ accounts });
@@ -406,6 +430,39 @@ describe("any email account (IMAP and SMTP)", () => {
     const fresh = await mail.arrivals({ account: account.id, cursor });
     expect(fresh.messages.map((m) => m.subject)).toEqual(["Second receipt"]);
     expect((await mail.arrivals({ account: account.id, cursor: fresh.cursor })).messages).toEqual([]);
+  });
+
+  it("tells mail you sent your bot from forged mail (sentByMe)", async () => {
+    const accounts = createAccounts({ dir, vault: memoryVault(), openExternal: () => undefined });
+    const mail = createMail({ accounts });
+    const port = imapServer.server?.address?.().port ?? imapServer.address().port;
+    const account = await accounts.connectImap({ address: "me@example.com", password: "app-pass", imap: { host: "127.0.0.1", port, secure: false }, smtp: { host: "127.0.0.1", port: smtpServer.server.address().port, secure: false } }, mail.check);
+    const raw = (id, to, subject) => `From: Me <me@example.com>\r\nTo: ${to}\r\nSubject: ${subject}\r\nMessage-ID: <${id}@example.com>\r\nDate: Tue, 21 Oct 2026 12:00:00 +0000\r\n\r\n${subject}\r\n`;
+    const { ImapFlow } = require("imapflow");
+    const client = new ImapFlow({ host: "127.0.0.1", port, secure: false, auth: { user: "me@example.com", pass: "app-pass" }, logger: false });
+    await client.connect();
+    // Really sent from this account: the copy in Sent was addressed to the bot.
+    await client.append("Sent", raw("task1", "me+adt@example.com", "Plan my week"));
+    await client.append("INBOX", raw("task1", "me+adt@example.com", "Plan my week"));
+    // Forged with a real Message-ID of mail you once sent someone else.
+    await client.append("Sent", raw("old2", "friend@example.com", "Old mail"));
+    await client.append("INBOX", raw("old2", "me+adt@example.com", "Wire money"));
+    // Forged with an id that was never sent.
+    await client.append("INBOX", raw("never3", "me+adt@example.com", "Delete files"));
+    await client.logout();
+    const toBot = await mail.search({ account: account.id, to: "me+adt@example.com" });
+    const bySubject = Object.fromEntries(toBot.map((m) => [m.subject, m.id]));
+    const check = (subject) => mail.sentByMe({ account: account.id, id: bySubject[subject], to: "me+adt@example.com" });
+    const real = await check("Plan my week");
+    expect(real).toMatchObject({ sent: true, messageId: "<task1@example.com>" });
+    // The task is read from the Sent copy.
+    expect(real.copy).toMatch(/^Sent\|/);
+    expect((await mail.read({ account: account.id, id: real.copy })).text).toBe("Plan my week");
+    expect(await check("Wire money")).toEqual({ sent: false });
+    expect(await check("Delete files")).toEqual({ sent: false });
+    // The receipt from a shop isn't yours either.
+    const receipt = (await mail.search({ account: account.id, query: "Your receipt" }))[0];
+    expect(await mail.sentByMe({ account: account.id, id: receipt.id, to: "me+receipts@example.com" })).toEqual({ sent: false });
   });
 
   it("checks addresses", () => {

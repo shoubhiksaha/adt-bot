@@ -76,6 +76,7 @@ async function parseMime(raw, extra = {}) {
     date: mail.date ? mail.date.toISOString() : "",
     messageId: mail.messageId ?? "",
     references: Array.isArray(mail.references) ? mail.references.join(" ") : (mail.references ?? ""),
+    inReplyTo: mail.inReplyTo ?? "",
     text: body.length > MAX_BODY ? `${body.slice(0, MAX_BODY)}\n[…cut]` : body,
     attachments: (mail.attachments ?? []).map((a) => ({ name: a.filename ?? "attachment", type: a.contentType, size: a.size })),
   };

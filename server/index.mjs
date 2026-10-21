@@ -98,7 +98,12 @@ if (isMain) {
   let agent;
   if (process.env.ADT_AGENT_TOKEN) {
     const { createAgentHost, ntfyNotifier } = await import("./agent.mjs");
-    agent = createAgentHost({ dir: join(dataDir(), "agent"), token: process.env.ADT_AGENT_TOKEN, notify: ntfyNotifier(process.env.ADT_NTFY_URL) });
+    const { createServerBrowser, findChromium } = await import("./browser.mjs");
+    // A real browser for routines and for signing in to sites, when the server has Chromium (ADT_BROWSER=off to leave it out).
+    const executable = findChromium();
+    const browser = executable ? createServerBrowser({ dir: join(dataDir(), "agent", "browser"), executable }) : undefined;
+    agent = createAgentHost({ dir: join(dataDir(), "agent"), token: process.env.ADT_AGENT_TOKEN, notify: ntfyNotifier(process.env.ADT_NTFY_URL), browser });
+    if (browser) console.log(`Always-on routines can use a browser (${executable}).`);
     agent.start();
   }
   const loopback = host === "127.0.0.1" || host === "localhost" || host === "::1";

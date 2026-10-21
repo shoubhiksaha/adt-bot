@@ -17,6 +17,7 @@ import { isDuplicate, screen } from "./agent/vendor/openbot/memoryFilter";
 import { speak } from "./voice";
 import { RICH_BLOCKS_GUIDANCE } from "./visualize/fences";
 import { invokedSkill, skillsFor, skillsPrompt, skillText } from "../features/skills/skills";
+import { readFiring } from "./agent/vendor/copilotkit/routine-firing";
 import { markUntrusted } from "./agent/vendor/copilotkit/untrusted-content";
 import { groupPrompt, groupView, type GroupTurn, isPass, MAX_ROUNDS, stanceFor } from "./group";
 import { research } from "./research";
@@ -640,6 +641,12 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
     // Nobody to ask (routines, bot-to-bot), or voice mode without a way to ask aloud: only tools
     // that may run without asking.
     if (opts.unattended || (opts.voice && !voiceApprover)) agentTools = agentTools.filter((t) => runsWithoutAsking(t, opts.shared ? { ...settings.agent, access: effectiveAccess(settings.agent, opts) } : settings.agent));
+    // A routine run doesn't manage routines unless its instruction is about them: small models
+    // reach for create_routine or run_routine_now when they see the word in the firing message.
+    const firing = readFiring(stripUntrusted(lastUser?.content ?? ""));
+    if (firing !== null && !/\broutines?\b/i.test(firing.split("\n\n---\nThis run was started by")[0].replace(/\(If this run finds nothing[\s\S]*$/, ""))) {
+      agentTools = agentTools.filter((t) => t.group !== "routines" || t.name === "routine_no_update");
+    }
 
     const stream = async (nativeSearch: boolean, query: string) => {
       // Knowledge, linked pages and search results go with the latest message, not in the system

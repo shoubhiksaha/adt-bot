@@ -1,4 +1,4 @@
-import { Ban, Check, ChevronRight, Loader2, MessageSquare, ShieldAlert, Undo2, Wrench, X } from "lucide-react";
+import { Ban, Check, ChevronRight, Loader2, MessageSquare, ShieldAlert, ShieldCheck, Undo2, Wrench, X } from "lucide-react";
 import { askTitle, mainArg } from "../lib/agent/asks";
 import { VideoPlayer } from "./VideoPlayer";
 import { useEffect, useState } from "react";
@@ -248,7 +248,12 @@ function ToolCallRow({ call }: { call: ToolCallRecord }) {
         <span className="grow ellipsis">{label(call)}</span>
         {call.ms !== undefined && call.status !== "awaiting" && <span className="small muted">{(call.ms / 1000).toFixed(1)}s</span>}
       </button>
-      {call.status === "running" && call.result && <div className="tool-progress small muted">{call.result}</div>}
+      {(call.status === "running" || call.status === "pending") && call.result && <div className="tool-progress small muted">{call.result}</div>}
+      {call.review && !awaiting && (
+        <div className={`tool-progress small muted tool-review ${call.review.verdict}`}>
+          <ShieldCheck size={12} /> AI reviewer {call.review.verdict === "allow" ? "allowed this" : call.review.verdict === "block" ? "stopped this" : "asked you"}: {call.review.reason}
+        </div>
+      )}
       {call.status === "running" && <ConnectorQuestion callId={call.id} />}
 
       {awaiting && call.approval && (

@@ -37,6 +37,7 @@ exports.register = ({ ipcMain, shell, userData, secrets }) => {
     "mail.draft": mail.draft,
     "mail.send": mail.send,
     "mail.arrivals": mail.arrivals,
+    "mail.sentByMe": mail.sentByMe,
     "calendar.events": calendar.events,
     "calendar.create": calendar.createEvent,
     "drive.search": calendar.searchFiles,

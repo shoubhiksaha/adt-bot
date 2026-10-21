@@ -120,6 +120,8 @@ export type ToolCallRecord = {
   display?: ToolDisplay;
   /** Present while waiting for the user's decision. */
   approval?: { summary: string; detail: string; reason: string; kind: string; allowAlways: boolean };
+  /** What the AI reviewer decided, when it looked at this call. */
+  review?: { verdict: "allow" | "ask" | "block"; reason: string };
   startedAt?: number;
   ms?: number;
 };
@@ -155,6 +157,13 @@ export type AgentSettings = {
   maxSteps: number;
   /** How tools are offered: native tool calling, a text protocol for models without it, or automatic. */
   mode: "auto" | "native" | "prompted";
+  /**
+   * The AI reviewer (src/lib/agent/reviewer.ts): "approve" answers approval cards for actions that
+   * plainly match the request; "check" also double-checks changes the rules already allow.
+   */
+  reviewer?: "off" | "approve" | "check";
+  /** The reviewer's model; unset uses the bot's own. */
+  reviewerModel?: { providerId: string; model: string };
 };
 
 export type Attachment =
@@ -212,7 +221,7 @@ export type Conversation = {
   temporary?: boolean;
   titled?: boolean;
   /** Started by the app rather than the user: a routine run, or a task one bot handed another. */
-  origin?: "routine" | "task";
+  origin?: "routine" | "task" | "email";
   /** The last message the bot has learned from (src/lib/learning.ts). */
   learnedThrough?: string;
   /** Group chat: its bots in speaking order (2–6; botId is the first). */

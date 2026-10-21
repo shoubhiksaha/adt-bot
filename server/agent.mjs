@@ -1,13 +1,15 @@
 // Always-on routines: your own ADT Bot server runs routines you hand it, on their schedule or when a
 // feed, a web page or a webhook fires, while your computers are off. The app sends each routine with
 // its bot's instructions, skills and model; the provider key is stored encrypted on the server. Runs
-// can use web search, read public web pages, the time, a calculator and the bot's skills: nothing on
-// the server itself. Results wait for the app to collect them (and can ping your phone via ntfy).
+// can use web search, read public web pages, a real browser (when the server has Chromium), the
+// time, a calculator and the bot's skills: nothing on the server itself. Results wait for the app to
+// collect them (and can ping your phone via ntfy).
 //
 // On when ADT_AGENT_TOKEN is set (24+ characters); the app needs that token. Data in ADT_DATA_DIR.
 import { createCipheriv, createDecipheriv, createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { actSites, mayActOn, mayType, pageText, prefilledFromOutside } from "./browser.mjs";
 import { isLinkLocal, reachesPrivateNetwork } from "./proxy.mjs";
 
 const JOB = /^\/api\/agent\/jobs\/([\w-]{1,64})(\/run)?$/;
@@ -82,10 +84,11 @@ export async function fetchPublic(url, { fetchImpl = fetch, signal, max = 2 * 10
 }
 
 /**
- * @param {{ dir: string, token: string, secret?: Buffer, headless?: () => Promise<any>, notify?: (result: any) => Promise<void> | void, fetchImpl?: typeof fetch, now?: () => number, allowPrivate?: boolean }} options
+ * @param {{ dir: string, token: string, secret?: Buffer, headless?: () => Promise<any>, notify?: (result: any) => Promise<void> | void, fetchImpl?: typeof fetch, now?: () => number, allowPrivate?: boolean, browser?: ReturnType<typeof import("./browser.mjs").createServerBrowser> }} options
  *   `allowPrivate` is for tests (a feed on localhost); a real server never reads its own network for a run.
+ *   `browser`: the server's Chromium (server/browser.mjs), for the browser tool and the sign-in view.
  */
-export function createAgentHost({ dir, token, secret, headless = () => import("./headless/agent.mjs"), notify, fetchImpl = fetch, now = Date.now, allowPrivate = false }) {
+export function createAgentHost({ dir, token, secret, headless = () => import("./headless/agent.mjs"), notify, fetchImpl = fetch, now = Date.now, allowPrivate = false, browser }) {
   if (!token || token.length < 24) throw new Error("ADT_AGENT_TOKEN must be at least 24 characters.");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const keyFile = join(dir, "agent.key");
@@ -210,7 +213,108 @@ export function createAgentHost({ dir, token, secret, headless = () => import(".
   const URLS = /https?:\/\/[^\s<>"'`)\]]+/g;
   const urlsIn = (value) => [...String(value).matchAll(URLS)].map((m) => m[0].replace(/[.,;:!?]+$/, ""));
 
-  function toolsFor(job, h, guard) {
+  /**
+   * The browser tool: read any public page and follow links (the URL guard applies); press buttons,
+   * type and pick options only on the exact sites the instruction names, and not on a page that came
+   * from a found link carrying data (it may arrive filled in); type only text from the instruction
+   * (or the bot's skills), and never into password fields.
+   */
+  function browserTool(job, guard, tab, seen) {
+    const trusted = [job.instruction, ...job.skills.map((s) => s.instructions)].join("\n");
+    // Only the instruction names where a run may act: a skill (maybe imported) doesn't add sites.
+    const sites = actSites(job.instruction);
+    const trustedUrls = new Set(urlsIn(job.instruction));
+    const page = async () => (tab.page ??= await browser.newPage());
+    const shown = (view) => {
+      for (const c of view.controls ?? []) if (c.href) guard.known.add(c.href);
+      guard.known.add(view.url);
+      return { content: seen(pageText(view)), untrusted: view.url };
+    };
+    /** After going somewhere by address (opening it, or following a link): note whether it may be pre-filled. */
+    const arrived = (view) => {
+      tab.prefilled = prefilledFromOutside(view, trustedUrls, trusted);
+      return shown(view);
+    };
+    const host = (url) => {
+      try {
+        return new URL(url).host;
+      } catch {
+        return "this page";
+      }
+    };
+    const mayAct = async (p) => {
+      const { url } = await p.location();
+      if (!mayActOn(url, sites)) {
+        throw new Error(`Pressing buttons, typing and choosing options on ${host(url)} isn't allowed: this routine's instruction doesn't name that site (exactly that address, e.g. ${host(url)}). You can still read pages there and follow links.`);
+      }
+      if (tab.prefilled) {
+        throw new Error("This page came from a link the run found, and its address carries data, so its forms may already be filled in by whoever wrote the link. Pressing buttons and typing aren't allowed here: open the site from the address in your instruction instead.");
+      }
+    };
+    return {
+      name: "browser",
+      description:
+        "A real web browser, for pages that need JavaScript, clicking or forms (use read_url for plain pages). " +
+        "action: open (url), read, click (id), type (id, text, submit), select (id, option), back, scroll. Each answer is the page as text with its controls numbered [id]. " +
+        "You can read any public page and follow links. Pressing buttons, typing and choosing options only work on sites your instruction names, you can only type text that's in your instruction, and never passwords.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["open", "read", "click", "type", "select", "back", "scroll"] },
+          url: { type: "string", description: "For open" },
+          id: { type: "number", description: "A control's number from the page" },
+          text: { type: "string", description: "For type" },
+          submit: { type: "boolean", description: "For type: press Enter afterwards" },
+          option: { type: "string", description: "For select: the option's text" },
+        },
+        required: ["action"],
+      },
+      run: async (args) => {
+        const action = String(args.action ?? "read");
+        const id = Number(args.id);
+        if (["click", "type", "select"].includes(action) && !(Number.isInteger(id) && id > 0)) throw new Error("Say which control: its [number] from the page.");
+        if (action === "open") {
+          const url = String(args.url ?? "").trim();
+          if (!/^https?:\/\//i.test(url)) throw new Error("Give a full web address (https://…).");
+          if (guard.outside && !guard.known.has(url)) throw new Error("After reading outside content, a run only opens addresses it was shown (in its instruction, search results or pages). Use one of those.");
+          // From here on the run has seen a page, even if opening it fails.
+          guard.outside = true;
+          return arrived(await (await page()).open(url));
+        }
+        guard.outside = true;
+        const p = await page();
+        if (action === "read") return shown(await p.read());
+        if (action === "back") return arrived(await p.back());
+        if (action === "scroll") return shown(await p.scroll(Number(args.dy) || 700));
+        if (action === "click") {
+          const box = await p.box(id);
+          // A link is followed by its address (where the page says it goes is checked like any address).
+          if (box.href) {
+            if (!guard.known.has(box.href)) throw new Error("That link goes somewhere this run wasn't shown.");
+            return arrived(await p.open(box.href));
+          }
+          await mayAct(p);
+          return shown(await p.clickControl(id));
+        }
+        if (action === "type") {
+          await mayAct(p);
+          const box = await p.box(id);
+          if (!box) throw new Error(`There's no control [${id}] on the page now. Read the page again.`);
+          if (box.type === "password") throw new Error("Bots never type passwords. The user can sign in to this site in the server browser (Settings → Sync & server), and runs stay signed in.");
+          const text = String(args.text ?? "");
+          if (!mayType(text, trusted)) throw new Error("A run can only type text that appears in its instruction (so nothing it read can be sent on). Type the exact words from the instruction.");
+          return shown(await p.typeInto(id, text, args.submit === true));
+        }
+        if (action === "select") {
+          await mayAct(p);
+          return shown(await p.selectOption(id, String(args.option ?? "")));
+        }
+        throw new Error(`Unknown action ${action}.`);
+      },
+    };
+  }
+
+  function toolsFor(job, h, guard, tab) {
     const search = { engine: job.search.engine, url: job.search.url, apiKey: open(job.search.apiKey), readPages: false, native: false };
     const seen = (content) => {
       guard.outside = true;
@@ -262,6 +366,7 @@ export function createAgentHost({ dir, token, secret, headless = () => import(".
         run: async () => "Noted: the user won't be notified.",
       },
     ];
+    if (browser?.available()) tools.push(browserTool(job, guard, tab, seen));
     if (job.skills.length) {
       tools.push({
         name: "use_skill",
@@ -282,6 +387,8 @@ export function createAgentHost({ dir, token, secret, headless = () => import(".
     running.set(job.id, controller);
     const started = now();
     const timer = setTimeout(() => controller.abort(), RUN_TIMEOUT_MS);
+    /** The run's own browser tab, opened on first use. */
+    const tab = { page: null, prefilled: false };
     let result;
     try {
       const h = await headless();
@@ -292,8 +399,8 @@ export function createAgentHost({ dir, token, secret, headless = () => import(".
         model: job.provider.model,
         system: `${job.system}\n\nCurrent date and time: ${new Date(started).toString()}.\nYou are running on the user's always-on server, with nobody there to answer questions or approve actions. Do what the instruction says with the tools you have; say plainly what you couldn't do.`,
         prompt: h.firing(job.instruction, events),
-        tools: toolsFor(job, h, guard),
-        maxSteps: 8,
+        tools: toolsFor(job, h, guard, tab),
+        maxSteps: browser?.available() ? 14 : 8,
         signal: controller.signal,
       });
       result = { status: out.quiet ? "quiet" : "ok", text: out.text.trim() || "(no answer)", tools: out.tools };
@@ -302,6 +409,7 @@ export function createAgentHost({ dir, token, secret, headless = () => import(".
     } finally {
       clearTimeout(timer);
       running.delete(job.id);
+      await tab.page?.close().catch(() => undefined);
     }
     const entry = { id: randomBytes(8).toString("hex"), jobId: job.id, name: job.name, at: started, finishedAt: now(), trigger, events: events.length, ...result };
     results = [...results, entry].slice(-RESULTS_KEPT);
@@ -379,6 +487,40 @@ export function createAgentHost({ dir, token, secret, headless = () => import(".
     res.end(body === undefined ? undefined : JSON.stringify(body));
   };
 
+  /**
+   * The sign-in view (the app's Settings → Sync & server → Server browser): a picture of your tab,
+   * and your clicks, typing and keys sent to it. Only with the server token; the same public-only
+   * browser routines use, so what you sign in to, they're signed in to.
+   */
+  async function browserView(req, res, path) {
+    if (!browser?.available()) return reply(res, 404, { error: "There's no browser on this server. Install Chromium (or set ADT_BROWSER to its path)." });
+    const page = await browser.userPage();
+    if (path === "/api/agent/browser" && req.method === "GET") return reply(res, 200, { ok: true, ...(await page.location()) });
+    if (path === "/api/agent/browser/screen" && req.method === "GET") {
+      const image = await page.screenshot();
+      res.writeHead(200, { ...CORS, "content-type": "image/jpeg", "cache-control": "no-store" });
+      return res.end(image);
+    }
+    if (path !== "/api/agent/browser/input" || req.method !== "POST") return reply(res, 404, { error: "Not found." });
+    const input = JSON.parse((await readBody(req, 16 * 1024)) || "{}");
+    const action = String(input.action ?? "");
+    if (action === "open") {
+      const url = String(input.url ?? "").trim();
+      const full = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+      try {
+        await page.open(full);
+      } catch (error) {
+        return reply(res, 400, { error: String(error?.message ?? error) });
+      }
+    } else if (action === "click") await page.clickAt(Number(input.x) || 0, Number(input.y) || 0);
+    else if (action === "type") await page.insertText(String(input.text ?? ""));
+    else if (action === "key") await page.press(String(input.key ?? ""));
+    else if (action === "scroll") await page.scroll(Number(input.dy) || 600);
+    else if (action === "back") await page.back();
+    else return reply(res, 400, { error: "Unknown action." });
+    return reply(res, 200, { ok: true, ...(await page.location()) });
+  }
+
   let timer = null;
   return {
     start(intervalMs = 30_000) {
@@ -390,6 +532,7 @@ export function createAgentHost({ dir, token, secret, headless = () => import(".
       clearInterval(timer);
       timer = null;
       for (const c of running.values()) c.abort();
+      void browser?.close();
     },
     tick,
     jobs: () => jobs.map(publicJob),
@@ -414,7 +557,8 @@ export function createAgentHost({ dir, token, secret, headless = () => import(".
         }
         const auth = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
         if (!auth || !sameSecret(auth, token)) return reply(res, 401, { error: "Wrong or missing server token." });
-        if (path === "/api/agent" && req.method === "GET") return reply(res, 200, { ok: true, time: now(), jobs: jobs.map(publicJob) });
+        if (path === "/api/agent" && req.method === "GET") return reply(res, 200, { ok: true, time: now(), jobs: jobs.map(publicJob), browser: Boolean(browser?.available()) });
+        if (path.startsWith("/api/agent/browser")) return browserView(req, res, path);
         if (path === "/api/agent/results" && req.method === "GET") {
           const since = Number(new URL(req.url, "http://x").searchParams.get("since")) || 0;
           return reply(res, 200, { results: results.filter((r) => r.finishedAt > since) });

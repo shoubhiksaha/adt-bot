@@ -11,6 +11,7 @@ import { KNOWLEDGE_ACCEPT, KnowledgeFiles } from "./KnowledgeFiles";
 import { ModelField } from "./ModelField";
 
 const TemplateExportDialog = lazy(() => import("../features/templates/TemplatesView").then((m) => ({ default: m.TemplateExportDialog })));
+const BotEmailField = lazy(() => import("../features/apps/BotEmailField"));
 
 export default function BotDialog({ botId, onClose }: { botId: string; onClose: () => void }) {
   const bot = useStore((s) => s.bots.find((b) => b.id === botId));
@@ -218,6 +219,10 @@ export default function BotDialog({ botId, onClose }: { botId: string; onClose: 
         </div>
         <span className="small muted">Actions that change things ask for approval first (Settings → Tools & safety).</span>
       </div>
+
+      <Suspense fallback={null}>
+        <BotEmailField bot={bot} />
+      </Suspense>
 
       <div className="field">
         <label>Knowledge for this bot ({bot.knowledge?.length ?? 0})</label>

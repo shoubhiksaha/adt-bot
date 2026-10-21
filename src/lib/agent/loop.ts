@@ -4,11 +4,14 @@ import type { ToolCallRecord } from "../types";
 import { type ActivityEntry, logActivity, redactArgs, resultPreview } from "./activity";
 import { accessGuidance, isComputerTool } from "./access";
 import { askAloudDetail, askAloudText } from "./asks";
-import { decide, gate, type GateResult, waitForDecision, isPending, type Decision } from "./approvals";
+import { callSummary, decide, gate, type GateResult, waitForDecision, isPending, type Decision } from "./approvals";
+import { applyReview, reviewCall, reviewScope } from "./reviewer";
 import { type AgentTool, getTool, type ToolContext, toResult } from "./tools";
 import { insideWorkspace } from "./builtin";
 import { isTerminalApp, TERMINAL_APPS } from "./danger";
+import { fitArgs, parseBareCall } from "./prompted";
 import { desktopInvoke } from "../desktop";
+import { readFiring } from "./vendor/copilotkit/routine-firing";
 import { markUntrusted, UNTRUSTED_GUIDANCE } from "./vendor/copilotkit/untrusted-content";
 import type { ToolCall, ToolSchema } from "./vendor/openbot/types";
 
@@ -32,6 +35,45 @@ const CORE_TOOLS = new Set([
   "create_image",
   "find_tools",
 ]);
+
+/** Words in many tool names: on their own they don't say which tool the user means. */
+const GENERIC_NAME_WORDS = new Set("get set list create read run search find make open add update delete remove use send save show new check write edit start stop ask".split(" "));
+/** Joining words in tool names (discuss_with_bots): never a reason to list a tool. */
+const NAME_FILLERS = new Set("with from into for and the to of by on in at my your".split(" "));
+
+/**
+ * With a short catalog, the tools the user's message names ("save this as a skill" → save_skill,
+ * "check my email" → email_*), listed from the first step: small models rarely think to search.
+ * A tool only qualifies when a specific word of its name is in the message.
+ */
+export function toolsForMessage(tools: Pick<AgentTool, "name" | "description">[], text: string, limit = 3): string[] {
+  const stem = (w: string) => (w.length > 4 ? w.replace(/(ies|es|s)$/, "") : w);
+  const words = new Set(
+    text
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter((w) => w.length > 2)
+      .map(stem),
+  );
+  return tools
+    .filter((t) => !CORE_TOOLS.has(t.name))
+    .map((t) => {
+      const nameWords = t.name
+        .toLowerCase()
+        .split(/[_\W]+/)
+        .filter((w) => w && !NAME_FILLERS.has(w))
+        .map(stem);
+      const specific = nameWords.filter((w) => !GENERIC_NAME_WORDS.has(w) && words.has(w)).length;
+      const generic = nameWords.filter((w) => GENERIC_NAME_WORDS.has(w) && words.has(w)).length;
+      const described = new Set(t.description.toLowerCase().split(/[^\p{L}\p{N}]+/u).map(stem));
+      const context = [...words].filter((w) => described.has(w)).length;
+      return { name: t.name, specific, score: specific * 3 + generic + Math.min(context, 4) * 0.25 };
+    })
+    .filter((s) => s.specific > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((s) => s.name);
+}
 
 function discoveryThreshold(request: LoopOptions["request"], mode: "native" | "prompted"): number {
   const local = mode === "prompted" || presetById(request.provider.presetId)?.local || request.provider.kind === "cli";
@@ -147,6 +189,14 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
   let mode: "native" | "prompted" = options.mode === "auto" ? (promptedFallback.has(key) ? "prompted" : "native") : options.mode;
   const discovery = tools.length > discoveryThreshold(request, mode);
   const exposed = new Set(discovery ? tools.filter((t) => CORE_TOOLS.has(t.name) || ALWAYS_LISTED.has(t.group)).map((t) => t.name) : tools.map((t) => t.name));
+  if (discovery) {
+    // The user's own words name the tools worth listing now: not pasted outside content, nor the
+    // context the app adds to the message (notes, memories).
+    const latest = [...request.messages].reverse().find((m) => m.role === "user")?.content.split("<untrusted_data")[0].split("\n\n---\nContext for this message:")[0] ?? "";
+    // A routine run: only its instruction, not the app's frame around it.
+    const asked = readFiring(latest) ?? latest;
+    for (const name of toolsForMessage(tools, asked)) exposed.add(name);
+  }
   const turns: ToolTurn[] = [];
   const runner = createToolRunner({ tools, context, exposed, onCalls: callbacks.onCalls });
   const computer = tools.some(isComputerTool) ? accessGuidance(context.settings.agent, context) : "";
@@ -158,6 +208,8 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
   // Verify before "done" (runner.unseen: the latest screen action nobody has looked at since), and
   // whether the model was already sent back once to check it.
   let nudged = false;
+  // A call to a tool that doesn't exist was answered once already.
+  let corrected = false;
 
   for (let step = 0; step <= maxSteps; step++) {
     const last = step === maxSteps;
@@ -167,6 +219,7 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
       ...(discovery ? [findToolsSchema] : []),
     ];
     let asked: Extract<StreamEvent, { type: "tool_calls" }> | null = null;
+    let invented: Extract<StreamEvent, { type: "bad_call" }> | null = null;
     // After an action on screen nobody has looked at, an answer now may be sent back for one look:
     // hold this step's text until it's clear, so a premature "done" never shows.
     const holdText = runner.unseen !== null && !nudged && !last;
@@ -181,6 +234,7 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
         toolMode: mode,
       })) {
         if (event.type === "tool_calls") asked = event;
+        else if (event.type === "bad_call") invented = event;
         else if (holdText && (event.type === "text" || event.type === "reasoning")) held.push(event);
         else callbacks.onEvent(event);
       }
@@ -196,6 +250,31 @@ export async function runToolLoop(options: LoopOptions): Promise<void> {
         continue;
       }
       throw error;
+    }
+    if (invented && (!asked || !asked.calls.length)) {
+      // One of this bot's tools that just wasn't listed this step (local models see a short list): use it.
+      const unlisted = tools.find((t) => t.name === invented?.name);
+      const call = unlisted && !last ? parseBareCall(invented.text, [unlisted]) : undefined;
+      if (unlisted && call) {
+        exposed.add(unlisted.name);
+        asked = { type: "tool_calls", calls: [call], raw: {}, text: invented.before };
+        invented = null;
+      }
+    }
+    if (invented && (!asked || !asked.calls.length)) {
+      if (!corrected && !last) {
+        // Tell the model once, as the answer to the call it made up, and let it try again.
+        corrected = true;
+        const id = `invented_${crypto.randomUUID().slice(0, 8)}`;
+        turns.push({
+          raw: {},
+          text: invented.before,
+          calls: [{ id, name: invented.name, args: {} }],
+          results: [{ id, name: invented.name, content: `Error: there's no tool called "${invented.name}". Use one of your tools, or answer the user in plain words.`, isError: true }],
+        });
+        continue;
+      }
+      callbacks.onEvent({ type: "text", text: invented.text });
     }
     if (!asked || !asked.calls.length) {
       const answer = held.map((e) => (e.type === "text" ? e.text : "")).join("");
@@ -343,8 +422,21 @@ export function createToolRunner(options: {
       update(call.id, { status: "error", result: content, ms: 0 });
       return { id: call.id, name: call.name, content, isError: true };
     }
+    // Native calls get the same repair as calls written as text (the required argument misnamed).
+    const fitted = fitArgs(call.args ?? {}, tool.parameters);
+    if (fitted !== call.args) {
+      call = { ...call, args: fitted };
+      record.args = fitted;
+    }
 
-    const verdict = gate(tool, call, context, await typingIntoTerminal(call, context));
+    const forceAsk = await typingIntoTerminal(call, context);
+    let verdict = gate(tool, call, context, forceAsk);
+    if (reviewScope(context.settings.agent.reviewer, tool, call, verdict, context, forceAsk)) {
+      update(call.id, { result: "The AI reviewer is checking this…" });
+      const review = await reviewCall(tool, call, verdict, context, callSummary(tool, call), forceAsk);
+      verdict = applyReview(verdict, review, tool, call, context);
+      update(call.id, { result: undefined, ...(review ? { review } : {}) });
+    }
     // The agent log: who did what, with what, why it was allowed, and what came back.
     const log = (outcome: ActivityEntry["outcome"], summary: string, extra: Partial<ActivityEntry> = {}) =>
       void logActivity({
@@ -415,6 +507,8 @@ export function createToolRunner(options: {
       if (content.length > RESULT_LIMIT) content = `${content.slice(0, RESULT_LIMIT)}\n\n[…cut: ${content.length - RESULT_LIMIT} more characters]`;
       if (value.untrustedSource) content = markUntrusted(content, value.untrustedSource);
       if (value.untrustedSource && context.taint && taints(tool, call)) context.taint.sources.add(value.untrustedSource.slice(0, 80));
+      // Command output and this computer's files aren't outside content, but the AI reviewer stays out after them.
+      else if (context.taint && (tool.kind === "shell" || (tool.group === "local" && (tool.riskFor?.(call.args) ?? tool.risk) === "read"))) context.taint.local = true;
       update(call.id, { status: "done", result: preview(value.content ?? ""), display: value.display, ms: Date.now() - started });
       log("done", verdict.outcome === "ask" ? verdict.summary : summariseArgs(call), {
         ms: Date.now() - started,

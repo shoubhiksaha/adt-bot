@@ -6,10 +6,12 @@ import { openView } from "../../features/registry";
 import { allToolGroups, allTools } from "../../lib/agent/tools";
 import { isDesktop } from "../../lib/desktop";
 import { updateSettings, useStore } from "../../lib/store";
+import { ModelField } from "../ModelField";
 import { Section, Toggle } from "./controls";
 
 export function ToolsSettings() {
   const agent = useStore((s) => s.settings.agent);
+  const providers = useStore((s) => s.providers);
   const set = (patch: Partial<typeof agent>) => updateSettings({ agent: { ...agent, ...patch } });
   const [log, setLog] = useState<ActivityEntry[]>([]);
   const [confirmFull, setConfirmFull] = useState(false);
@@ -137,6 +139,53 @@ export function ToolsSettings() {
           One rule per line: exact text, a command prefix (“git”), a glob (“npm run *”), “tool:name”, or /regex/. The deny list is checked against
           every argument and wins over everything.
         </span>
+      </Section>
+
+      <Section
+        title="AI reviewer"
+        hint="A second AI looks at an action next to what you asked for. It answers approval cards for actions that plainly match your request, and blocks ones that plainly don't; anything unclear still asks you. It never approves deleting, anything after a bot read outside content (web pages, email, files), or requests from people in a chat room. Each check is one extra, short model request."
+      >
+        <div className="field-row">
+          <div className="field">
+            <label htmlFor="reviewer-mode">Reviewer</label>
+            <select id="reviewer-mode" className="select" value={agent.reviewer ?? "off"} onChange={(e) => set({ reviewer: e.target.value as NonNullable<typeof agent.reviewer> })}>
+              <option value="off">Off: approval cards always come to you</option>
+              <option value="approve">Fewer questions: it answers clear-cut approvals</option>
+              <option value="check">Fewer questions + extra check: it also double-checks commands, file changes and sending your rules allow</option>
+            </select>
+          </div>
+          {(agent.reviewer ?? "off") !== "off" && (
+            <div className="field">
+              <label htmlFor="reviewer-provider">Reviewer model</label>
+              <select
+                id="reviewer-provider"
+                className="select"
+                value={agent.reviewerModel?.providerId ?? ""}
+                onChange={(e) => {
+                  const provider = providers.find((p) => p.id === e.target.value);
+                  set({ reviewerModel: provider ? { providerId: provider.id, model: provider.models[0]?.id ?? "" } : undefined });
+                }}
+              >
+                <option value="">The bot's own model</option>
+                {providers
+                  .filter((p) => p.kind !== "cli")
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+              </select>
+            </div>
+          )}
+        </div>
+        {agent.reviewerModel && (agent.reviewer ?? "off") !== "off" && (
+          <ModelField
+            provider={providers.find((p) => p.id === agent.reviewerModel?.providerId)}
+            value={agent.reviewerModel.model}
+            onChange={(model) => agent.reviewerModel && set({ reviewerModel: { ...agent.reviewerModel, model } })}
+          />
+        )}
+        <span className="small muted">A small, fast model works well as a reviewer. Its decisions show under each action and in the agent log.</span>
       </Section>
 
       <Section title="Advanced">

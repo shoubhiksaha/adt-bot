@@ -2193,6 +2193,21 @@ input[type="color"] {
 .tool-progress {
   padding: 0 6px 4px 28px;
 }
+.tool-review {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+}
+.tool-review svg {
+  flex: none;
+  margin-top: 2px;
+}
+.tool-review.allow svg {
+  color: var(--success);
+}
+.tool-review.block svg {
+  color: var(--destructive);
+}
 .tool-undo {
   display: flex;
   flex-wrap: wrap;

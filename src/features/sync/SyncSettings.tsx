@@ -1,5 +1,6 @@
 import { Copy, Loader2, RefreshCw } from "lucide-react";
 import { useState } from "react";
+import { ServerBrowser } from "./ServerBrowser";
 import { Section } from "../../components/settings/controls";
 import { updateSettings, useStore } from "../../lib/store";
 import { newSyncCode, normaliseCode, syncCodeProblem } from "../../lib/sync";
@@ -159,6 +160,7 @@ function AlwaysOnServer() {
           </button>
         )}
       </div>
+      {server.url && server.token && <ServerBrowser />}
     </Section>
   );
 }

@@ -22,7 +22,7 @@ export function serverConfigured(): boolean {
   return Boolean(url && token);
 }
 
-async function call(path: string, init: { method?: string; body?: unknown } = {}): Promise<Response> {
+export async function call(path: string, init: { method?: string; body?: unknown } = {}): Promise<Response> {
   const { settings } = useStore.getState();
   const { url, token } = settings.server;
   if (!url || !token) throw new Error("Set up your always-on server in Settings → Sync first.");
@@ -37,7 +37,7 @@ async function call(path: string, init: { method?: string; body?: unknown } = {}
   );
 }
 
-async function problem(res: Response): Promise<Error> {
+export async function problem(res: Response): Promise<Error> {
   const text = await res.text().catch(() => "");
   let reason = text.slice(0, 200);
   try {

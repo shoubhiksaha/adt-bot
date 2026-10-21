@@ -4,7 +4,7 @@
 import { createServer } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import { startServer } from "./index.mjs";
-import { isLinkLocal, reachesPrivateNetwork } from "./proxy.mjs";
+import { isLinkLocal, isPrivateAddress, reachesPrivateNetwork } from "./proxy.mjs";
 
 const servers = [];
 afterEach(async () => {
@@ -50,6 +50,10 @@ describe("self-hosted relay", () => {
     expect(await reachesPrivateNetwork("[::ffff:0:0]")).toBe(true);
     expect(await reachesPrivateNetwork("224.0.0.1")).toBe(true);
     expect(await reachesPrivateNetwork("198.18.0.1")).toBe(true);
+    // The old site-local range and local-use NAT64.
+    expect(isPrivateAddress("fec0::1")).toBe(true);
+    expect(isPrivateAddress("64:ff9b:1::a00:1")).toBe(true);
+    expect(isPrivateAddress("2606:4700::1111")).toBe(false);
   });
 
   it("never reaches link-local addresses (cloud metadata)", async () => {

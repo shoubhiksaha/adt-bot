@@ -37,6 +37,8 @@ const outlookMessage = (m) => ({
   unread: m.isRead === false,
 });
 const OUTLOOK_FIELDS = "id,conversationId,subject,from,toRecipients,receivedDateTime,bodyPreview,isRead";
+/** A Sent folder by name, for servers that don't mark it (not "Unsent" or "Sent to review"). */
+const SENT_FOLDER = /(^|[./])(sent|sent items|sent mail|sent messages)$/i;
 const recipients = (list) => list.map((a) => ({ emailAddress: { address: /<([^>]+)>\s*$/.exec(a)?.[1] ?? a } }));
 
 function createMail({ accounts, ImapFlow = () => require("imapflow").ImapFlow, nodemailer = () => require("nodemailer") }) {
@@ -212,6 +214,17 @@ function createMail({ accounts, ImapFlow = () => require("imapflow").ImapFlow, n
     });
   }
 
+  /**
+   * An Outlook reply draft addressed to exactly `m.to` and `m.cc`: Outlook's own reply picks its
+   * recipients itself (a Reply-To header, or the people on a message you sent), which the approval
+   * card didn't show.
+   */
+  async function outlookReply(a, m) {
+    const { data } = await accounts.api(a.id, "POST", `${GRAPH}/messages/${encodeURIComponent(m.reply.id)}/createReply`, { json: { comment: m.text } });
+    await accounts.api(a.id, "PATCH", `${GRAPH}/messages/${encodeURIComponent(data.id)}`, { json: { toRecipients: recipients(m.to), ccRecipients: recipients(m.cc) } });
+    return data;
+  }
+
   async function draft(params) {
     const a = account(params.account);
     const m = await prepare(a, params);
@@ -220,10 +233,7 @@ function createMail({ accounts, ImapFlow = () => require("imapflow").ImapFlow, n
       return { id: data.id, to: m.to, subject: m.subject };
     }
     if (a.provider === "microsoft") {
-      if (m.reply) {
-        const { data } = await accounts.api(a.id, "POST", `${GRAPH}/messages/${encodeURIComponent(m.reply.id)}/createReply`, { json: { comment: m.text } });
-        return { id: data.id, to: m.to, subject: m.subject };
-      }
+      if (m.reply) return { id: (await outlookReply(a, m)).id, to: m.to, subject: m.subject };
       const { data } = await accounts.api(a.id, "POST", `${GRAPH}/messages`, {
         json: { subject: m.subject, body: { contentType: "Text", content: m.text }, toRecipients: recipients(m.to), ccRecipients: recipients(m.cc) },
       });
@@ -245,8 +255,10 @@ function createMail({ accounts, ImapFlow = () => require("imapflow").ImapFlow, n
       return { id: data.id, to: m.to, subject: m.subject };
     }
     if (a.provider === "microsoft") {
-      if (m.reply) await accounts.api(a.id, "POST", `${GRAPH}/messages/${encodeURIComponent(m.reply.id)}/reply`, { json: { comment: m.text } });
-      else {
+      if (m.reply) {
+        const draft = await outlookReply(a, m);
+        await accounts.api(a.id, "POST", `${GRAPH}/messages/${encodeURIComponent(draft.id)}/send`);
+      } else {
         await accounts.api(a.id, "POST", `${GRAPH}/sendMail`, {
           json: { message: { subject: m.subject, body: { contentType: "Text", content: m.text }, toRecipients: recipients(m.to), ccRecipients: recipients(m.cc) }, saveToSentItems: true },
         });
@@ -269,7 +281,7 @@ function createMail({ accounts, ImapFlow = () => require("imapflow").ImapFlow, n
     // Gmail keeps a copy itself; elsewhere it goes in Sent.
     if (!/gmail\.com$|googlemail\.com$/i.test(smtp.host)) {
       await withImap(a, async (client) => {
-        const sent = await folderByUse(client, "\\Sent", /sent/i);
+        const sent = await folderByUse(client, "\\Sent", SENT_FOLDER);
         if (sent) await client.append(sent, raw, ["\\Seen"]);
       }).catch(() => undefined);
     }
@@ -319,6 +331,72 @@ function createMail({ accounts, ImapFlow = () => require("imapflow").ImapFlow, n
     });
   }
 
+  /**
+   * Whether a message in the inbox is one this account itself sent to `to` (you emailing your bot,
+   * e.g. from your phone). A forged From line can't pass: Gmail marks real ones SENT, and elsewhere
+   * the Sent folder must hold a copy with the same Message-ID that was addressed to `to` (a
+   * Message-ID alone isn't enough: anyone you ever emailed knows some of yours).
+   * `copy`: the message to read the task from, your own sent copy, never the inbox one (someone who
+   * saw one of your Message-IDs could send a different text under it). `messageId`: to run it once.
+   */
+  async function sentByMe(params) {
+    const a = account(params.account);
+    const id = text(params.id, 500);
+    const own = bareAddress(fromAddress(a));
+    const target = bareAddress(text(params.to, 320));
+    if (!target) throw new Error("Say which address the message was sent to.");
+    const addressedTo = (list) => list.some((x) => bareAddress(x) === target);
+    if (a.provider === "google") {
+      // Gmail keeps one message for both: a forged one never carries SENT.
+      const { data } = await accounts.api(a.id, "GET", `${GMAIL}/messages/${encodeURIComponent(id)}`, { query: { format: "metadata", metadataHeaders: "Message-ID" } });
+      const messageId = data?.payload?.headers?.find((h) => h.name.toLowerCase() === "message-id")?.value ?? "";
+      return (data?.labelIds ?? []).includes("SENT") ? { sent: true, copy: id, messageId } : { sent: false };
+    }
+    if (a.provider === "microsoft") {
+      const { data } = await accounts.api(a.id, "GET", `${GRAPH}/messages/${encodeURIComponent(id)}`, { query: { $select: "internetMessageId,from" } });
+      const messageId = String(data?.internetMessageId ?? "");
+      if (!messageId || bareAddress(data?.from?.emailAddress?.address) !== own) return { sent: false };
+      const { data: copies } = await accounts.api(a.id, "GET", `${GRAPH}/mailFolders/sentitems/messages`, {
+        query: { $filter: `internetMessageId eq '${messageId.replace(/'/g, "''")}'`, $select: "id,internetMessageId,toRecipients,ccRecipients", $top: 5 },
+      });
+      const copy = (copies?.value ?? []).find(
+        (m) => m.internetMessageId === messageId && addressedTo([...(m.toRecipients ?? []), ...(m.ccRecipients ?? [])].map((r) => r.emailAddress?.address ?? "")),
+      );
+      return copy ? { sent: true, copy: copy.id, messageId } : { sent: false };
+    }
+    const { folder, uid } = parseImapId(id);
+    return withImap(a, async (client) => {
+      let messageId = "";
+      let from = "";
+      const lock = await client.getMailboxLock(folder);
+      try {
+        const m = await client.fetchOne(uid, { envelope: true }, { uid: true });
+        messageId = m?.envelope?.messageId ?? "";
+        from = m?.envelope?.from?.[0]?.address ?? "";
+      } finally {
+        lock.release();
+      }
+      if (!/^<[^<>\s]+@[^<>\s]+>$/.test(messageId) || bareAddress(from) !== own) return { sent: false };
+      const sentFolder = await folderByUse(client, "\\Sent", SENT_FOLDER);
+      if (!sentFolder) return { sent: false };
+      const sentLock = await client.getMailboxLock(sentFolder);
+      try {
+        // HEADER search matches substrings: the exact Message-ID is compared below.
+        const found = ((await client.search({ header: { "message-id": messageId } }, { uid: true })) || []).slice(-5);
+        if (!found.length) return { sent: false };
+        const validity = String(client.mailbox?.uidValidity ?? "");
+        for await (const m of client.fetch(found.join(","), { envelope: true, uid: true }, { uid: true })) {
+          if (m.envelope?.messageId === messageId && addressedTo([...(m.envelope.to ?? []), ...(m.envelope.cc ?? [])].map((x) => x.address ?? ""))) {
+            return { sent: true, copy: imapId(sentFolder, validity, m.uid), messageId };
+          }
+        }
+        return { sent: false };
+      } finally {
+        sentLock.release();
+      }
+    });
+  }
+
   /** Signs in to a new IMAP/SMTP account once, so a wrong password shows up straight away. */
   async function check(config, password) {
     const temp = { id: "check", provider: "imap", label: config.address, services: ["mail"], imap: config };
@@ -330,7 +408,7 @@ function createMail({ accounts, ImapFlow = () => require("imapflow").ImapFlow, n
     }
   }
 
-  return { search, read, draft, send, arrivals, check };
+  return { search, read, draft, send, arrivals, sentByMe, check };
 }
 
 module.exports = { createMail, gmailQuery, outlookSearch };

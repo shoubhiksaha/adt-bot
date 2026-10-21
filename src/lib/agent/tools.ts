@@ -49,7 +49,14 @@ export type ToolContext = {
  * running commands and file changes unasked for the rest of the turn: an injected instruction can't
  * turn into an unapproved command.
  */
-export type TurnTaint = { sources: Set<string> };
+export type TurnTaint = {
+  sources: Set<string>;
+  /**
+   * The turn took in text from this computer that doesn't count as outside content (command output,
+   * files): the AI reviewer then leaves approvals to the user, since that text could carry instructions too.
+   */
+  local?: boolean;
+};
 
 export type ToolResult =
   | string
