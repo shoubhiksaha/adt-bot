@@ -532,6 +532,45 @@ func press(_ req: [String: Any]) throws -> [String: Any] {
   return ["method": "click", "x": Int(p.x), "y": Int(p.y)]
 }
 
+// Menu settings ------------------------------------------------------------------------------
+
+/**
+ * A menu item in an app's menu bar, found by words in its title (any menu, a few levels deep), e.g.
+ * a browser's View → Developer → "Allow JavaScript from Apple Events". `press`: press it once,
+ * whatever its tick says (Chromium updates ticks only when the menu opens, so the caller checks the
+ * result another way). `on`: press only if its tick differs (apps whose ticks are current).
+ */
+func menuSetting(_ req: [String: Any]) throws -> [String: Any] {
+  guard AXIsProcessTrusted() else { throw Failure(message: "Accessibility permission is off.", code: "accessibility") }
+  let pid = try findApp(req["app"] as? String)
+  let words = ((req["words"] as? [String]) ?? []).map { $0.lowercased() }.filter { !$0.isEmpty }
+  guard !words.isEmpty else { throw Failure(message: "Say which menu item.") }
+  let appEl = AXUIElementCreateApplication(pid)
+  guard let bar = attr(appEl, "AXMenuBar") else { return ["found": false] }
+  func ticked(_ el: AXUIElement) -> Bool { !(string(attr(el, "AXMenuItemMarkChar")) ?? "").isEmpty }
+  func find(_ el: AXUIElement, depth: Int) -> AXUIElement? {
+    if depth > 5 { return nil }
+    for child in children(attr(el, "AXChildren")) {
+      let title = (string(attr(child, "AXTitle")) ?? "").lowercased()
+      if string(attr(child, "AXRole")) == "AXMenuItem", words.allSatisfy({ title.contains($0) }) { return child }
+      if let hit = find(child, depth: depth + 1) { return hit }
+    }
+    return nil
+  }
+  guard let item = find(bar as! AXUIElement, depth: 0) else { return ["found": false] }
+  let title = string(attr(item, "AXTitle")) ?? ""
+  let was = ticked(item)
+  let pressOnce = req["press"] as? Bool == true
+  if !pressOnce {
+    guard let want = req["on"] as? Bool, want != was else { return ["found": true, "title": title, "was": was, "now": was] }
+  }
+  if bool(attr(item, "AXEnabled")) == false { throw Failure(message: "\(title) can't be changed right now (it's greyed out).") }
+  let result = AXUIElementPerformAction(item, "AXPress" as CFString)
+  if result != .success && result != .cannotComplete { throw Failure(message: "Couldn't press \(title).") }
+  usleep(300_000)
+  return ["found": true, "title": title, "was": was, "now": ticked(item)]
+}
+
 // Typing --------------------------------------------------------------------------------------
 
 /** To the app in front (like a real keyboard), or straight to one app's queue when `pid` is given. */
@@ -1133,7 +1172,7 @@ func recordInject(_ req: [String: Any]) throws -> [String: Any] {
   return ["steps": recorder?.steps ?? []]
 }
 
-let NEEDS_UNLOCKED: Set<String> = ["snapshot", "press", "setText", "type", "key", "click"]
+let NEEDS_UNLOCKED: Set<String> = ["snapshot", "press", "menuSetting", "setText", "type", "key", "click"]
 
 func handle(_ req: [String: Any]) throws -> Any {
   if let cmd = req["cmd"] as? String, NEEDS_UNLOCKED.contains(cmd), screenLocked() {
@@ -1143,6 +1182,7 @@ func handle(_ req: [String: Any]) throws -> Any {
   case "ping": return ["trusted": AXIsProcessTrusted(), "pid": Int(getpid()), "locked": screenLocked(), "idle": userIdleSeconds()]
   case "snapshot": return try snapshot(req)
   case "press": return try press(req)
+  case "menuSetting": return try menuSetting(req)
   case "setText": return try setText(req)
   case "type": return try typeCommand(req)
   case "key": return try keyCommand(req)

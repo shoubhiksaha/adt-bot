@@ -143,6 +143,20 @@ export function speechLevel(): number {
 
 let duck: GainNode | null = null;
 
+/**
+ * How loud the bot's voice is coming out right now, in dB, after it's turned down for a cut-in;
+ * null when it can't be measured (device voices play outside the page). Voice mode predicts its
+ * echo in the microphone from this.
+ */
+export function outputDb(): number | null {
+  if (!networkPlaying || !analyser || !samples) return null;
+  analyser.getFloatTimeDomainData(samples);
+  let sum = 0;
+  for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+  const rms = Math.sqrt(sum / samples.length) * (duck?.gain.value ?? 1);
+  return 20 * Math.log10(rms + 1e-6);
+}
+
 function outputNode(ctx: AudioContext): AudioNode {
   if (!analyser || analyser.context !== ctx) {
     analyser = ctx.createAnalyser();

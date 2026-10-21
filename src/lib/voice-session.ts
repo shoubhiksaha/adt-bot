@@ -5,7 +5,7 @@ import { activityFor } from "./agent/asks";
 import { splitThink } from "./llm";
 import { selectBot, startNewChat, updateSettings, useStore } from "./store";
 import { localChoice, localVoiceReady } from "./local-tts";
-import { chime, createSpeaker, duckSpeech, type Speaker, takeSentences, warmDeviceVoice } from "./tts";
+import { chime, createSpeaker, duckSpeech, outputDb, type Speaker, takeSentences, warmDeviceVoice } from "./tts";
 import { END_SILENCE_MS, type Engine, ENGINE_LABELS, listen, type ListenSession, resolveEngine, stopReadAloud, transcribe } from "./voice";
 import {
   echoesLastWords,
@@ -61,6 +61,40 @@ const ECHO_TAIL_MS = 450;
 const LATE_ECHO_MS = 2000;
 /** While tools work silently, say "Still working on it" after this long without speaking. */
 const STILL_WORKING_MS = 8000;
+/** Talking over the bot this long, clearly louder than its own voice coming back, stops it. */
+const CUT_IN_MS = 450;
+/** How often the microphone and the bot's own output are compared while it talks. */
+const ECHO_TICK_MS = 50;
+/** The echo arrives this much after the sound that made it (speaker, room, output buffers). */
+const ECHO_DELAY_MS = 350;
+/** Readings kept of how the echo compares with the output (3 s), and how many are needed first. */
+const ECHO_GAPS = 60;
+const ECHO_GAPS_NEEDED = 15;
+
+/** Why voice mode stopped or kept talking, in the console, when localStorage "adt-debug-voice" is "1" (off by default). */
+const debugVoice = (...parts: unknown[]) => {
+  try {
+    if (localStorage.getItem("adt-debug-voice") === "1") console.debug("[voice]", ...parts);
+  } catch {}
+};
+
+const percentile = (values: number[], p: number) => [...values].sort((a, b) => a - b)[Math.min(values.length - 1, Math.floor(values.length * p))];
+
+/**
+ * Whether someone is talking over the bot. The bot's echo follows its output, syllable by syllable
+ * (and drops when it's turned down for a cut-in), at a level set by the speaker, the room and the
+ * echo canceller: `gaps` are how much louder the microphone was than the output (dB) while the bot
+ * talked, and `noise` the room's quiet level. In `window` (the moment since the sound began, as
+ * microphone and recent-output dB) most readings must be well above the echo that output explains.
+ * Until enough of the echo has been heard, never: the words decide then.
+ */
+export function heardOverEcho(window: { mic: number; out: number }[], gaps: number[], noise: number, margin = 6): boolean {
+  if (window.length < 6 || gaps.length < ECHO_GAPS_NEEDED) return false;
+  const gap = percentile(gaps, 0.9);
+  // Speech comes in syllables: a voice is over the echo for a good part of the moment, not all of it.
+  const over = window.filter((w) => w.mic - Math.max(w.out + gap, noise) >= margin).length;
+  return over / window.length >= 0.4;
+}
 
 /** The same words, ignoring case and punctuation (an early reply is kept only for what was finally heard). */
 const sameWords = (a: string, b: string) => normalize(a) === normalize(b);
@@ -113,6 +147,20 @@ export class VoiceSession {
   private approval: { resolve: (answer: "allow" | "deny") => void; timer: ReturnType<typeof setTimeout> } | null = null;
   /** When the user last answered one (a tool asking isn't silence worth a "Still working on it"). */
   private approvalEndedAt = 0;
+  /** The bot's output loudness (dB) lately, to match the echo that arrives a moment later. */
+  private outHistory: { at: number; db: number }[] = [];
+  /** Microphone minus recent output (dB) while the bot talks, and the microphone's quiet levels (see heardOverEcho). */
+  private echoGaps: number[] = [];
+  private quietLevels: number[] = [];
+  /** Microphone and output readings since the current sound began (a possible cut-in). */
+  private cutInWindow: { mic: number; out: number }[] = [];
+  private echoTimer: ReturnType<typeof setInterval> | null = null;
+  /** The detector is in the middle of a stretch of speech. */
+  private segmentActive = false;
+  /** Listening to someone talking over the bot, to stop it once they're clearly louder than its echo. */
+  private cutInTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The bot was stopped by the user's voice, before their words were known. */
+  private stoppedByVoice = false;
 
   constructor(private hooks: { onState: (state: VoiceState) => void; onClose: () => void; initialRequest?: string }) {
     const { settings, providers } = useStore.getState();
@@ -145,6 +193,8 @@ export class VoiceSession {
     if (patch.phase && patch.phase !== this.state.phase) {
       const p = patch.phase;
       this.listener?.setPartials(p === "listening" || p === "hearing" || p === "speaking" || p === "thinking");
+      if (p === "speaking") this.watchEcho();
+      else this.stopWatchingEcho();
     }
     this.state = { ...this.state, ...patch };
     this.hooks.onState(this.state);
@@ -231,6 +281,7 @@ export class VoiceSession {
     this.closed = true;
     this.dropEarly();
     this.clearIdle();
+    this.stopWatchingEcho();
     this.offProgress?.();
     this.listener?.close();
     this.device?.cancel();
@@ -242,6 +293,91 @@ export class VoiceSession {
     setVoiceApprover(null);
     setVoiceModeActive(false);
     if (notify) this.hooks.onClose();
+  }
+
+  /**
+   * While the bot talks: the microphone against what the bot is playing. Outside a possible cut-in
+   * this learns how its echo compares with its output; during one, it collects what heardOverEcho
+   * judges. Only for voices the page plays (their output can be measured).
+   */
+  private watchEcho() {
+    if (this.echoTimer) return;
+    this.outHistory = [];
+    this.echoGaps = [];
+    this.quietLevels = [];
+    this.echoTimer = setInterval(() => {
+      const level = this.listener?.level?.();
+      const out = outputDb();
+      if (level === null || level === undefined || out === null) return;
+      const now = performance.now();
+      this.outHistory.push({ at: now, db: out });
+      while (this.outHistory.length && now - this.outHistory[0].at > ECHO_DELAY_MS) this.outHistory.shift();
+      const recentOut = Math.max(...this.outHistory.map((o) => o.db));
+      const mic = level * 48 - 60;
+      if (this.cutInTimer) {
+        this.cutInWindow.push({ mic, out: recentOut });
+        return;
+      }
+      // Only learn while nobody seems to be talking: the start of a cut-in isn't echo.
+      if (this.segmentActive) return;
+      if (this.echoGaps.length % 20 === 1) debugVoice("echo", JSON.stringify({ mic: Math.round(mic), out: Math.round(out), recentOut: Math.round(recentOut) }));
+      // The bot clearly audible: how loud its echo is next to it (in its quiet syllables the
+      // microphone only hears the room, which says nothing about the echo). Quiet: the room's level.
+      if (recentOut > -30) {
+        this.echoGaps.push(mic - recentOut);
+        if (this.echoGaps.length > ECHO_GAPS) this.echoGaps.shift();
+      } else if (recentOut < -50) {
+        this.quietLevels.push(mic);
+        if (this.quietLevels.length > ECHO_GAPS) this.quietLevels.shift();
+      }
+    }, ECHO_TICK_MS);
+  }
+
+  private stopWatchingEcho() {
+    if (this.echoTimer) clearInterval(this.echoTimer);
+    this.echoTimer = null;
+    this.stopCutInCheck();
+  }
+
+  /**
+   * Someone started talking while the bot speaks (its voice is already turned down): if they keep
+   * going, clearly louder than its echo, stop it now rather than wait for their words to be
+   * transcribed (seconds on a busy computer). Their words then decide what happens next.
+   */
+  private startCutInCheck() {
+    this.stopCutInCheck();
+    this.cutInWindow = [];
+    this.cutInTimer = setTimeout(() => {
+      const window = this.cutInWindow;
+      this.stopCutInCheck();
+      if (this.state.phase !== "speaking" || !this.ducked || !this.segmentActive || this.approval) return;
+      const noise = this.quietLevels.length ? percentile(this.quietLevels, 0.5) : -60;
+      const over = heardOverEcho(window, this.echoGaps, noise);
+      debugVoice(
+        "cut-in check",
+        over ? "STOP" : "keep talking",
+        JSON.stringify({
+          echoGap: this.echoGaps.length ? Math.round(percentile(this.echoGaps, 0.9)) : null,
+          gaps: this.echoGaps.length,
+          noise: Math.round(noise),
+          mic: window.map((w) => Math.round(w.mic)).join(" "),
+          out: window.map((w) => Math.round(w.out)).join(" "),
+        }),
+      );
+      if (over) {
+        this.stoppedByVoice = true;
+        this.interrupt();
+        this.set({ phase: "hearing", partial: "" });
+      } else {
+        // Still a stretch of sound (a long echo, or someone starting to talk during it): look again.
+        this.startCutInCheck();
+      }
+    }, CUT_IN_MS);
+  }
+
+  private stopCutInCheck() {
+    if (this.cutInTimer) clearTimeout(this.cutInTimer);
+    this.cutInTimer = null;
   }
 
   /** What the bot said lately: its own voice may come back through the microphone as any of it. */
@@ -256,6 +392,8 @@ export class VoiceSession {
   private isCutIn(caption: string): boolean {
     if (this.approval || this.bargeMode() === "off") return false;
     if (parseVoiceCommand(caption, useStore.getState().bots)?.type === "stop" || endsWithStop(caption)) return true;
+    // "Thank you for watching", "foreign foreign": what speech models make of noise and faint echo.
+    if (isLikelyHallucination(caption)) return false;
     return soundsLikeUser(caption, this.recentSpeech());
   }
 
@@ -339,6 +477,7 @@ export class VoiceSession {
 
   private enterListening() {
     if (this.closed) return;
+    this.stoppedByVoice = false;
     this.unduck();
     this.listener?.setSensitivity("normal");
     this.set({ phase: "listening", partial: "", sentence: "" });
@@ -377,6 +516,7 @@ export class VoiceSession {
     }
     if (event.type === "start") {
       this.clearIdle();
+      this.segmentActive = true;
       this.segmentStartedAt = performance.now();
       this.segmentDuringSpeech = phase === "speaking" || phase === "thinking" || performance.now() - this.speechEndedAt < ECHO_TAIL_MS;
       if (phase === "listening") this.set({ phase: "hearing", partial: "" });
@@ -386,9 +526,11 @@ export class VoiceSession {
       // A quarter second of clear speech (not a cough or click): the user may be cutting in.
       if (phase === "speaking" && this.bargeMode() === "instant" && !this.approval) {
         if (this.speaker?.inPageAudio) {
-          // Turn the bot right down now; stop it once the words show it isn't our own echo.
+          // Turn the bot right down now; stop it once the user is clearly louder than its echo, or
+          // their words show it isn't our own voice coming back, whichever comes first.
           this.ducked = true;
           duckSpeech(true);
+          this.startCutInCheck();
         } else {
           // The device voice can't be turned down: stop it (its echo is still checked below).
           this.interrupt();
@@ -398,6 +540,8 @@ export class VoiceSession {
       return;
     }
     if (event.type === "discard") {
+      this.segmentActive = false;
+      this.stopCutInCheck();
       this.unduck();
       // Too short to be speech: back to listening rather than showing "Listening…" forever.
       if (phase === "hearing") this.enterListening();
@@ -419,6 +563,7 @@ export class VoiceSession {
       const now = this.state.phase;
       if (now === "hearing") this.set({ partial: event.text });
       else if ((now === "speaking" || now === "thinking") && this.isCutIn(event.text)) {
+        debugVoice("stopped by a live caption", event.text);
         // Talking over the bot: stop it now, while the user is still mid-sentence.
         this.interrupt();
         this.set({ phase: "hearing", partial: event.text });
@@ -430,6 +575,8 @@ export class VoiceSession {
       return;
     }
     if (event.type === "utterance") {
+      this.segmentActive = false;
+      this.stopCutInCheck();
       this.turnMs = event.waitMs ?? 0;
       this.endOfSpeechAt = performance.now() - (event.ms ?? 0) - this.turnMs;
       let text = event.text ?? "";
@@ -526,6 +673,8 @@ export class VoiceSession {
     const { phase } = this.state;
     const duringSpeech = this.segmentDuringSpeech;
     this.segmentDuringSpeech = false;
+    const byVoice = this.stoppedByVoice;
+    this.stoppedByVoice = false;
     // The early reply is kept only when the turn ended with the words it answers, as a plain question.
     let early = this.early;
     this.early = null;
@@ -567,6 +716,13 @@ export class VoiceSession {
         text = own;
       }
     }
+    // The bot stopped because someone talked over it: a stray word, or the last question again
+    // (speech recognition guessing from muddled audio), isn't a new request. Just listen.
+    if (byVoice && !command && (!isSubstantial(text) || sameWords(text, this.state.heard))) {
+      early?.discard();
+      if (this.phase() === "hearing") this.enterListening();
+      return;
+    }
     // Started just after the bot stopped, and it's the bot's last words: a late echo (speaker delay,
     // Bluetooth, reverb), not the user.
     const sinceVoiceEnded = this.segmentStartedAt - this.speechEndedAt;
@@ -595,6 +751,7 @@ export class VoiceSession {
         this.unduck();
         return;
       }
+      debugVoice("stopped by what was heard", text);
       this.interrupt();
     } else if (phase === "thinking") {
       this.interrupt();

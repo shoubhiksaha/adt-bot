@@ -433,8 +433,13 @@ function rememberPage(page: PageSnapshot) {
 
 const BROWSER_READS = new Set(["read", "tabs", "scroll"]);
 
+/** The browser's answer when its "Allow JavaScript from Apple Events" is off. */
+const PAGE_ACCESS_OFF = /Allow JavaScript from Apple Events/i;
+
 function browserRisk(args: Record<string, unknown>): ToolRisk {
   const action = str(args, "action", "read");
+  // One of the browser's own settings, switched on once: asks under Restrictive access (with Always allow).
+  if (action === "allow_page_access") return "write";
   if (BROWSER_READS.has(action)) return "read";
   if (action === "click") {
     const id = num(args, "id", NaN);
@@ -504,11 +509,12 @@ const browserTool = macTool({
     "Use web pages in the user's own browser (Safari, Chrome, Brave, Edge, Arc, Vivaldi), signed in as them, even with the browser in the background. " +
     "action read: the page's links, buttons and fields with [id]s (content:true adds the page's text; query filters). click: by id or element text. type: into a field by id or element (its label/placeholder), " +
     "text = what to type, submit:true presses Enter; also picks options in drop-downs. scroll, back, forward, reload. tabs: list tabs; switch: tab index; open: a url in a new tab; go: a url in this tab. " +
-    "Prefer this over mac_ui/screenshots for anything inside a web page. Defaults to the browser in front.",
+    "Prefer this over mac_ui/screenshots for anything inside a web page. Defaults to the browser in front. " +
+    'allow_page_access: switches on the browser\'s "Allow JavaScript from Apple Events", which it needs before pages can be read (once per browser; never use AppleScript for it).',
   parameters: {
     type: "object",
     properties: {
-      action: { type: "string", enum: ["read", "click", "type", "scroll", "back", "forward", "reload", "tabs", "switch", "open", "go"], description: "Default read" },
+      action: { type: "string", enum: ["read", "click", "type", "scroll", "back", "forward", "reload", "tabs", "switch", "open", "go", "allow_page_access"], description: "Default read" },
       browser: { type: "string", description: 'e.g. "Safari", "Brave Browser", "Google Chrome" (default: the one in front, or the one open)' },
       id: { type: "number", description: "Element id from the latest read" },
       element: { type: "string", description: "Or: the element's text, label or placeholder" },
@@ -523,13 +529,32 @@ const browserTool = macTool({
       dy: { type: "number", description: "scroll: pixels down (negative = up; default one screen)" },
     },
   },
-  async run(args) {
+  summary: (args) =>
+    str(args, "action") === "allow_page_access"
+      ? `Turn on page access in ${str(args, "browser") || "the browser"} (its "Allow JavaScript from Apple Events" setting), so bots can read and use pages there`
+      : "",
+  async run(args, ctx) {
     const action = str(args, "action", "read");
     const source = { untrustedSource: "a web page in the browser" };
+    if (action === "allow_page_access") {
+      const done = await mac<{ browser: string; already?: boolean }>("browser", { browser: str(args, "browser") || undefined, action });
+      return done.already ? `Page access was already on in ${done.browser}.` : `Turned on page access in ${done.browser} ("Allow JavaScript from Apple Events"). Pages there can be read now.`;
+    }
     if (action === "read") {
       const offset = num(args, "offset", 0);
-      const page = await readPage(args, { query: str(args, "query") || undefined, content: args.content === true, offset, max: num(args, "max", 150) });
-      return { content: formatPage(page, offset), ...source };
+      const read = () => readPage(args, { query: str(args, "query") || undefined, content: args.content === true, offset, max: num(args, "max", 150) });
+      let page: PageSnapshot;
+      let note = "";
+      try {
+        page = await read();
+      } catch (error) {
+        // With Full access, switch the browser's page access on once (as the user would) and carry on.
+        if (!PAGE_ACCESS_OFF.test((error as Error).message) || ctx.settings.agent.access !== "full") throw error;
+        const done = await mac<{ browser: string }>("browser", { browser: str(args, "browser") || undefined, action: "allow_page_access" });
+        note = `(Turned on page access in ${done.browser} first: "Allow JavaScript from Apple Events".)\n`;
+        page = await read();
+      }
+      return { content: `${note}${formatPage(page, offset)}`, ...source };
     }
     if (action === "click") {
       const t = await pageTarget(args, false);

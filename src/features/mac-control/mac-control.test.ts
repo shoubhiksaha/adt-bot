@@ -273,9 +273,54 @@ describe("web pages in the browser", () => {
 
   it("explains how to allow page access in each browser", () => {
     const off = new Error("Executing JavaScript through AppleScript is turned off. To turn it on, from the menu bar, go to View > Developer > Allow JavaScript from Apple Events.");
-    expect(mac.browserError("Brave Browser", "chromium", off).message).toMatch(/View → Developer → "Allow JavaScript from Apple Events"/);
+    // Chromium browsers: the bot switches it on itself with allow_page_access, never AppleScript.
+    const brave = mac.browserError("Brave Browser", "chromium", off).message;
+    expect(brave).toMatch(/"Allow JavaScript from Apple Events" is on \(View → Developer\)/);
+    expect(brave).toMatch(/action "allow_page_access"/);
+    expect(brave).toMatch(/Don't use AppleScript/);
     expect(mac.browserError("Safari", "safari", new Error("You must enable 'Allow JavaScript from Apple Events' in the Developer section")).message).toMatch(/Show features for web developers/);
     expect(mac.browserError("Arc", "chromium", new Error("ADT_NOT_RUNNING")).message).toBe("Arc isn't open. Open it first (mac_open_app).");
+  });
+
+  it("switches page access on by pressing once, checked by a page script (never toggled back off)", async () => {
+    const off = new Error('Executing JavaScript through AppleScript is turned off. To turn it on, go to View > Developer > Allow JavaScript from Apple Events.');
+    const setup = (onAfterPress: boolean, startsOn = false) => {
+      let on = startsOn;
+      const presses: unknown[] = [];
+      return {
+        presses,
+        opts: {
+          wait: 1,
+          tries: 3,
+          helperReady: () => true,
+          run: async () => {
+            if (!on) throw off;
+            return "1";
+          },
+          helper: async (cmd: string, payload: unknown) => {
+            presses.push([cmd, payload]);
+            if (onAfterPress) on = true;
+            return { found: true, title: "Allow JavaScript from Apple Events" };
+          },
+        },
+      };
+    };
+    // Already on: nothing pressed.
+    let t = setup(true, true);
+    expect(await mac.allowPageAccess("Brave Browser", t.opts)).toMatchObject({ already: true });
+    expect(t.presses).toEqual([]);
+    // Off: pressed once, then confirmed.
+    t = setup(true);
+    expect(await mac.allowPageAccess("Brave Browser", t.opts)).toMatchObject({ ok: true, browser: "Brave Browser" });
+    expect(t.presses).toEqual([["menuSetting", { app: "Brave Browser", words: ["javascript", "apple"], press: true }]]);
+    // Still off after the press: not pressed again (that would switch it off); the user is asked.
+    t = setup(false);
+    await expect(mac.allowPageAccess("Brave Browser", t.opts)).rejects.toThrow(/pressed once \(not pressed again/);
+    expect(t.presses).toHaveLength(1);
+    // Safari: it lives in Safari's settings, so the user is told where.
+    t = setup(true);
+    await expect(mac.allowPageAccess("Safari", t.opts)).rejects.toThrow(/Settings → Developer/);
+    expect(t.presses).toEqual([]);
   });
 
   it("formats pages compactly and pages through long text", async () => {
@@ -316,6 +361,33 @@ describe("web pages in the browser", () => {
     expect(browser.riskFor?.({ action: "click", element: "Place order" })).toBe("destructive");
     expect(browser.riskFor?.({ action: "type", element: "Password", text: "x" })).toBe("destructive");
     expect(browser.riskFor?.({ action: "open", url: "https://x.org" })).toBe("write");
+    vi.unstubAllGlobals();
+  });
+
+  it("switches page access on itself under Full access (no AppleScript), and asks first otherwise", async () => {
+    let reads = 0;
+    const calls: Record<string, unknown>[] = [];
+    const invoke = vi.fn(async (channel: string, payload: Record<string, unknown>) => {
+      if (channel !== "adt:mac:browser") return undefined;
+      calls.push(payload);
+      if (payload.action === "allow_page_access") return { browser: "Brave Browser", ok: true };
+      if (payload.action === "read" && reads++ === 0) {
+        throw new Error('Brave Browser doesn\'t let apps read pages until "Allow JavaScript from Apple Events" is on (View → Developer).');
+      }
+      return { browser: "Brave Browser", url: "https://example.com/", title: "Example", elements: [] };
+    });
+    vi.stubGlobal("window", { adtbotDesktop: { platform: "darwin", proxyToken: "", version: "44", invoke } });
+    const { macTools } = await import("./tools");
+    const browser = macTools.find((t) => t.name === "mac_browser")!;
+    const ctx = (access: "full" | "restricted") => ({ settings: { agent: { access } } }) as never;
+    const out = (await browser.run({ action: "read" }, ctx("full"))) as { content: string };
+    expect(out.content).toMatch(/^\(Turned on page access in Brave Browser first/);
+    expect(calls.map((c) => c.action)).toEqual(["read", "allow_page_access", "read"]);
+    // Restrictive: the error goes back to the bot, which then asks (allow_page_access is a change).
+    reads = 0;
+    await expect(browser.run({ action: "read" }, ctx("restricted"))).rejects.toThrow(/Allow JavaScript from Apple Events/);
+    expect(browser.riskFor?.({ action: "allow_page_access" })).toBe("write");
+    expect(browser.summary?.({ action: "allow_page_access", browser: "Brave Browser" })).toMatch(/Turn on page access in Brave Browser/);
     vi.unstubAllGlobals();
   });
 

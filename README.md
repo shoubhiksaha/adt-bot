@@ -201,9 +201,11 @@ Bots can do things as well as talk. Turn it on or off, and choose what needs you
   "send Mom 'on my way' on WhatsApp" takes a few steps instead of a screenshot-and-click loop.
   - **Web pages in your own browser** (Safari, Chrome, Brave, Edge, Arc, Vivaldi), signed in as you: bots read
     the page's links, buttons, fields and text, click, type, pick options and switch tabs, through the page
-    itself, even with the browser in the background. The first time, allow it in the browser: **View → Developer →
-    Allow JavaScript from Apple Events** (Chrome, Brave, Edge), or in Safari **Settings → Advanced → Show features
-    for web developers**, then **Develop → Allow JavaScript from Apple Events**.
+    itself, even with the browser in the background. The browser has to allow it once: **View → Developer →
+    Allow JavaScript from Apple Events** (Chrome, Brave, Edge). With Full access the bot switches that on itself
+    the first time it needs it (otherwise it asks once, with Always allow), and checks it worked; it never uses
+    AppleScript for it. Safari keeps it in **Settings → Advanced → Show features for web developers**, then
+    **Settings → Developer → Allow JavaScript from Apple Events**, which you switch on yourself.
   - **Text on screen**: Apple's on-device text recognition finds text that accessibility can't see (canvases,
     games, remote desktops), with positions to click.
   - **Recipes**: after working out a task in an app, a bot can save the steps (with blanks such as contact and
@@ -252,8 +254,10 @@ Click the **sound-wave button** next to the mic for a hands-free conversation:
 - **Supertonic 3** adds a free, private, offline natural reply voice in 31 languages (398 MB download, faster with a
   GPU). Its model license is [OpenRAIL-M](https://huggingface.co/Supertone/supertonic-3/blob/main/LICENSE): no
   impersonating people without consent, and don't pass its speech off as a human's.
-- **Interrupt any time** by just talking over it: it stops as soon as the live captions show it's you (a few
-  words, or "stop"), with any voice. Tapping the orb or pressing Space works too.
+- **Interrupt any time** by just talking over it: it turns itself down the moment you start, and stops about a
+  second later once your voice is clearly louder than its own coming back (it knows exactly what it's playing),
+  or as soon as the live captions show it's you ("stop", "wait", "hold on", or a few words of your own). Tapping
+  the orb or pressing Space works too. A stray word or a misheard echo after it stops doesn't start a new answer.
 - **It doesn't answer itself.** Its own voice coming back through the microphone (speakers, Bluetooth delay, a
   room's echo), even misheard, is recognised and ignored; when its echo runs into you talking over it, only your
   words are kept. Every reply voice also gets the microphone's echo cancellation, the Mac's built-in voices too: the

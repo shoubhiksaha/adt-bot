@@ -220,10 +220,16 @@ export function userPart(heard: string, spoken: string): string | null {
   return fresh >= 2 && fresh / words.length >= 0.4 ? own : null;
 }
 
-/** For a live caption while the bot talks: someone cutting in says at least two words of their own. */
+/**
+ * For a live caption while the bot talks: someone cutting in says at least three words of their own,
+ * and they're the latest words. A caption still ending in the bot's own words is its echo, however
+ * misheard the middle is (long echoes come back with garbled words).
+ */
 export function soundsLikeUser(heard: string, spoken: string): boolean {
+  if (withoutTrailingEcho(heard, spoken) !== heard.trim()) return false;
   const own = userPart(heard, spoken);
-  return own !== null && newWords(own, spoken).length >= 2;
+  // Three words of their own: two misheard echo words ("and island island") come back too easily.
+  return own !== null && newWords(own, spoken).length >= 3;
 }
 
 /**
@@ -333,7 +339,11 @@ const HALLUCINATIONS =
 export function isLikelyHallucination(text: string): boolean {
   if (/^\s*[[(*♪].*[\])*♪]\s*$/.test(text)) return true; // [Music], (silence), ♪ ♪
   const t = normalize(text);
-  return !t || HALLUCINATIONS.test(t);
+  // One word over and over ("foreign foreign foreign"): what speech models make of noise. Not "no
+  // no no" or "stop stop stop": people say those.
+  const repeated = /^(\S+)(?: \1){2,}$/.exec(t)?.[1];
+  if (repeated && !/^(no|nope|yes|yeah|yep|stop|wait|ok|okay|hey|hello|hi|please)$/.test(repeated)) return true;
+  return !t || HALLUCINATIONS.test(t) || t === "foreign";
 }
 
 /** Enough real words to count as the user cutting in (single words are usually noise or echo). */

@@ -1133,17 +1133,50 @@ function browserError(name, kind, error) {
   const text = String(error?.message ?? error);
   if (/ADT_NOT_RUNNING/.test(text)) return new Error(`${name} isn't open. Open it first (mac_open_app).`);
   if (/ADT_NO_WINDOW/.test(text)) return new Error(`${name} has no open window.`);
-  if (/JavaScript.*(turned off|Apple ?Events)|Allow JavaScript from Apple Events/i.test(text)) {
+  if (PAGE_ACCESS_OFF.test(text)) {
     return Object.assign(
       new Error(
         kind === "safari"
-          ? `Safari doesn't let apps read pages until it's allowed: Safari → Settings → Advanced → turn on "Show features for web developers", then Develop menu → "Allow JavaScript from Apple Events". Ask the user to do this (or do it with mac_press, menus:true, after they agree), then try again.`
-          : `${name} doesn't let apps read pages until it's allowed: in ${name}'s menu bar, View → Developer → "Allow JavaScript from Apple Events". Ask the user to switch it on (or press it with mac_press after they agree: mac_ui with app "${name}" and menus:true), then try again.`,
+          ? `Safari doesn't let apps read pages until it's allowed: Safari → Settings → Advanced → turn on "Show features for web developers", then Settings → Developer → "Allow JavaScript from Apple Events". Ask the user to do this, then try again.`
+          : `${name} doesn't let apps read pages until "Allow JavaScript from Apple Events" is on (View → Developer). Call mac_browser with action "allow_page_access" to switch it on once, then try again. Don't use AppleScript or click the menus for this.`,
       ),
       { code: "browser-js-off" },
     );
   }
   return error;
+}
+
+/** The browser's answer when its "Allow JavaScript from Apple Events" is off. */
+const PAGE_ACCESS_OFF = /JavaScript.*(turned off|Apple ?Events)|Allow JavaScript from Apple Events/i;
+
+/**
+ * Switches on the browser's own "Allow JavaScript from Apple Events" (View → Developer), which it
+ * needs before any app can read or use its pages. Whether it's on is judged by a page script
+ * running, not by the menu's tick (Chromium updates ticks only when the menu opens), and the item
+ * is pressed at most once: pressing again would switch it back off.
+ */
+async function allowPageAccess(name, { wait = 500, tries = 6, run = browserRun, helper = helperCall, helperReady = hasHelper } = {}) {
+  const kind = BROWSERS[name];
+  const works = async () => {
+    try {
+      await run(name, "js", "1");
+      return true;
+    } catch (error) {
+      if (PAGE_ACCESS_OFF.test(String(error?.message ?? error))) return false;
+      throw error;
+    }
+  };
+  if (await works()) return { browser: name, ok: true, already: true };
+  const safari = `Safari keeps this in its settings: Safari → Settings → Advanced → "Show features for web developers", then Settings → Developer → "Allow JavaScript from Apple Events". Ask the user to switch it on there.`;
+  if (kind === "safari") throw new Error(safari);
+  if (!helperReady()) throw new Error("Switching this on needs ADT Bot's Mac helper, which this build lacks.");
+  const r = await helper("menuSetting", { app: name, words: ["javascript", "apple"], press: true }, { what: `Allowing page access in ${name}`, timeoutMs: 15_000 });
+  if (!r.found) throw new Error(`${name} has no "Allow JavaScript from Apple Events" menu item. Ask the user to switch it on (View → Developer).`);
+  for (let i = 0; i < tries; i++) {
+    await new Promise((resolve) => setTimeout(resolve, wait));
+    if (await works()) return { browser: name, ok: true, title: r.title };
+  }
+  throw new Error(`${name} still doesn't allow page access after "${r.title}" was pressed once (not pressed again: that would switch it off). Ask the user to check it has a tick: View → Developer → ${r.title}.`);
 }
 
 /** Which browser: the one asked for, the one in front, or the first one running. */
@@ -1226,8 +1259,10 @@ async function browser({ browser: wanted, action = "read", id, text, submit, app
     case "go":
       await browserRun(name, action, address);
       return { ...base, ok: true, url: address };
+    case "allow_page_access":
+      return allowPageAccess(name);
     default:
-      throw new Error("action must be read, click, type, scroll, back, forward, reload, tabs, switch, open or go.");
+      throw new Error("action must be read, click, type, scroll, back, forward, reload, tabs, switch, open, go or allow_page_access.");
   }
 }
 
@@ -1329,6 +1364,7 @@ exports.register = ({ app, ipcMain, shell, access, onStopAll }) => {
 exports.stopHelper = stopHelper;
 
 exports._test = {
+  allowPageAccess,
   SUPPORTED,
   PANES,
   osascriptArgs,

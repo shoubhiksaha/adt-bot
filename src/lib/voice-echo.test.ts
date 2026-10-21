@@ -10,7 +10,7 @@ import { VoiceSession } from "./voice-session";
 vi.mock("./transport", () => ({ providerFetch: (url: string, init: RequestInit) => fetch(url, init), detectEnv: async () => ({ platform: "web", proxy: false }) }));
 
 // The microphone side: a stand-in listener whose events each test sends.
-const mic = vi.hoisted(() => ({ emit: (_event: Record<string, unknown>) => undefined as unknown, early: false as boolean | undefined }));
+const mic = vi.hoisted(() => ({ emit: (_event: Record<string, unknown>) => undefined as unknown, early: false as boolean | undefined, level: 0.1 }));
 vi.mock("./whisper", async () => {
   const models = await vi.importActual<typeof import("./speech-models")>("./speech-models");
   return {
@@ -22,20 +22,21 @@ vi.mock("./whisper", async () => {
       open: async (options: { early?: boolean; onEvent: (event: Record<string, unknown>) => void }) => {
         mic.emit = options.onEvent;
         mic.early = options.early;
-        return { setPartials: () => undefined, setSensitivity: () => undefined, setMuted: () => undefined, flush: () => undefined, close: () => undefined };
+        return { setPartials: () => undefined, setSensitivity: () => undefined, setMuted: () => undefined, flush: () => undefined, close: () => undefined, level: () => mic.level };
       },
     },
   };
 });
 
 // The bot's voice: records what it says; every sentence "plays" instantly.
-const out = vi.hoisted(() => ({ said: [] as string[], speaking: false }));
+const out = vi.hoisted(() => ({ said: [] as string[], speaking: false, db: -20 }));
 vi.mock("./tts", async () => {
   const { takeSentences } = await vi.importActual<typeof import("./tts")>("./tts");
   return {
     takeSentences,
     chime: () => undefined,
     duckSpeech: () => undefined,
+    outputDb: () => out.db,
     warmDeviceVoice: () => undefined,
     createSpeaker: (_context: unknown, hooks: { onSentence?: (s: string) => void } = {}) => {
       let spoken = "";
@@ -151,6 +152,8 @@ beforeEach(() => {
   toolRuns = 0;
   out.said = [];
   out.speaking = false;
+  out.db = -20;
+  mic.level = 0.1;
   const provider: ProviderConfig = { id: "p", presetId: "custom", name: "P", kind: "openai", baseUrl: base, apiKey: "k", models: [] };
   useStore.setState({
     hydrated: true,
@@ -246,6 +249,74 @@ describe("talking over it", () => {
   });
 });
 
+describe("talking over it, before the words are known", () => {
+  /** The bot is mid-answer, and its own voice has been coming back at `echo` loudness for a second. */
+  async function speakingWithEcho(echo: number) {
+    const s = await open();
+    out.speaking = true;
+    plans = [{ chunks: ["Paris began as a small settlement on an island in the Seine. ", "The Romans called it Lutetia. ", "Later it grew."], gap: 400 }];
+    mic.emit({ type: "start" });
+    mic.emit({ type: "utterance", text: "Tell me about the history of Paris", ms: 3, waitMs: 300 });
+    await until(() => s.state.phase === "speaking");
+    mic.level = echo;
+    await sleep(1200);
+    return s;
+  }
+
+  it("stops within half a second once someone is clearly louder than its echo", async () => {
+    const s = await speakingWithEcho(0.25);
+    mic.emit({ type: "start" });
+    mic.emit({ type: "speech" });
+    mic.level = 0.8;
+    await until(() => s.state.phase === "hearing", 900);
+    out.speaking = false;
+    // Their words: a new request is answered.
+    mic.emit({ type: "utterance", text: "actually tell me about Rome instead", ms: 3, waitMs: 300 });
+    await until(() => requests.length === 2);
+    expect(userWords(1)).toBe("actually tell me about Rome instead");
+  });
+
+  it("doesn't count the start of a cut-in as echo (seen live: it hid a quieter voice)", async () => {
+    out.db = -12;
+    const s = await speakingWithEcho(0);
+    // Their first quarter second, before the detector is sure it's speech.
+    mic.emit({ type: "start" });
+    mic.level = 0.45;
+    await sleep(250);
+    mic.emit({ type: "speech" });
+    await until(() => s.state.phase === "hearing", 900);
+    out.speaking = false;
+  });
+
+  it("doesn't stop for its own voice coming back, however loud", async () => {
+    const s = await speakingWithEcho(0.7);
+    mic.emit({ type: "start" });
+    mic.emit({ type: "speech" });
+    mic.level = 0.72;
+    await sleep(800);
+    expect(s.state.phase).toBe("speaking");
+    out.speaking = false;
+  });
+
+  it("after stopping, a stray word or the last question heard again isn't a new request", async () => {
+    for (const heard of ["was", "Tell me about the history of Paris"]) {
+      const s = await speakingWithEcho(0.2);
+      mic.emit({ type: "start" });
+      mic.emit({ type: "speech" });
+      mic.level = 0.85;
+      await until(() => s.state.phase === "hearing", 900);
+      out.speaking = false;
+      mic.emit({ type: "utterance", text: heard, ms: 3, waitMs: 300 });
+      await sleep(150);
+      expect(requests).toHaveLength(1);
+      expect(s.state.phase).toBe("listening");
+      s.close(false);
+      requests = [];
+      mic.level = 0.1;
+    }
+  });
+});
+
 describe("telling a late echo from a reply", () => {
   it("matches the bot's last words in order, not a short or different answer", async () => {
     const { echoesLastWords } = await import("./voice-commands");
@@ -336,6 +407,53 @@ describe("numbers and stray words around the user's words", () => {
     const rome = "Here's Rome in six sentences. According to legend, Rome was founded in seven fifty-three BC by Romulus, and it was ruled by kings until about 509 BC.";
     expect(userPart("Here's Rome in six sentences, according to legend Rome was founded in 1784. Tell me about Paris instead.", rome)).toBe("Tell me about Paris instead.");
     expect(userPart("According to legend, Rome was founded in September. Wait, stop. Tell me about Paris instead.", rome)).toBe("Wait, stop. Tell me about Paris instead.");
+  });
+});
+
+
+describe("a long echo caption with misheard words", async () => {
+  const { soundsLikeUser } = await import("./voice-commands");
+  const spoken = "Paris began as a small settlement of the Parisii tribe on an island in the Seine, more than two thousand years ago. The Romans called it Lutetia and built baths, a forum and an arena there. In the Middle Ages it grew into the largest city in Europe, with Notre Dame rising on the same island.";
+
+  it("isn't the user while it still ends in the bot's own words (seen live: 11 s of echo)", () => {
+    const caption = "Paris began as a small settlement of the Parisi I tribe on an island in the Seine more than 2,000 years ago the Romans called it lutetia and built bats a foreman and arena there in the middle ages it grew into the largest city in Europe";
+    expect(soundsLikeUser(caption, spoken)).toBe(false);
+  });
+
+  it("is the user once their own words come at the end", () => {
+    expect(soundsLikeUser("in the middle ages it grew into hold on can you tell me about Rome instead", spoken)).toBe(true);
+  });
+});
+
+describe("what speech models make of noise", async () => {
+  const { isLikelyHallucination } = await import("./voice-commands");
+  it("isn't taken for someone talking", () => {
+    for (const t of ["Thank you for watching", "foreign foreign foreign", "Foreign.", "you you you you"]) expect(isLikelyHallucination(t)).toBe(true);
+    for (const t of ["hold on wait a second", "no no no that's wrong", "stop stop", "no no no", "stop stop stop", "yes yes yes"]) expect(isLikelyHallucination(t)).toBe(false);
+  });
+});
+
+describe("talking over the bot: more than its own echo explains", async () => {
+  const { heardOverEcho } = await import("./voice-session");
+  const echoGaps = (gap: number, n = 30) => Array.from({ length: n }, (_, i) => gap + (i % 5) - 2);
+  /** The bot's output rising and falling syllable by syllable, and the microphone hearing `mic(out)`. */
+  const moment = (mic: (out: number) => number) => Array.from({ length: 9 }, (_, i) => -15 - (i % 3) * 12).map((o) => ({ out: o, mic: mic(o) }));
+
+  it("stops for a voice well above the echo the bot's output explains", () => {
+    expect(heardOverEcho(moment(() => -20), echoGaps(-28), -55)).toBe(true);
+  });
+
+  it("not for the echo itself, loud or soft, however the bot's voice rises and falls", () => {
+    expect(heardOverEcho(moment((o) => o - 28), echoGaps(-28), -55)).toBe(false);
+    expect(heardOverEcho(moment((o) => o - 4), echoGaps(-4), -55)).toBe(false);
+  });
+
+  it("judges quiet moments against the room, and leaves it to the words until the echo is known", () => {
+    const silent = Array.from({ length: 9 }, () => ({ out: -80 }));
+    expect(heardOverEcho(silent.map((w) => ({ ...w, mic: -52 })), echoGaps(-28), -55)).toBe(false);
+    expect(heardOverEcho(silent.map((w) => ({ ...w, mic: -25 })), echoGaps(-28), -55)).toBe(true);
+    expect(heardOverEcho(moment(() => -20), echoGaps(-28, 14), -55)).toBe(false);
+    expect(heardOverEcho(moment(() => -20).slice(0, 5), echoGaps(-28), -55)).toBe(false);
   });
 });
 
