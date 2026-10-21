@@ -1,5 +1,6 @@
 import { ChevronRight, Download, MessageSquare, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { confirmThen } from "../../components/Confirm";
 import { type ActivityEntry, clearActivity, listActivity, onActivity } from "../../lib/agent/activity";
 import { saveTextFile } from "../../lib/files";
 import { useStore } from "../../lib/store";
@@ -19,7 +20,9 @@ function Row({ entry }: { entry: ActivityEntry }) {
         <ChevronRight size={14} className="chev" />
         <span className="log-time small muted">{new Date(entry.at).toLocaleString(undefined, { dateStyle: "short", timeStyle: "medium" })}</span>
         <span className="log-what">
-          <strong>{entry.bot}</strong> <code>{entry.tool}</code> <span className="log-summary">{entry.summary}</span>
+          <strong>{entry.bot}</strong> <code>{entry.tool}</code>{" "}
+          {/* A tool with nothing to describe (current_time) has its name as its summary: once is enough. */}
+          {entry.summary && entry.summary !== entry.tool && <span className="log-summary">{entry.summary}</span>}
         </span>
         {wasAsked(entry) && <span className="badge">asked you</span>}
         <span className={`badge outcome-${entry.outcome}`}>{OUTCOME[entry.outcome]}</span>
@@ -132,7 +135,7 @@ export default function ActivityView() {
         <button type="button" className="btn" disabled={!visible.length} onClick={() => void saveTextFile(`adt-bot-agent-log-${stamp}.json`, JSON.stringify(visible, null, 2), "application/json")}>
           <Download size={14} /> JSON
         </button>
-        <button type="button" className="btn" disabled={!entries.length} onClick={() => confirm("Clear the whole agent log?") && void clearActivity()}>
+        <button type="button" className="btn" disabled={!entries.length} onClick={() => confirmThen({ message: "Clear the whole agent log?", confirm: "Clear", danger: true }, () => clearActivity())}>
           <Trash2 size={14} /> Clear
         </button>
       </div>

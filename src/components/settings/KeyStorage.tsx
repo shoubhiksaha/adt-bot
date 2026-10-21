@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { desktopSecretBridge, keyStorageText, summarizeKeyStorage, useKeyStorage } from "../../lib/secrets";
+import { askConfirm } from "../Confirm";
 
 /** Where keys are kept on this device; a warning when the system keychain can't be used. */
 export function KeyStorageNote({ warningsOnly = false }: { warningsOnly?: boolean }) {
@@ -12,7 +13,7 @@ export function KeyStorageNote({ warningsOnly = false }: { warningsOnly?: boolea
 
   // Keys saved under a keychain key that's gone for good (keychain reset) would stay locked forever.
   const forget = async () => {
-    if (!confirm("Delete the saved keys that can't be unlocked? You'll need to enter them again.")) return;
+    if (!(await askConfirm({ message: "Delete the saved keys that can't be unlocked?", detail: "You'll need to enter them again.", confirm: "Delete", danger: true }))) return;
     const bridge = desktopSecretBridge();
     for (const [store, mode] of Object.entries(modes)) if (mode === "locked") await bridge?.clear(store);
     setDone(true);

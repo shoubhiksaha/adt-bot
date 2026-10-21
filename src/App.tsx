@@ -3,7 +3,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { ChatView } from "./components/ChatView";
 import { FeatureHost } from "./components/FeatureHost";
 import "./features";
-import { useNav } from "./features/registry";
+import { openView, useNav } from "./features/registry";
 import type { SettingsTab } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { stopStreaming } from "./lib/chat";
@@ -98,7 +98,7 @@ export function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
   const [newGroup, setNewGroup] = useState(false);
-  const [editingBot, setEditingBot] = useState<string | null>(null);
+  const [editingBot, setEditingBot] = useState<{ id: string; fresh?: { returnTo: string | null } } | null>(null);
   const [voice, setVoice] = useState<{ request?: string } | null>(null);
   const activeView = useNav((s) => s.view);
   const handsFree = useStore((s) => s.settings.voice.handsFree);
@@ -161,6 +161,7 @@ export function App() {
         e.preventDefault();
         const id = useStore.getState().activeBotId;
         if (id) startNewChat(id);
+        openView(null);
         window.dispatchEvent(new Event("adt:focus-composer"));
       } else if (e.key === "/" && !mod && !isTyping(e.target)) {
         e.preventDefault();
@@ -203,12 +204,12 @@ export function App() {
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         onOpenSettings={() => setSettingsTab("general")}
-        onEditBot={setEditingBot}
+        onEditBot={(id, fresh) => setEditingBot({ id, fresh })}
       />
       {activeView ? (
         <FeatureHost viewId={activeView} onOpenSidebar={() => setSidebarOpen(true)} />
       ) : (
-        bot && <ChatView bot={bot} onOpenSidebar={() => setSidebarOpen(true)} onEditBot={() => setEditingBot(bot.id)} />
+        bot && <ChatView bot={bot} onOpenSidebar={() => setSidebarOpen(true)} onEditBot={() => setEditingBot({ id: bot.id })} />
       )}
       {voice && (
         <Suspense fallback={null}>
@@ -223,7 +224,7 @@ export function App() {
       <Suspense fallback={null}>
         {settingsTab && <SettingsDialog initialTab={settingsTab} onClose={() => setSettingsTab(null)} />}
         {newGroup && <GroupDialog onClose={() => setNewGroup(false)} />}
-        {editingBot && <BotDialog botId={editingBot} onClose={() => setEditingBot(null)} />}
+        {editingBot && <BotDialog botId={editingBot.id} fresh={editingBot.fresh} onClose={() => setEditingBot(null)} />}
       </Suspense>
     </div>
   );

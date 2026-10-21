@@ -1,6 +1,6 @@
 /* Memory screen. Uses the app's tokens from src/styles.css. */
 .memory-view {
-  max-width: 820px;
+  max-width: var(--page-width);
   margin: 0 auto;
   padding: 18px 16px 40px;
 }

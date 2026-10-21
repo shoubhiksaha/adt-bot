@@ -43,3 +43,28 @@ export function linkCitations(block: string, sources: Source[] | undefined): str
     return `[${n}](<${url}> "${title}")`;
   });
 }
+
+/**
+ * A block's math, ready for remark-math: \( \) and \[ \] become $ and $$, and a $ before a digit is a
+ * price ("$5 to $10"), not math. Code is left alone. `math`: whether any math is left to render.
+ */
+export function prepareMath(block: string): { text: string; math: boolean } {
+  if (/^\s{0,3}(```|~~~)/m.test(block) || !/[$\\]/.test(block)) return { text: block, math: false };
+  let math = false;
+  // Inline code spans (odd parts) stay as they are.
+  const text = block
+    .split(/(`+[^`]*`+)/)
+    .map((part, i) => {
+      if (i % 2) return part;
+      const out = part
+        // On a line of its own, \[ … \] is display math (a block); inside a sentence it stays inline.
+        .replace(/^([ \t]*)\\\[([\s\S]+?)\\\][ \t]*$/gm, (_, indent: string, m: string) => `${indent}$$\n${indent}${m.trim()}\n${indent}$$`)
+        .replace(/\\\[([\s\S]+?)\\\]/g, (_, m: string) => `$$${m}$$`)
+        .replace(/\\\(([\s\S]+?)\\\)/g, (_, m: string) => `$${m.trim()}$`)
+        .replace(/(?<![\\$])\$(?=\d)/g, "\\$");
+      if (/(?<!\\)\$/.test(out)) math = true;
+      return out;
+    })
+    .join("");
+  return { text, math };
+}

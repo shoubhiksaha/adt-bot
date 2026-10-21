@@ -116,7 +116,7 @@ export default function GroupDialog({ onClose }: { onClose: () => void }) {
           </select>
         </div>
         {error && <p className="error-text small">{error}</p>}
-        <div className="btn-row">
+        <div className="btn-row dialog-actions">
           <button type="button" className="btn" onClick={onClose}>
             Cancel
           </button>

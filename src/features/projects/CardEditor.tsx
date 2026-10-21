@@ -279,7 +279,7 @@ export function CardEditor({
           </ul>
         </div>
 
-        <div className="btn-row" style={{ justifyContent: "space-between" }}>
+        <div className="btn-row dialog-actions" style={{ justifyContent: "space-between" }}>
           <span className="muted small">Created {when(card.createdAt)}</span>
           {confirmDelete ? (
             <div className="btn-row">

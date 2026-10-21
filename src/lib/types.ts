@@ -194,6 +194,10 @@ export type Message = {
   status?: string;
   /** Total time and time to first token, in milliseconds. */
   stats?: { ms: number; firstMs?: number };
+  /** Stopped before it finished (the stop button, Esc, or talking over it in voice mode). */
+  stopped?: boolean;
+  /** A long instruction the app wrote for the bot (a card's task, a routine run): the short line the chat shows. `content` is what the bot reads. */
+  shown?: string;
   /** Claude's summary of the conversation up to this reply (server-side compaction), sent back on later turns. */
   compaction?: Record<string, unknown>;
   /** Group chats: the bot that wrote this reply. */

@@ -36,6 +36,8 @@ export function AboutSettings() {
   const version = state?.appVersion || BUILD_VERSION;
   const actions = state ? updateActions(state) : { check: false, install: false };
   const problem = tokenProblem(token);
+  // Not a failure on a fresh install: the releases are private until a token is added.
+  const needsToken = state?.status === "error" && !state.token && /add a GitHub token/.test(state.error);
 
   return (
     <div>
@@ -50,8 +52,8 @@ export function AboutSettings() {
 
       {desktop && state && (
         <Section title="Updates">
-          <p className={`status${state.status === "error" ? " err" : state.status === "available" ? " ok" : ""}`} style={{ marginTop: 0 }}>
-            {updateSummary(state)}
+          <p className={`status${state.status === "error" && !needsToken ? " err" : state.status === "available" ? " ok" : ""}`} style={{ marginTop: 0 }}>
+            {needsToken ? "ADT Bot's releases are private for now: checking for updates needs a read-only GitHub token (below)." : updateSummary(state)}
           </p>
           {state.status === "downloading" && <progress value={state.percent} max={100} style={{ width: "100%", marginBottom: 10 }} />}
           {!state.unsupported && (

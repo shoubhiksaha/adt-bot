@@ -353,11 +353,11 @@ export async function resendFrom(conversationId: string, messageId: string, newT
 export async function sendInBackground(
   conversationId: string,
   text: string,
-  options: Pick<SendOptions, "signal" | "shared" | "unattended" | "taintedBy"> = {},
+  options: Pick<SendOptions, "signal" | "shared" | "unattended" | "taintedBy"> & { shown?: string } = {},
 ): Promise<Message | undefined> {
   const conversation = useStore.getState().conversations[conversationId];
   if (!conversation) throw new Error("That conversation no longer exists.");
-  const userMessage: Message = { id: uid(), role: "user", content: text, createdAt: Date.now() };
+  const userMessage: Message = { id: uid(), role: "user", content: text, createdAt: Date.now(), ...(options.shown ? { shown: options.shown } : {}) };
   updateConversation(conversationId, (c) => ({ ...c, messages: [...c.messages, userMessage], updatedAt: Date.now() }));
   await runAssistant(conversationId, conversation.botId, {
     background: true,
@@ -786,6 +786,7 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
       status: note,
       sources: sources.length ? sources : undefined,
       stats: { ms: Math.round(performance.now() - started), firstMs: firstMs && Math.round(firstMs) },
+      ...(signal.aborted ? { stopped: true } : {}),
     });
     // Typed questions get text only; a dictated one is read back when the user asked for that.
     if (settings.autoSpeak && opts.dictated && finalText && !signal.aborted && !voiceModeActive && !opts.background) {
@@ -795,7 +796,7 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
     return reply.id;
   } catch (error) {
     if ((error as Error).name !== "AbortError") patchReply({ error: (error as Error).message, status: undefined });
-    else patchReply({ status: undefined });
+    else patchReply({ status: undefined, stopped: true });
   } finally {
     running.delete(own);
     if (held) {

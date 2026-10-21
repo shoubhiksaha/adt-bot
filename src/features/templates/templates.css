@@ -1,6 +1,6 @@
 /* Templates screen and dialogs. Uses the app's tokens from src/styles.css. */
 .templates-view {
-  max-width: 980px;
+  max-width: var(--page-width);
   margin: 0 auto;
   padding: 18px 16px 40px;
 }

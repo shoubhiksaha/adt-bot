@@ -13,7 +13,7 @@ import { type Card, findColumn, locateCard, type Project } from "./model";
 import { addComment, addEvent, getProject, moveCard, updateCard } from "./store";
 
 /** Runs in the background: the user keeps whatever chat they had open, and several cards can run at once. */
-export type RunDeps = { send: (conversationId: string, text: string) => Promise<unknown> };
+export type RunDeps = { send: (conversationId: string, text: string, shown?: string) => Promise<unknown> };
 
 export type RunResult = { ok: true; conversationId: string } | { ok: false; error: string; conversationId?: string };
 
@@ -47,7 +47,7 @@ export function botFor(card: Card): Bot | undefined {
   return card.botId ? useStore.getState().bots.find((b) => b.id === card.botId) : undefined;
 }
 
-export async function runCardWithBot(projectId: string, cardId: string, deps: RunDeps = { send: (conversationId, text) => sendInBackground(conversationId, text) }): Promise<RunResult> {
+export async function runCardWithBot(projectId: string, cardId: string, deps: RunDeps = { send: (conversationId, text, shown) => sendInBackground(conversationId, text, { shown }) }): Promise<RunResult> {
   const project = getProject(projectId);
   const found = locateCard(project, cardId);
   if (!project || !found) return { ok: false, error: "That card no longer exists." };
@@ -77,7 +77,7 @@ export async function runCardWithBot(projectId: string, cardId: string, deps: Ru
 
   let failure: string | undefined;
   try {
-    await deps.send(conversationId, taskPrompt(project, card, doing?.name ?? startColumn.name));
+    await deps.send(conversationId, taskPrompt(project, card, doing?.name ?? startColumn.name), `Work on this card: ${card.title}`);
     keepTitle();
   } catch (error) {
     failure = (error as Error).message || "The run failed.";

@@ -1098,8 +1098,22 @@ export async function describeHttpError(res: Response): Promise<string> {
         ? " Check the model name and base URL."
         : res.status === 429
           ? " Rate limited or out of credits."
-          : "";
-  return `${res.status} ${res.statusText}: ${detail || "request failed"}.${hint}`;
+          : res.status >= 500
+            ? " Try again in a moment."
+            : "";
+  // Plain words first; the code and the service's own words after, for looking it up.
+  const lead =
+    res.status === 401 || res.status === 403
+      ? "The service didn't accept the request"
+      : res.status === 404
+        ? "The service couldn't find that"
+        : res.status === 429
+          ? "The service is limiting requests"
+          : res.status >= 500
+            ? "The AI service had a problem"
+            : "The request failed";
+  const code = `${res.status}${res.statusText ? ` ${res.statusText}` : ""}`;
+  return `${lead} (${code}): ${(detail || "no details").replace(/\.?\s*$/, "")}.${hint}`;
 }
 
 export function errorText(error: unknown): string {

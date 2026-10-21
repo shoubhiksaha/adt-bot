@@ -1,6 +1,7 @@
 import { Bell, ChevronRight, History, Loader2, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { BotAvatar } from "../../components/Avatar";
+import { confirmThen } from "../../components/Confirm";
 import { Dialog } from "../../components/Dialog";
 import { desktopInvoke, isDesktop } from "../../lib/desktop";
 import { useStore } from "../../lib/store";
@@ -205,7 +206,7 @@ function RoutineCard({ routine: r, running, onEdit }: { routine: Routine; runnin
           type="button"
           className="btn danger"
           onClick={() => {
-            if (confirm(`Delete the routine "${r.name}"? Its chats stay.`)) void deleteRoutine(r.id);
+            confirmThen({ message: `Delete the routine "${r.name}"?`, detail: "Its chats stay.", confirm: "Delete", danger: true }, () => deleteRoutine(r.id));
           }}
         >
           <Trash2 size={14} /> Delete
@@ -646,7 +647,7 @@ function RoutineEditor({ routine, onClose }: { routine: Routine | null; onClose:
           </label>
         )}
         {error && <div className="small error-text">{error}</div>}
-        <div className="btn-row" style={{ justifyContent: "flex-end", marginTop: 8 }}>
+        <div className="btn-row dialog-actions">
           <button type="button" className="btn" onClick={onClose}>
             Cancel
           </button>

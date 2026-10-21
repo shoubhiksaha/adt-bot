@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { generateImage, resolveImageModel } from "./imagine";
 import { messageText, streamChat } from "./llm";
-import { linkCitations, splitBlocks } from "./markdown-utils";
+import { linkCitations, prepareMath, splitBlocks } from "./markdown-utils";
 import { extractText, findUrls, parseDuckDuckGo, sourcesPrompt } from "./search";
 import type { Message, ProviderConfig } from "./types";
 
@@ -210,5 +210,14 @@ describe("markdown", () => {
     // A source's address can't end the link early and slip in an image or a second link.
     const tricky = [{ title: undefined as unknown as string, url: "https://a.example/x)![i](https://t.example/p.png", snippet: "" }];
     expect(linkCitations("See [1].", tricky)).toBe('See [1](<https://a.example/x)![i](https://t.example/p.png> "").');
+  });
+
+  it("finds math in its usual spellings, but not in prices or code", () => {
+    expect(prepareMath("So $a^2+b^2=c^2$.")).toEqual({ text: "So $a^2+b^2=c^2$.", math: true });
+    expect(prepareMath("Inline \\(e^{i\\pi}+1=0\\) here")).toEqual({ text: "Inline $e^{i\\pi}+1=0$ here", math: true });
+    expect(prepareMath("\\[ x^2 \\]")).toEqual({ text: "$$\nx^2\n$$", math: true });
+    expect(prepareMath("It costs $5 to $10.")).toEqual({ text: "It costs \\$5 to \\$10.", math: false });
+    expect(prepareMath("Run `echo $HOME` now")).toEqual({ text: "Run `echo $HOME` now", math: false });
+    expect(prepareMath("```sh\necho $PATH\n```").math).toBe(false);
   });
 });

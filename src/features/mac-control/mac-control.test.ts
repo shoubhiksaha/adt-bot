@@ -379,13 +379,24 @@ describe("web pages in the browser", () => {
     vi.stubGlobal("window", { adtbotDesktop: { platform: "darwin", proxyToken: "", version: "44", invoke } });
     const { macTools } = await import("./tools");
     const browser = macTools.find((t) => t.name === "mac_browser")!;
-    const ctx = (access: "full" | "restricted") => ({ settings: { agent: { access } } }) as never;
+    const ctx = (access: "full" | "restricted", extra: Record<string, unknown> = {}) => ({ settings: { agent: { access, denylist: [] } }, ...extra }) as never;
     const out = (await browser.run({ action: "read" }, ctx("full"))) as { content: string };
     expect(out.content).toMatch(/^\(Turned on page access in Brave Browser first/);
     expect(calls.map((c) => c.action)).toEqual(["read", "allow_page_access", "read"]);
+    // The browser whose read failed is the one switched, not whichever is in front by then.
+    expect(calls[1].browser).toBe("Brave Browser");
     // Restrictive: the error goes back to the bot, which then asks (allow_page_access is a change).
-    reads = 0;
-    await expect(browser.run({ action: "read" }, ctx("restricted"))).rejects.toThrow(/Allow JavaScript from Apple Events/);
+    const refused = async (c: never) => {
+      reads = 0;
+      calls.length = 0;
+      await expect(browser.run({ action: "read" }, c)).rejects.toThrow(/Allow JavaScript from Apple Events/);
+      expect(calls.map((x) => x.action)).toEqual(["read"]);
+    };
+    await refused(ctx("restricted"));
+    // Nor in a chat room (Full access doesn't apply there), after outside content, or past a deny rule.
+    await refused(ctx("full", { shared: true }));
+    await refused(ctx("full", { taint: { sources: new Set(["a web page"]) } }));
+    await refused({ settings: { agent: { access: "full", denylist: ["allow_page_access"] } } } as never);
     expect(browser.riskFor?.({ action: "allow_page_access" })).toBe("write");
     expect(browser.summary?.({ action: "allow_page_access", browser: "Brave Browser" })).toMatch(/Turn on page access in Brave Browser/);
     vi.unstubAllGlobals();

@@ -534,9 +534,12 @@ func press(_ req: [String: Any]) throws -> [String: Any] {
 
 // Menu settings ------------------------------------------------------------------------------
 
+/** Menus whose items are pages and windows, not settings (a bookmark titled like a setting mustn't be pressed). */
+let CONTENT_MENUS: Set<String> = ["history", "bookmarks", "favorites", "window", "help", "profiles", "people", "tab", "tabs"]
+
 /**
- * A menu item in an app's menu bar, found by words in its title (any menu, a few levels deep), e.g.
- * a browser's View → Developer → "Allow JavaScript from Apple Events". `press`: press it once,
+ * A menu item in an app's menu bar, found by words in its title (a few levels deep; not the Apple menu
+ * or CONTENT_MENUS), e.g. a browser's View → Developer → "Allow JavaScript from Apple Events". `press`: press it once,
  * whatever its tick says (Chromium updates ticks only when the menu opens, so the caller checks the
  * result another way). `on`: press only if its tick differs (apps whose ticks are current).
  */
@@ -548,16 +551,28 @@ func menuSetting(_ req: [String: Any]) throws -> [String: Any] {
   let appEl = AXUIElementCreateApplication(pid)
   guard let bar = attr(appEl, "AXMenuBar") else { return ["found": false] }
   func ticked(_ el: AXUIElement) -> Bool { !(string(attr(el, "AXMenuItemMarkChar")) ?? "").isEmpty }
+  var budget = 0
   func find(_ el: AXUIElement, depth: Int) -> AXUIElement? {
     if depth > 5 { return nil }
     for child in children(attr(el, "AXChildren")) {
-      let title = (string(attr(child, "AXTitle")) ?? "").lowercased()
-      if string(attr(child, "AXRole")) == "AXMenuItem", words.allSatisfy({ title.contains($0) }) { return child }
+      budget -= 1
+      if budget < 0 { return nil }
+      let a = attrs(child)
+      let title = (string(a["AXTitle"]) ?? "").lowercased()
+      let sub = children(a["AXChildren"])
+      // A setting is a plain item; one with a submenu is a folder (or the Developer menu itself).
+      if string(a["AXRole"]) == "AXMenuItem", sub.isEmpty, words.allSatisfy({ title.contains($0) }) { return child }
       if let hit = find(child, depth: depth + 1) { return hit }
     }
     return nil
   }
-  guard let item = find(bar as! AXUIElement, depth: 0) else { return ["found": false] }
+  var item: AXUIElement?
+  for (i, top) in children(attr(bar as! AXUIElement, "AXChildren")).enumerated() where i > 0 {
+    if CONTENT_MENUS.contains((string(attr(top, "AXTitle")) ?? "").lowercased()) { continue }
+    budget = 800
+    if let hit = find(top, depth: 1) { item = hit; break }
+  }
+  guard let item else { return ["found": false] }
   let title = string(attr(item, "AXTitle")) ?? ""
   let was = ticked(item)
   let pressOnce = req["press"] as? Bool == true

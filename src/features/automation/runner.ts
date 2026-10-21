@@ -99,7 +99,8 @@ async function execute(routineId: string, run: RoutineRun, events: TriggerEvent[
     const message = firingMessage(routine.instruction) + (events.length ? eventMessage(routine, events) : "");
     // What arrived is outside content: Full access asks before commands and changes in this run.
     const taintedBy = [...(routine.taintedBy ?? []), ...new Set(events.map((e) => e.source))];
-    const reply = await sendInBackground(chat, message, { signal: timeout, taintedBy: taintedBy.length ? taintedBy : undefined }).finally(unsubscribe);
+    const shown = `Routine run: ${routine.name}${events.length ? ` (${events.length} new ${events.length === 1 ? "item" : "items"})` : ""}`;
+    const reply = await sendInBackground(chat, message, { signal: timeout, taintedBy: taintedBy.length ? taintedBy : undefined, shown }).finally(unsubscribe);
     if (timeout.aborted) throw new Error(`Stopped after ${RUN_TIMEOUT_MS / 60_000} minutes.`);
     if (!reply) throw new Error("The bot didn't answer.");
     if (reply.error) throw new Error(reply.error);

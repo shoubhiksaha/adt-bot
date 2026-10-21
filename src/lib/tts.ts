@@ -129,14 +129,19 @@ let networkPlaying = false;
 let deviceSpeaking = false;
 let lastWordAt = 0;
 
+/** The loudness (RMS) of the page's voice going into the speakers, before it's turned down; null when it isn't playing. */
+function playingRms(): number | null {
+  if (!networkPlaying || !analyser || !samples) return null;
+  analyser.getFloatTimeDomainData(samples);
+  let sum = 0;
+  for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+  return Math.sqrt(sum / samples.length);
+}
+
 /** 0–1: how loud the bot is speaking at this moment. Cheap enough to call every animation frame. */
 export function speechLevel(): number {
-  if (networkPlaying && analyser && samples) {
-    analyser.getFloatTimeDomainData(samples);
-    let sum = 0;
-    for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
-    return Math.min(1, Math.sqrt(sum / samples.length) * 5);
-  }
+  const rms = playingRms();
+  if (rms !== null) return Math.min(1, rms * 5);
   if (deviceSpeaking) return 0.25 + 0.6 * Math.exp(-(performance.now() - lastWordAt) / 140);
   return 0;
 }
@@ -149,12 +154,8 @@ let duck: GainNode | null = null;
  * echo in the microphone from this.
  */
 export function outputDb(): number | null {
-  if (!networkPlaying || !analyser || !samples) return null;
-  analyser.getFloatTimeDomainData(samples);
-  let sum = 0;
-  for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
-  const rms = Math.sqrt(sum / samples.length) * (duck?.gain.value ?? 1);
-  return 20 * Math.log10(rms + 1e-6);
+  const rms = playingRms();
+  return rms === null ? null : 20 * Math.log10(rms * (duck?.gain.value ?? 1) + 1e-6);
 }
 
 function outputNode(ctx: AudioContext): AudioNode {

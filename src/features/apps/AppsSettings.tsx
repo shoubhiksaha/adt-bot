@@ -1,5 +1,6 @@
 import { ExternalLink, Loader2, Trash2 } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
+import { confirmThen } from "../../components/Confirm";
 import { Section } from "../../components/settings/controls";
 import { isDesktop } from "../../lib/desktop";
 import { type AppAccount, type AppService, connectEmail, connectOAuth, connectSlack, disconnectApp, MAIL_PRESETS, refreshApps, useApps } from "./api";
@@ -98,7 +99,7 @@ export function AppsSettings() {
                 <span className="grow">
                   <strong>{a.label}</strong> <span className="small muted">{a.services.map((s) => SERVICE_LABEL[s]).join(", ")}</span>
                 </span>
-                <button type="button" className="icon-btn" aria-label={`Disconnect ${a.label}`} title="Disconnect" onClick={() => confirm(`Disconnect ${a.label}?`) && void disconnectApp(a.id)}>
+                <button type="button" className="icon-btn" aria-label={`Disconnect ${a.label}`} title="Disconnect" onClick={() => confirmThen({ message: `Disconnect ${a.label}?`, confirm: "Disconnect", danger: true }, () => disconnectApp(a.id))}>
                   <Trash2 size={15} />
                 </button>
               </li>

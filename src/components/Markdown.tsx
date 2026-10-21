@@ -1,8 +1,8 @@
-import { memo, useMemo, useState, type ReactNode } from "react";
-import ReactMarkdown from "react-markdown";
+import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
+import ReactMarkdown, { type Options } from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
-import { linkCitations, splitBlocks } from "../lib/markdown-utils";
+import { linkCitations, prepareMath, splitBlocks } from "../lib/markdown-utils";
 import type { Source } from "../lib/types";
 import { parseRichBlock } from "../lib/visualize/fences";
 import { CopyButton } from "./CopyButton";
@@ -60,9 +60,30 @@ function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
   );
 }
 
-const remarkPlugins = [remarkGfm];
+const remarkPlugins: Options["remarkPlugins"] = [remarkGfm];
 // Only highlight labelled code: guessing the language runs every grammar and is slow.
-const rehypePlugins = [[rehypeHighlight, { detect: false, ignoreMissing: true }]] as never;
+const rehypePlugins: NonNullable<Options["rehypePlugins"]> = [[rehypeHighlight, { detect: false, ignoreMissing: true }]];
+
+/** Math (KaTeX) loads the first time a reply has some. */
+type MathPlugins = { remark: Options["remarkPlugins"]; rehype: NonNullable<Options["rehypePlugins"]> };
+let mathPlugins: MathPlugins | null = null;
+let mathLoading: Promise<void> | null = null;
+
+function useMath(needed: boolean): MathPlugins | null {
+  const [, setLoaded] = useState(false);
+  useEffect(() => {
+    if (!needed || mathPlugins) return;
+    mathLoading ??= Promise.all([import("remark-math"), import("rehype-katex"), import("katex/dist/katex.min.css")]).then(([math, katex]) => {
+      mathPlugins = { remark: [remarkGfm, math.default], rehype: [[katex.default, { throwOnError: false, strict: "ignore" }]] };
+    });
+    let live = true;
+    void mathLoading.then(() => live && setLoaded(true)).catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [needed]);
+  return needed ? mathPlugins : null;
+}
 const components = {
   pre: CodeBlock,
   img: MarkdownImage,
@@ -82,9 +103,12 @@ const components = {
 };
 
 const Block = memo(function Block({ text, highlight }: { text: string; highlight: boolean }) {
+  const prepared = useMemo(() => prepareMath(text), [text]);
+  const math = useMath(prepared.math);
+  const rehype = [...(math?.rehype ?? []), ...(highlight ? rehypePlugins : [])];
   return (
-    <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={highlight ? rehypePlugins : undefined} components={components}>
-      {text}
+    <ReactMarkdown remarkPlugins={math?.remark ?? remarkPlugins} rehypePlugins={rehype.length ? rehype : undefined} components={components}>
+      {prepared.text}
     </ReactMarkdown>
   );
 });

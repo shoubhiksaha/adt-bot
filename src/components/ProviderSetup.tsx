@@ -8,6 +8,9 @@ import { addProvider, updateProvider, useStore } from "../lib/store";
 import type { ModelInfo, ProviderConfig } from "../lib/types";
 
 const POPULAR = ["xai", "openai", "anthropic", "google", "openrouter", "groq"];
+
+/** A tile's name: short notes stay ("xAI (Grok)"), long ones and "(local)" go to the tooltip so tiles stay one line. */
+const tileName = (name: string) => name.replace(/ \((local|[^)]{9,})\)$/, "");
 const GROUPS: { group: ProviderPreset["group"]; label: string }[] = [
   { group: "cloud", label: "Cloud providers" },
   { group: "local", label: "Local AI on this computer (no key)" },
@@ -123,8 +126,8 @@ export function ProviderSetup({ onDone }: { onDone?: (provider: ProviderConfig) 
   const canConnect = Boolean(baseUrl.trim()) && (!preset.needsKey || apiKey.trim().length > 0) && !busy;
 
   const tile = (p: ProviderPreset) => (
-    <button key={p.id} type="button" className={p.id === presetId ? "active" : ""} onClick={() => choose(p.id)}>
-      {p.name}
+    <button key={p.id} type="button" className={p.id === presetId ? "active" : ""} title={p.name} onClick={() => choose(p.id)}>
+      {tileName(p.name)}
       {connected.some((c) => c.presetId === p.id) && <Check size={13} className="tile-check" aria-label="Connected" />}
     </button>
   );
@@ -177,10 +180,11 @@ export function ProviderSetup({ onDone }: { onDone?: (provider: ProviderConfig) 
             <input placeholder="Search providers" value={filter} onChange={(e) => setFilter(e.target.value)} />
           </label>
           {GROUPS.map(({ group, label }) => {
-            const items = visible.filter((p) => p.group === group);
+            // The popular ones are already above, unless searching.
+            const items = visible.filter((p) => p.group === group && (filter.trim() || !POPULAR.includes(p.id)));
             return items.length ? (
               <div key={group}>
-                <div className="field-label">{label}</div>
+                <div className="field-label">{group === "cloud" && !filter.trim() ? "More cloud providers" : label}</div>
                 <div style={{ height: 6 }} />
                 <div className="provider-grid">{items.map(tile)}</div>
               </div>

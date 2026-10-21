@@ -317,6 +317,47 @@ describe("talking over it, before the words are known", () => {
   });
 });
 
+describe("after talking over it", () => {
+  async function stoppedByVoice() {
+    const s = await open();
+    out.speaking = true;
+    plans = [{ chunks: ["Paris began as a small settlement on an island in the Seine. ", "The Romans called it Lutetia. ", "Later it grew."], gap: 400 }];
+    mic.emit({ type: "start" });
+    mic.emit({ type: "utterance", text: "Tell me about the history of Paris", ms: 3, waitMs: 300 });
+    await until(() => s.state.phase === "speaking");
+    mic.level = 0.2;
+    await sleep(1200);
+    mic.emit({ type: "start" });
+    mic.emit({ type: "speech" });
+    mic.level = 0.85;
+    await until(() => s.state.phase === "hearing", 900);
+    out.speaking = false;
+    return s;
+  }
+
+  it("answers a short new request (their voice was already heard over the bot's)", async () => {
+    await stoppedByVoice();
+    mic.emit({ type: "utterance", text: "Tell me a joke", ms: 3, waitMs: 300 });
+    await until(() => requests.length === 2);
+    expect(userWords(1)).toBe("Tell me a joke");
+  });
+
+  it("keeps what it learned about the echo for the next reply", async () => {
+    const s = await stoppedByVoice();
+    mic.level = 0.1;
+    out.speaking = true;
+    plans = [{ chunks: ["Rome is old. ", "Very old indeed."], gap: 400 }];
+    mic.emit({ type: "utterance", text: "Now tell me about Rome please", ms: 3, waitMs: 300 });
+    await until(() => s.state.phase === "speaking");
+    // No second of echo to learn from this time: a clear voice over it still stops it.
+    mic.emit({ type: "start" });
+    mic.emit({ type: "speech" });
+    mic.level = 0.85;
+    await until(() => s.state.phase === "hearing", 900);
+    out.speaking = false;
+  });
+});
+
 describe("telling a late echo from a reply", () => {
   it("matches the bot's last words in order, not a short or different answer", async () => {
     const { echoesLastWords } = await import("./voice-commands");
@@ -429,7 +470,7 @@ describe("what speech models make of noise", async () => {
   const { isLikelyHallucination } = await import("./voice-commands");
   it("isn't taken for someone talking", () => {
     for (const t of ["Thank you for watching", "foreign foreign foreign", "Foreign.", "you you you you"]) expect(isLikelyHallucination(t)).toBe(true);
-    for (const t of ["hold on wait a second", "no no no that's wrong", "stop stop", "no no no", "stop stop stop", "yes yes yes"]) expect(isLikelyHallucination(t)).toBe(false);
+    for (const t of ["hold on wait a second", "no no no that's wrong", "stop stop", "no no no", "stop stop stop", "yes yes yes", "quiet quiet quiet", "cancel cancel cancel", "enough enough enough"]) expect(isLikelyHallucination(t)).toBe(false);
   });
 });
 
@@ -452,8 +493,15 @@ describe("talking over the bot: more than its own echo explains", async () => {
     const silent = Array.from({ length: 9 }, () => ({ out: -80 }));
     expect(heardOverEcho(silent.map((w) => ({ ...w, mic: -52 })), echoGaps(-28), -55)).toBe(false);
     expect(heardOverEcho(silent.map((w) => ({ ...w, mic: -25 })), echoGaps(-28), -55)).toBe(true);
-    expect(heardOverEcho(moment(() => -20), echoGaps(-28, 14), -55)).toBe(false);
+    expect(heardOverEcho(moment(() => -20), echoGaps(-28, 5), -55)).toBe(false);
     expect(heardOverEcho(moment(() => -20).slice(0, 5), echoGaps(-28), -55)).toBe(false);
+  });
+
+  it("with only a little of the echo heard, a voice must be further above it", () => {
+    const silent = Array.from({ length: 9 }, () => ({ out: -80, mic: -48 }));
+    expect(heardOverEcho(silent, echoGaps(-28), -55)).toBe(true);
+    expect(heardOverEcho(silent, echoGaps(-28, 10), -55)).toBe(false);
+    expect(heardOverEcho(moment(() => -20), echoGaps(-28, 10), -55)).toBe(true);
   });
 });
 

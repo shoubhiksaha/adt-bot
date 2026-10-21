@@ -59,13 +59,23 @@ function Sources({ sources }: { sources: Source[] }) {
 }
 
 function Stats({ message }: { message: Message }) {
-  if (!message.stats) return message.model ? <span className="msg-meta">{message.model}</span> : null;
+  const stopped = message.stopped ? <span className="msg-stopped">Stopped</span> : null;
+  if (!message.stats)
+    return message.model || stopped ? (
+      <span className="msg-meta">
+        {stopped}
+        {stopped && message.model ? " · " : ""}
+        {message.model}
+      </span>
+    ) : null;
   const { ms, firstMs } = message.stats;
   const genMs = ms - (firstMs ?? 0);
   const tokens = message.content.length / 4;
-  const speed = genMs > 300 && tokens > 20 ? ` · ${Math.round(tokens / (genMs / 1000))} tok/s` : "";
+  const speed = genMs > 300 && tokens > 20 && !message.stopped ? ` · ${Math.round(tokens / (genMs / 1000))} tok/s` : "";
   return (
     <span className="msg-meta" title={firstMs ? `First token after ${(firstMs / 1000).toFixed(1)}s` : undefined}>
+      {stopped}
+      {stopped ? " · " : ""}
       {message.model} · {(ms / 1000).toFixed(1)}s{speed}
     </span>
   );
@@ -147,7 +157,18 @@ export const MessageItem = memo(function MessageItem({
               </div>
             </div>
           ) : (
-            message.content && <div className="bubble">{message.content}</div>
+            message.content &&
+            (message.shown ? (
+              <div className="bubble">
+                {message.shown}
+                <details className="bubble-full">
+                  <summary>Full instructions</summary>
+                  {message.content}
+                </details>
+              </div>
+            ) : (
+              <div className="bubble">{message.content}</div>
+            ))
           )}
           {!editing && (
             <div className="msg-actions">

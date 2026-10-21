@@ -2,7 +2,7 @@
    The .cframe-* rules are adapted from OpenBOT (github.com/ashhart/OpenBot), MIT, (c) 2026 OpenBOT contributors
    (ComputerFrame.css: frame, head, badge, terminal). */
 .computers {
-  max-width: 980px;
+  max-width: var(--page-width);
   margin: 0 auto;
   padding: 18px 16px 40px;
 }

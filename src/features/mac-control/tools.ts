@@ -1,3 +1,4 @@
+import { logActivity } from "../../lib/agent/activity";
 import { isDangerous, isTerminalApp, TERMINAL_APPS } from "../../lib/agent/danger";
 import { deniedRuleForCall } from "../../lib/agent/vendor/openbot/approvalPolicy";
 import { type AgentTool, getTool, num, registerTool, registerToolGroup, str, type ToolContext, type ToolRisk, toResult } from "../../lib/agent/tools";
@@ -433,8 +434,11 @@ function rememberPage(page: PageSnapshot) {
 
 const BROWSER_READS = new Set(["read", "tabs", "scroll"]);
 
-/** The browser's answer when its "Allow JavaScript from Apple Events" is off. */
-const PAGE_ACCESS_OFF = /Allow JavaScript from Apple Events/i;
+/**
+ * The main process's error when a Chromium browser's "Allow JavaScript from Apple Events" is off
+ * (browserError in 70-mac-control.cjs), naming that browser. Safari's wording differs: it can't be switched from here.
+ */
+const PAGE_ACCESS_OFF = /^(?:Error: )?(.+?) doesn't let apps read pages until "Allow JavaScript from Apple Events" is on/;
 
 function browserRisk(args: Record<string, unknown>): ToolRisk {
   const action = str(args, "action", "read");
@@ -548,10 +552,24 @@ const browserTool = macTool({
       try {
         page = await read();
       } catch (error) {
-        // With Full access, switch the browser's page access on once (as the user would) and carry on.
-        if (!PAGE_ACCESS_OFF.test((error as Error).message) || ctx.settings.agent.access !== "full") throw error;
-        const done = await mac<{ browser: string }>("browser", { browser: str(args, "browser") || undefined, action: "allow_page_access" });
-        note = `(Turned on page access in ${done.browser} first: "Allow JavaScript from Apple Events".)\n`;
+        // With Full access, switch the failing browser's page access on once (as the user would) and carry on.
+        // Only where allow_page_access itself would run unasked: not in rooms, not after outside content, not if denied.
+        const failed = PAGE_ACCESS_OFF.exec((error as Error).message)?.[1];
+        const call = { id: `${ctx.callId ?? "read"}-page-access`, name: "mac_browser", args: { action: "allow_page_access", browser: failed ?? "" } };
+        if (!failed || ctx.settings.agent.access !== "full" || ctx.shared || ctx.taint?.sources.size || deniedRuleForCall(ctx.settings.agent, call)) throw error;
+        const done = await mac<{ browser: string; already?: boolean }>("browser", { browser: failed, action: "allow_page_access" });
+        void logActivity({
+          bot: ctx.bot?.name ?? "",
+          botId: ctx.bot?.id,
+          tool: "mac_browser",
+          summary: `Turn on page access in ${done.browser}, to read its page`,
+          outcome: "auto",
+          conversationId: ctx.conversationId,
+          decision: "Full access",
+          args: JSON.stringify(call.args),
+          result: done.already ? "was already on" : "switched on",
+        });
+        if (!done.already) note = `(Turned on page access in ${done.browser} first: "Allow JavaScript from Apple Events".)\n`;
         page = await read();
       }
       return { content: `${note}${formatPage(page, offset)}`, ...source };

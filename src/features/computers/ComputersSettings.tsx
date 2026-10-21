@@ -49,7 +49,12 @@ export function EngineLine({ engine, onRefresh }: { engine: EngineStatus | null;
       {engine.hints.map((h) => (
         <span key={h}>{renderHint(h)}</span>
       ))}
-      {engine.error && <span className="small muted">{engine.error}</span>}
+      {engine.error && (
+        <details className="small muted">
+          <summary>What Docker said</summary>
+          <code>{engine.error}</code>
+        </details>
+      )}
       {onRefresh && (
         <button type="button" className="btn" onClick={onRefresh}>
           Check again

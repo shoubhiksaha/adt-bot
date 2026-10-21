@@ -148,7 +148,7 @@ function ReviewDraft({ draft, onClose }: { draft: Draft; onClose: () => void }) 
           <span className="small">Also save it as a skill (so bots know when to use it, and can follow it in words)</span>
         </label>
         {error && <p className="small error-text">{error}</p>}
-        <div className="btn-row">
+        <div className="btn-row dialog-actions">
           <button type="button" className="btn" onClick={onClose}>
             Discard
           </button>

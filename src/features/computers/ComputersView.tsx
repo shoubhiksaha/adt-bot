@@ -1,6 +1,7 @@
 import { Loader2, Play, RefreshCw, RotateCcw, Square, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BotAvatar } from "../../components/Avatar";
+import { askConfirm, confirmThen } from "../../components/Confirm";
 import { useStore } from "../../lib/store";
 import type { Bot } from "../../lib/types";
 import { type ComputerInfo, computers, type EngineStatus, onBuild } from "./api";
@@ -206,7 +207,7 @@ function ComputerCard({
             className="btn danger"
             disabled={Boolean(busy)}
             onClick={() => {
-              if (confirm(`Wipe ${name}'s computer? Everything in /workspace is deleted and it starts fresh.`)) void act("wipe", () => computers.reset(botId, true));
+              confirmThen({ message: `Wipe ${name}'s computer?`, detail: "Everything in /workspace is deleted and it starts fresh.", confirm: "Wipe", danger: true }, () => act("wipe", () => computers.reset(botId, true)));
             }}
           >
             {busy === "wipe" ? <Loader2 size={14} className="spin" /> : <Trash2 size={14} />} Wipe
@@ -217,8 +218,9 @@ function ComputerCard({
             type="button"
             className="btn danger"
             disabled={Boolean(busy)}
-            onClick={() => {
-              if (!confirm(`Delete ${name}'s computer and all its files? ${enabled ? "The bot's computer will also be switched off." : ""}`)) return;
+            onClick={async () => {
+              const detail = enabled ? "The bot's computer will also be switched off." : undefined;
+              if (!(await askConfirm({ message: `Delete ${name}'s computer and all its files?`, detail, confirm: "Delete", danger: true }))) return;
               void act("delete", async () => {
                 await computers.remove(botId, true);
                 if (bot) await setComputerConfig(botId, { enabled: false });

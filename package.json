@@ -169,7 +169,10 @@
   "dependencies": {
     "electron-updater": "6.8.10",
     "imapflow": "^2.5.9",
+    "katex": "^0.16.47",
     "mailparser": "^3.10.0",
-    "nodemailer": "^10.1.7"
+    "nodemailer": "^10.1.7",
+    "rehype-katex": "^7.0.1",
+    "remark-math": "^6.0.0"
   }
 }

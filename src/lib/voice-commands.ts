@@ -342,7 +342,7 @@ export function isLikelyHallucination(text: string): boolean {
   // One word over and over ("foreign foreign foreign"): what speech models make of noise. Not "no
   // no no" or "stop stop stop": people say those.
   const repeated = /^(\S+)(?: \1){2,}$/.exec(t)?.[1];
-  if (repeated && !/^(no|nope|yes|yeah|yep|stop|wait|ok|okay|hey|hello|hi|please)$/.test(repeated)) return true;
+  if (repeated && !/^(no|nope|yes|yeah|yep|stop|wait|ok|okay|hey|hello|hi|please)$/.test(repeated) && !parseVoiceCommand(t, [])) return true;
   return !t || HALLUCINATIONS.test(t) || t === "foreign";
 }
 

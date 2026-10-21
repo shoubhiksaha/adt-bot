@@ -1,5 +1,6 @@
 import { Download, Pencil, Plus, ShieldCheck, Trash2, Upload } from "lucide-react";
 import { useState } from "react";
+import { confirmThen } from "../../components/Confirm";
 import { Dialog } from "../../components/Dialog";
 import { pickFiles, saveTextFile } from "../../lib/files";
 import { useStore } from "../../lib/store";
@@ -101,7 +102,7 @@ function SkillEditor({ skill, onClose }: { skill: Skill | null; onClose: () => v
           </div>
         </div>
         {error && <p className="error-text small">{error}</p>}
-        <div className="btn-row">
+        <div className="btn-row dialog-actions">
           <button type="button" className="btn" onClick={onClose}>
             Cancel
           </button>
@@ -202,7 +203,7 @@ export default function SkillsView() {
                   <button type="button" className="icon-btn" aria-label="Export as SKILL.md" title="Export as SKILL.md" onClick={() => void saveTextFile(`${skill.name}.md`, skillMarkdown(skill), "text/markdown")}>
                     <Download size={16} />
                   </button>
-                  <button type="button" className="icon-btn" aria-label="Delete" onClick={() => confirm(`Delete the skill /${skill.name}?`) && deleteSkill(skill.id)}>
+                  <button type="button" className="icon-btn" aria-label="Delete" onClick={() => confirmThen({ message: `Delete the skill /${skill.name}?`, confirm: "Delete", danger: true }, () => deleteSkill(skill.id))}>
                     <Trash2 size={16} />
                   </button>
                 </div>

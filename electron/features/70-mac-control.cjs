@@ -1138,7 +1138,8 @@ function browserError(name, kind, error) {
       new Error(
         kind === "safari"
           ? `Safari doesn't let apps read pages until it's allowed: Safari → Settings → Advanced → turn on "Show features for web developers", then Settings → Developer → "Allow JavaScript from Apple Events". Ask the user to do this, then try again.`
-          : `${name} doesn't let apps read pages until "Allow JavaScript from Apple Events" is on (View → Developer). Call mac_browser with action "allow_page_access" to switch it on once, then try again. Don't use AppleScript or click the menus for this.`,
+          : // The renderer's mac_browser read matches this wording (PAGE_ACCESS_OFF) to switch it on under Full access.
+            `${name} doesn't let apps read pages until "Allow JavaScript from Apple Events" is on (View → Developer). Call mac_browser with action "allow_page_access" to switch it on once, then try again. Don't use AppleScript or click the menus for this.`,
       ),
       { code: "browser-js-off" },
     );

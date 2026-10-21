@@ -38,8 +38,14 @@ export function Dialog({
             <X size={18} />
           </button>
         </div>
-        {tabs}
-        <div className="dialog-body">{children}</div>
+        {tabs ? (
+          <div className="dialog-split">
+            {tabs}
+            <div className="dialog-body">{children}</div>
+          </div>
+        ) : (
+          <div className="dialog-body">{children}</div>
+        )}
       </div>
     </div>
   );

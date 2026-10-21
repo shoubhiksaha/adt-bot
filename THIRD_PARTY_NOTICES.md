@@ -27,6 +27,13 @@ Only loaded when Kokoro is the chosen reply voice (a separate chunk, `assets/kok
 | [phonemizer](https://github.com/xenova/phonemizer.js) by Xenova | Apache-2.0 (wrapper) | Text to phonemes for Kokoro |
 | [eSpeak NG](https://github.com/espeak-ng/espeak-ng), compiled into phonemizer | GPL-3.0-or-later | The phonemizer's engine and pronunciation data. Its source is at the link; the app's owner has approved this GPL dependency |
 
+Loaded only when a reply contains math (separate chunks, `assets/rehype-katex-*.js` and `assets/katex-*.css`, with KaTeX's fonts):
+
+| Library | License | What |
+| --- | --- | --- |
+| [KaTeX](https://github.com/KaTeX/KaTeX) | MIT, © 2013-2020 Khan Academy and other contributors | Typesets math in replies (including its bundled math fonts) |
+| [remark-math](https://github.com/remarkjs/remark-math), rehype-katex | MIT, © Junyoung Choi and Titus Wormer | Finds math in Markdown and hands it to KaTeX |
+
 ## Models downloaded at run time
 
 These aren't bundled with the app; they download on first use and are cached on the device.

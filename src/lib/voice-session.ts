@@ -65,18 +65,31 @@ const STILL_WORKING_MS = 8000;
 const CUT_IN_MS = 450;
 /** How often the microphone and the bot's own output are compared while it talks. */
 const ECHO_TICK_MS = 50;
+/** After the first CUT_IN_MS, the latest CUT_IN_MS of readings is judged again this often (a short "stop" can straddle two fixed windows). */
+const CUT_IN_RECHECK_MS = 100;
 /** The echo arrives this much after the sound that made it (speaker, room, output buffers). */
 const ECHO_DELAY_MS = 350;
-/** Readings kept of how the echo compares with the output (3 s), and how many are needed first. */
+/**
+ * Readings kept of how the echo compares with the output (3 s), how many are needed first, and how many
+ * make it sure (until then a voice must be further above the echo).
+ */
 const ECHO_GAPS = 60;
-const ECHO_GAPS_NEEDED = 15;
+const ECHO_GAPS_NEEDED = 6;
+const ECHO_GAPS_SURE = 15;
 
-/** Why voice mode stopped or kept talking, in the console, when localStorage "adt-debug-voice" is "1" (off by default). */
+/** Why voice mode stopped or kept talking, in the console, when localStorage "adt-debug-voice" is "1" (off by default; read once). */
+let debugOn: boolean | undefined;
 const debugVoice = (...parts: unknown[]) => {
   try {
-    if (localStorage.getItem("adt-debug-voice") === "1") console.debug("[voice]", ...parts);
-  } catch {}
+    debugOn ??= localStorage.getItem("adt-debug-voice") === "1";
+  } catch {
+    debugOn = false;
+  }
+  if (debugOn) console.debug("[voice]", ...parts);
 };
+
+/** The output reading while the page's voice is between sentences (fetching the next one): silence. */
+const SILENT_DB = -100;
 
 const percentile = (values: number[], p: number) => [...values].sort((a, b) => a - b)[Math.min(values.length - 1, Math.floor(values.length * p))];
 
@@ -91,9 +104,13 @@ const percentile = (values: number[], p: number) => [...values].sort((a, b) => a
 export function heardOverEcho(window: { mic: number; out: number }[], gaps: number[], noise: number, margin = 6): boolean {
   if (window.length < 6 || gaps.length < ECHO_GAPS_NEEDED) return false;
   const gap = percentile(gaps, 0.9);
-  // Speech comes in syllables: a voice is over the echo for a good part of the moment, not all of it.
-  const over = window.filter((w) => w.mic - Math.max(w.out + gap, noise) >= margin).length;
-  return over / window.length >= 0.4;
+  // Little heard of the echo yet (in the first reply the echo itself often starts a stretch of "speech",
+  // which pauses learning): a stricter margin rather than no check at all.
+  const need = gaps.length < ECHO_GAPS_SURE ? margin + 3 : margin;
+  // Speech comes in syllables: a voice is over the echo for a good part of the moment, not all of it
+  // (a third: a short "stop"; the echo alone was never over it at all in testing).
+  const over = window.filter((w) => w.mic - Math.max(w.out + gap, noise) >= need).length;
+  return over / window.length >= 1 / 3;
 }
 
 /** The same words, ignoring case and punctuation (an early reply is kept only for what was finally heard). */
@@ -301,21 +318,33 @@ export class VoiceSession {
    * judges. Only for voices the page plays (their output can be measured).
    */
   private watchEcho() {
-    if (this.echoTimer) return;
+    // What was learned about the echo carries over from reply to reply: the room and speakers stay the same.
+    if (this.echoTimer || !this.listener) return;
     this.outHistory = [];
-    this.echoGaps = [];
-    this.quietLevels = [];
     this.echoTimer = setInterval(() => {
-      const level = this.listener?.level?.();
-      const out = outputDb();
-      if (level === null || level === undefined || out === null) return;
+      const listener = this.listener;
+      const level = listener?.level?.();
+      if (!listener || level === null || level === undefined) return;
+      // Between sentences the page's voice is silent (and the user easiest to hear); a device voice can't be measured.
+      const out = outputDb() ?? (this.speaker?.inPageAudio ? SILENT_DB : null);
+      if (out === null) return;
+      const mic = listener.micDb?.() ?? level * 48 - 60;
       const now = performance.now();
+      // Slow speakers (Bluetooth, AirPlay) send the echo back later.
+      const delay = Math.max(ECHO_DELAY_MS, (this.speaker?.tailMs ?? 0) + 150);
       this.outHistory.push({ at: now, db: out });
-      while (this.outHistory.length && now - this.outHistory[0].at > ECHO_DELAY_MS) this.outHistory.shift();
+      while (this.outHistory.length && now - this.outHistory[0].at > delay) this.outHistory.shift();
       const recentOut = Math.max(...this.outHistory.map((o) => o.db));
-      const mic = level * 48 - 60;
+      // Echo is learned only once the bot has been audible for the whole delay: before that its echo
+      // hasn't arrived yet, and the echo would seem quieter than it is.
+      const oldest = this.outHistory[0];
+      const steady = now - oldest.at >= delay - ECHO_TICK_MS && oldest.db > -50;
       if (this.cutInTimer) {
         this.cutInWindow.push({ mic, out: recentOut });
+        // Without an echo canceller the echo itself can start a stretch of "speech" before anything
+        // was learned, and the check could never begin: learn just enough from it, turned down.
+        const noise = this.quietLevels.length ? percentile(this.quietLevels, 0.5) : -60;
+        if (this.echoGaps.length < ECHO_GAPS_NEEDED && steady && recentOut > -45 && mic > noise + 6) this.echoGaps.push(mic - recentOut);
         return;
       }
       // Only learn while nobody seems to be talking: the start of a cut-in isn't echo.
@@ -323,7 +352,7 @@ export class VoiceSession {
       if (this.echoGaps.length % 20 === 1) debugVoice("echo", JSON.stringify({ mic: Math.round(mic), out: Math.round(out), recentOut: Math.round(recentOut) }));
       // The bot clearly audible: how loud its echo is next to it (in its quiet syllables the
       // microphone only hears the room, which says nothing about the echo). Quiet: the room's level.
-      if (recentOut > -30) {
+      if (recentOut > -30 && steady) {
         this.echoGaps.push(mic - recentOut);
         if (this.echoGaps.length > ECHO_GAPS) this.echoGaps.shift();
       } else if (recentOut < -50) {
@@ -347,9 +376,15 @@ export class VoiceSession {
   private startCutInCheck() {
     this.stopCutInCheck();
     this.cutInWindow = [];
+    this.armCutInCheck(CUT_IN_MS);
+  }
+
+  private armCutInCheck(ms: number) {
     this.cutInTimer = setTimeout(() => {
-      const window = this.cutInWindow;
-      this.stopCutInCheck();
+      this.cutInTimer = null;
+      // The latest CUT_IN_MS of readings (the window rolls on while the stretch of sound goes on).
+      const window = this.cutInWindow.slice(-Math.round(CUT_IN_MS / ECHO_TICK_MS));
+      this.cutInWindow = window;
       if (this.state.phase !== "speaking" || !this.ducked || !this.segmentActive || this.approval) return;
       const noise = this.quietLevels.length ? percentile(this.quietLevels, 0.5) : -60;
       const over = heardOverEcho(window, this.echoGaps, noise);
@@ -370,9 +405,9 @@ export class VoiceSession {
         this.set({ phase: "hearing", partial: "" });
       } else {
         // Still a stretch of sound (a long echo, or someone starting to talk during it): look again.
-        this.startCutInCheck();
+        this.armCutInCheck(CUT_IN_RECHECK_MS);
       }
-    }, CUT_IN_MS);
+    }, ms);
   }
 
   private stopCutInCheck() {
@@ -533,6 +568,7 @@ export class VoiceSession {
           this.startCutInCheck();
         } else {
           // The device voice can't be turned down: stop it (its echo is still checked below).
+          this.stoppedByVoice = true;
           this.interrupt();
           this.set({ phase: "hearing", partial: "" });
         }
@@ -718,7 +754,8 @@ export class VoiceSession {
     }
     // The bot stopped because someone talked over it: a stray word, or the last question again
     // (speech recognition guessing from muddled audio), isn't a new request. Just listen.
-    if (byVoice && !command && (!isSubstantial(text) || sameWords(text, this.state.heard))) {
+    // A short request ("tell me a joke") is: their voice was already heard over the bot's.
+    if (byVoice && !command && (normalize(text).split(" ").length < 2 || sameWords(text, this.state.heard))) {
       early?.discard();
       if (this.phase() === "hearing") this.enterListening();
       return;

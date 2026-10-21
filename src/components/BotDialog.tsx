@@ -3,9 +3,10 @@ import { lazy, Suspense, useRef, useState } from "react";
 import { allToolGroups } from "../lib/agent/tools";
 import { fileText } from "../lib/images";
 import { presetById } from "../lib/providers";
-import { deleteBot, updateBot, useStore } from "../lib/store";
+import { deleteBot, selectBot, updateBot, useStore } from "../lib/store";
 import type { Bot, ThinkingLevel } from "../lib/types";
 import { Avatar } from "./Avatar";
+import { askConfirm, confirmThen } from "./Confirm";
 import { Dialog } from "./Dialog";
 import { KNOWLEDGE_ACCEPT, KnowledgeFiles } from "./KnowledgeFiles";
 import { ModelField } from "./ModelField";
@@ -13,9 +14,11 @@ import { ModelField } from "./ModelField";
 const TemplateExportDialog = lazy(() => import("../features/templates/TemplatesView").then((m) => ({ default: m.TemplateExportDialog })));
 const BotEmailField = lazy(() => import("../features/apps/BotEmailField"));
 
-export default function BotDialog({ botId, onClose }: { botId: string; onClose: () => void }) {
+/** `fresh`: the bot was just made with "New bot"; closing it untouched takes it away again (and goes back to `returnTo`). */
+export default function BotDialog({ botId, fresh, onClose }: { botId: string; fresh?: { returnTo: string | null }; onClose: () => void }) {
   const bot = useStore((s) => s.bots.find((b) => b.id === botId));
   const providers = useStore((s) => s.providers);
+  const [openedAt] = useState(() => bot?.updatedAt);
   const [newMemory, setNewMemory] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [sharing, setSharing] = useState(false);
@@ -24,9 +27,18 @@ export default function BotDialog({ botId, onClose }: { botId: string; onClose: 
 
   const provider = providers.find((p) => p.id === bot.providerId);
   const set = (patch: Partial<Bot>) => updateBot(bot.id, patch);
+  const cancel = () => {
+    const { bots, conversations } = useStore.getState();
+    const untouched = bots.find((b) => b.id === botId)?.updatedAt === openedAt && !Object.values(conversations).some((c) => c.botId === botId);
+    if (fresh && untouched) {
+      deleteBot(botId);
+      if (fresh.returnTo && bots.some((b) => b.id === fresh.returnTo)) selectBot(fresh.returnTo);
+    }
+    onClose();
+  };
 
   return (
-    <Dialog title={`${bot.name} settings`} onClose={onClose}>
+    <Dialog title={fresh ? "New bot" : `${bot.name} settings`} onClose={cancel}>
       <div className="field-row">
         <div className="field" style={{ flex: "0 0 112px" }}>
           <label htmlFor="bot-avatar">Picture</label>
@@ -301,18 +313,18 @@ export default function BotDialog({ botId, onClose }: { botId: string; onClose: 
               </li>
             ))}
           </ul>
-          <button type="button" className="link-btn" onClick={() => confirm(`Forget all of ${bot.name}'s notes on past chats?`) && set({ journal: [] })}>
+          <button type="button" className="link-btn" onClick={() => confirmThen({ message: `Forget all of ${bot.name}'s notes on past chats?`, confirm: "Forget", danger: true }, () => set({ journal: [] }))}>
             Forget all notes
           </button>
         </div>
       )}
 
-      <div className="btn-row" style={{ justifyContent: "space-between", marginTop: 8 }}>
+      <div className="btn-row dialog-actions" style={{ justifyContent: "space-between" }}>
         <button
           type="button"
           className="btn danger"
-          onClick={() => {
-            if (confirm(`Delete ${bot.name} and all of its chats?`)) {
+          onClick={async () => {
+            if (await askConfirm({ message: `Delete ${bot.name} and all of its chats?`, confirm: "Delete bot", danger: true })) {
               deleteBot(bot.id);
               onClose();
             }
@@ -324,7 +336,7 @@ export default function BotDialog({ botId, onClose }: { botId: string; onClose: 
           <Share size={14} /> Share as template
         </button>
         <button type="button" className="btn primary" onClick={onClose}>
-          Done
+          {fresh ? "Create bot" : "Done"}
         </button>
       </div>
       {sharing && (

@@ -1,5 +1,6 @@
 import { Copy, Loader2, RefreshCw } from "lucide-react";
 import { useState } from "react";
+import { askConfirm } from "../../components/Confirm";
 import { ServerBrowser } from "./ServerBrowser";
 import { Section } from "../../components/settings/controls";
 import { updateSettings, useStore } from "../../lib/store";
@@ -72,8 +73,8 @@ export function SyncSettings() {
               <button
                 type="button"
                 className="btn danger"
-                onClick={() => {
-                  if (!confirm("Stop syncing this device? Nothing is deleted here or on the server.")) return;
+                onClick={async () => {
+                  if (!(await askConfirm({ message: "Stop syncing this device?", detail: "Nothing is deleted here or on the server.", confirm: "Stop syncing", danger: true }))) return;
                   resetSync();
                   set({ enabled: false });
                 }}

@@ -1,6 +1,7 @@
 import { ArrowDown, ChevronDown, Download, EyeOff, Menu, MoreHorizontal, SlidersHorizontal, SquarePen } from "lucide-react";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { NEW_CHAT_KEYS } from "../lib/keys";
 import { conversationMarkdown, newConversation, renameConversation, startNewChat, useStore } from "../lib/store";
 import type { Bot, Conversation } from "../lib/types";
 import { Composer } from "./Composer";
@@ -188,7 +189,7 @@ export function ChatView({ bot, onOpenSidebar, onEditBot }: { bot: Bot; onOpenSi
         >
           <EyeOff size={18} />
         </button>
-        <button type="button" className="icon-btn" title="New chat (Ctrl/⌘+Shift+O)" onClick={() => startNewChat(bot.id)}>
+        <button type="button" className="icon-btn" title={`New chat (${NEW_CHAT_KEYS})`} onClick={() => startNewChat(bot.id)}>
           <SquarePen size={18} />
         </button>
         <div className="menu-anchor">

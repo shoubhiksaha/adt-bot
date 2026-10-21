@@ -1,5 +1,6 @@
 import { ChevronDown, ChevronRight, Loader2, Pencil, Plug, Plus, RefreshCw, ShieldAlert, Trash2 } from "lucide-react";
 import { useState } from "react";
+import { askConfirm, confirmThen } from "../../components/Confirm";
 import { Section } from "../../components/settings/controls";
 import { isDesktop } from "../../lib/desktop";
 import { type ConnectorConfig, type ConnectorStatus, connectionKey, launchApproved } from "../../lib/mcp/connectors";
@@ -21,9 +22,9 @@ import { COMPUTER_PRESETS, configFromDraft, type Draft, draftFrom, emptyDraft, l
 import "./connectors.css";
 
 /** Asks before a local server's command runs for the first time (or after it changed). */
-function ensureLaunchApproved(server: ConnectorConfig): boolean {
+async function ensureLaunchApproved(server: ConnectorConfig): Promise<boolean> {
   if (launchApproved(server)) return true;
-  if (!confirm(launchConfirmText(server))) return false;
+  if (!(await askConfirm({ title: "Run this connector?", message: launchConfirmText(server), confirm: "Allow and run" }))) return false;
   approveLaunch(server.id);
   return true;
 }
@@ -90,7 +91,7 @@ function ConnectorCard({ server, status, desktop, onEdit }: { server: ConnectorC
   const unconfirmed = !launchApproved(server);
 
   const test = async () => {
-    if (!ensureLaunchApproved(server)) return;
+    if (!(await ensureLaunchApproved(server))) return;
     setBusy(true);
     setResult(null);
     try {
@@ -127,9 +128,10 @@ function ConnectorCard({ server, status, desktop, onEdit }: { server: ConnectorC
             type="checkbox"
             checked={server.enabled}
             disabled={!canRun}
-            onChange={(e) => {
-              if (e.target.checked && !ensureLaunchApproved(server)) return;
-              void setServerEnabled(server.id, e.target.checked);
+            onChange={async (e) => {
+              const on = e.target.checked;
+              if (on && !(await ensureLaunchApproved(server))) return;
+              void setServerEnabled(server.id, on);
             }}
           />
           <span className="small">{server.enabled ? "On" : "Off"}</span>
@@ -183,7 +185,7 @@ function ConnectorCard({ server, status, desktop, onEdit }: { server: ConnectorC
         <button
           className="btn danger"
           onClick={() => {
-            if (confirm(`Remove the ${server.name} connector?`)) void removeServer(server.id);
+            confirmThen({ message: `Remove the ${server.name} connector?`, confirm: "Remove", danger: true }, () => removeServer(server.id));
           }}
         >
           <Trash2 size={14} /> Remove
@@ -260,7 +262,7 @@ function ConnectorForm({ initial, desktop, onDone, existing }: { initial: Draft;
     if ("error" in parsed) return setError(parsed.error);
     // A local command runs only after the user saw it in full and allowed it.
     const launch = parsed.config.transport === "stdio" ? launchKey(parsed.config) : undefined;
-    if (launch && launch !== existing?.approvedLaunch && !confirm(launchConfirmText(parsed.config))) return;
+    if (launch && launch !== existing?.approvedLaunch && !(await askConfirm({ title: "Run this connector?", message: launchConfirmText(parsed.config), confirm: "Allow and save" }))) return;
     setError("");
     setSaving(true);
     try {

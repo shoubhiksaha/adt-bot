@@ -358,12 +358,17 @@ export class Listener {
    * animation frame; the worker's level arrives in bursts, so the orb would stutter on it.
    */
   level(): number | null {
+    const db = this.micDb();
+    return db === null ? null : Math.min(1, Math.max(0, (db + 60) / 48));
+  }
+
+  /** The microphone's loudness in dB, not limited to the orb's range (voice mode compares it with its own output). */
+  micDb(): number | null {
     if (!this.analyser || !this.levelSamples || this.muted) return null;
     this.analyser.getFloatTimeDomainData(this.levelSamples);
     let sum = 0;
     for (let i = 0; i < this.levelSamples.length; i++) sum += this.levelSamples[i] * this.levelSamples[i];
-    const db = 10 * Math.log10(sum / this.levelSamples.length + 1e-12);
-    return Math.min(1, Math.max(0, (db + 60) / 48));
+    return Math.max(-100, 10 * Math.log10(sum / this.levelSamples.length + 1e-12));
   }
 
   setPartials(partials: boolean) {

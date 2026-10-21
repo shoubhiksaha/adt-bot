@@ -1,3 +1,8 @@
+/* Workspace pages (memory, skills, routines, agent log…) share one width. */
+:root {
+  --page-width: 940px;
+}
+
 /* Palette from Rakazo's design tokens (packages/ui-tokens). */
 :root,
 [data-theme="dark"] {
@@ -389,6 +394,14 @@ a {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.bubble-full {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--muted-foreground);
+}
+.bubble-full summary {
+  cursor: pointer;
+}
 .msg-images {
   display: flex;
   gap: 6px;
@@ -429,6 +442,10 @@ a {
   color: var(--muted-foreground);
   align-self: center;
   margin-left: 6px;
+}
+.msg-stopped {
+  color: var(--foreground);
+  font-weight: 500;
 }
 
 .msg-error {
@@ -535,6 +552,23 @@ a {
 }
 .md li + li {
   margin-top: 3px;
+}
+/* Task lists: the checkbox is the bullet. */
+.md .contains-task-list {
+  padding-left: 0.2em;
+}
+.md .task-list-item {
+  list-style: none;
+}
+.md .task-list-item input {
+  margin: 0 0.45em 0 0;
+  vertical-align: -1px;
+  accent-color: var(--primary);
+}
+.md .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
 }
 .md blockquote {
   border-left: 3px solid var(--border);
@@ -840,6 +874,7 @@ a {
 }
 .dialog {
   width: min(640px, 100%);
+  min-width: 0;
   max-height: min(88vh, 900px);
   background: var(--card);
   border: 1px solid var(--border);
@@ -876,19 +911,77 @@ a {
   }
 }
 
+/* Settings: the tabs down the side, the dialog the same size whichever is open. */
+.dialog:has(.dialog-split) {
+  width: min(920px, 100%);
+  height: min(88vh, 780px);
+}
+.dialog-split {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  /* The row of tabs on a phone scrolls; it mustn't widen the dialog past the screen. */
+  min-width: 0;
+}
+.dialog-split > .dialog-body {
+  flex: 1;
+  min-width: 0;
+}
 .tabs {
   display: flex;
-  gap: 4px;
-  padding: 10px 20px 0;
+  flex-direction: column;
+  gap: 2px;
+  width: 190px;
+  flex-shrink: 0;
+  padding: 10px;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 .tabs button {
-  padding: 6px 12px;
+  padding: 7px 12px;
   border-radius: calc(var(--radius) * 0.66);
   color: var(--muted-foreground);
+  text-align: left;
+  white-space: nowrap;
+}
+.tabs button:hover {
+  color: var(--foreground);
 }
 .tabs button.active {
   background: var(--accent);
   color: var(--foreground);
+}
+@media (max-width: 720px) {
+  .dialog:has(.dialog-split) {
+    height: 94vh;
+  }
+  .dialog-split {
+    flex-direction: column;
+  }
+  .tabs {
+    flex-direction: row;
+    width: auto;
+    max-width: 100%;
+    padding: 8px 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+}
+
+/* A dialog's buttons stay in view at the bottom while its form scrolls. */
+.dialog-actions {
+  position: sticky;
+  bottom: -20px;
+  z-index: 2;
+  justify-content: flex-end;
+  margin: 14px -20px -20px;
+  padding: 12px 20px;
+  background: var(--card);
+  border-top: 1px solid var(--border);
 }
 
 .field {
@@ -1607,13 +1700,6 @@ kbd {
 .nav-item.focus {
   background: var(--accent);
 }
-.tabs {
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.tabs button {
-  white-space: nowrap;
-}
 
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -2126,15 +2212,6 @@ input[type="color"] {
 }
 .wake-indicator svg {
   color: var(--destructive);
-}
-.dialog:has(.tabs) {
-  width: min(780px, 100%);
-}
-.tabs {
-  flex-wrap: wrap;
-  overflow: visible;
-  padding-bottom: 6px;
-  row-gap: 4px;
 }
 
 /* Tool calls & approvals ---------------------------------------------------------- */

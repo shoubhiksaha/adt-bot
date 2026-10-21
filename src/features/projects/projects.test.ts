@@ -227,7 +227,7 @@ describe("run with bot", () => {
   /** Stands in for sendMessage: adds the user turn and a reply to the active chat. */
   function fakeChat(reply: { content?: string; error?: string }, during?: () => void) {
     const prompts: string[] = [];
-    const send = vi.fn(async (activeConversationId: string, text: string) => {
+    const send = vi.fn(async (activeConversationId: string, text: string, _shown?: string) => {
       prompts.push(text);
       updateConversation(activeConversationId!, (c) => ({
         ...c,
@@ -270,6 +270,8 @@ describe("run with bot", () => {
     expect(chat.prompts[0]).toContain("Write in plain English.");
     expect(chat.prompts[0]).toContain("Task: Write tagline");
     expect(chat.prompts[0]).toContain("Short and punchy");
+    // The chat shows a short line for the long task prompt.
+    expect(chat.send.mock.calls[0][2]).toBe("Work on this card: Write tagline");
   });
 
   it("reuses the card's chat on a second run", async () => {

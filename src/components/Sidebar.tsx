@@ -1,11 +1,12 @@
 import { Check, Pencil, Plus, Search, Settings, SquarePen, Trash2, Users, X } from "lucide-react";
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
-import { MOD } from "../lib/keys";
+import { MOD, NEW_CHAT_KEYS } from "../lib/keys";
 import { createBot, deleteConversation, openConversation, renameConversation, selectBot, startNewChat, useStore } from "../lib/store";
 import type { Conversation } from "../lib/types";
 import { openView, useFeatureRegistry, useNav } from "../features/registry";
 import { detectEnv, type Platform } from "../lib/transport";
 import { Avatar, BotAvatar } from "./Avatar";
+import { confirmThen } from "./Confirm";
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -63,7 +64,8 @@ export function Sidebar({
   open: boolean;
   onClose: () => void;
   onOpenSettings: () => void;
-  onEditBot: (id: string) => void;
+  /** `returnTo`: a bot just made with "New bot", and the bot to go back to if it's cancelled. */
+  onEditBot: (id: string, fresh?: { returnTo: string | null }) => void;
 }) {
   const bots = useStore((s) => s.bots);
   const activeBotId = useStore((s) => s.activeBotId);
@@ -134,7 +136,7 @@ export function Sidebar({
             }}
           >
             <SquarePen size={16} /> New chat
-            <kbd className="hide-touch">{MOD === "⌘" ? "⇧⌘O" : "Ctrl+Shift+O"}</kbd>
+            <kbd className="hide-touch">{NEW_CHAT_KEYS}</kbd>
           </button>
           <label className="search-box">
             <Search size={15} className="muted" />
@@ -202,8 +204,9 @@ export function Sidebar({
                   style={{ opacity: 1 }}
                   title="New bot"
                   onClick={() => {
+                    const returnTo = useStore.getState().activeBotId;
                     const bot = createBot();
-                    onEditBot(bot.id);
+                    onEditBot(bot.id, { returnTo });
                     onClose();
                   }}
                 >
@@ -296,7 +299,7 @@ export function Sidebar({
                       title="Delete chat"
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (confirm(`Delete "${c.title}"?`)) deleteConversation(c.id);
+                        confirmThen({ message: `Delete "${c.title}"?`, confirm: "Delete", danger: true }, () => deleteConversation(c.id));
                       }}
                     >
                       <Trash2 size={13} />

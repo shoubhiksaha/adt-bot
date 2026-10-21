@@ -1,7 +1,7 @@
 import { Loader2, Plus, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { canImagine, IMAGE_MODEL_SUGGESTIONS, resolveImageModel } from "../lib/imagine";
-import { MOD } from "../lib/keys";
+import { MOD, NEW_CHAT_KEYS } from "../lib/keys";
 import { formatHeaders, parseHeaders } from "../lib/providers";
 import { SEARCH_ENGINES, webSearch } from "../lib/search";
 import { backupPasswordProblem } from "../lib/backup-crypto";
@@ -28,6 +28,7 @@ import { ProviderSetup } from "./ProviderSetup";
 import { AboutSettings } from "./settings/About";
 import { AppearanceSettings } from "./settings/Appearance";
 import { useFeatureRegistry } from "../features/registry";
+import { askConfirm, confirmThen } from "./Confirm";
 import { ModelInput, Toggle } from "./settings/controls";
 import { KeyStorageNote } from "./settings/KeyStorage";
 import { ToolsSettings } from "./settings/ToolsSettings";
@@ -57,6 +58,10 @@ export default function SettingsDialog({ onClose, initialTab = "general" }: { on
   }, []);
   const extra = featureTabs.filter((t) => !t.platforms || (platform && t.platforms.includes(platform)));
   const FeatureTab = extra.find((t) => t.id === tab)?.Component;
+  // On a phone the tabs scroll sideways: keep the open one in view (e.g. opened straight at Voice).
+  useEffect(() => {
+    document.querySelector(".dialog .tabs .active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [tab, platform]);
   return (
     <Dialog
       title="Settings"
@@ -127,7 +132,7 @@ function GeneralTab() {
       <table className="shortcuts">
         <tbody>
           <tr><td><kbd>{MOD}K</kbd></td><td>Search chats</td></tr>
-          <tr><td><kbd>{MOD}Shift+O</kbd></td><td>New chat</td></tr>
+          <tr><td><kbd>{NEW_CHAT_KEYS}</kbd></td><td>New chat</td></tr>
           <tr><td><kbd>/</kbd></td><td>Focus the message box</td></tr>
           <tr><td><kbd>Esc</kbd></td><td>Stop the reply</td></tr>
           <tr><td><kbd>{MOD}Enter</kbd></td><td>Send an edited message</td></tr>
@@ -157,7 +162,9 @@ function ProvidersTab() {
               type="button"
               className="icon-btn"
               title="Remove provider"
-              onClick={() => confirm(`Remove ${p.name}? Bots using it will need a new provider.`) && removeProvider(p.id)}
+              onClick={() =>
+                confirmThen({ message: `Remove ${p.name}?`, detail: "Bots using it will need a new provider.", confirm: "Remove", danger: true }, () => removeProvider(p.id))
+              }
             >
               <Trash2 size={16} />
             </button>
@@ -350,14 +357,18 @@ function DataTab() {
     }
   };
 
-  const finishImport = (text: string) => {
+  const finishImport = async (text: string) => {
     // A backup from someone else could point your providers at their server.
     const changes = importChanges(text);
     if (
       changes.length &&
-      !window.confirm(
-        `This backup sends your chats to these addresses:\n\n${changes.slice(0, 8).join("\n")}\n\nOnly import backups you made yourself. Import anyway?`,
-      )
+      !(await askConfirm({
+        title: "Import this backup?",
+        message: `This backup sends your chats to these addresses:\n\n${changes.slice(0, 8).join("\n")}`,
+        detail: "Only import backups you made yourself.",
+        confirm: "Import anyway",
+        danger: true,
+      }))
     ) {
       setMessage("Import cancelled.");
       return;
@@ -371,13 +382,13 @@ function DataTab() {
     try {
       if (!withKeys) {
         setUnlocking(null);
-        finishImport(unlocking.text);
+        await finishImport(unlocking.text);
         return;
       }
       setUnlocking({ ...unlocking, busy: true });
       const text = await unlockBackup(unlocking.text, unlocking.password);
       setUnlocking(null);
-      finishImport(text);
+      await finishImport(text);
     } catch (error) {
       setUnlocking({ ...unlocking, busy: false });
       setMessage((error as Error).message);
@@ -413,7 +424,7 @@ function DataTab() {
               try {
                 const text = await file.text();
                 if (backupHasSealedKeys(text)) setUnlocking({ text, password: "" });
-                else finishImport(text);
+                else await finishImport(text);
               } catch (error) {
                 setMessage((error as Error).message);
               }
@@ -489,7 +500,7 @@ function DataTab() {
         type="button"
         className="btn danger"
         onClick={async () => {
-          if (confirm("Delete all bots, chats, memory and keys from this device?")) {
+          if (await askConfirm({ message: "Delete all bots, chats, memory and keys from this device?", detail: "This can't be undone. Export a backup first if you might want them back.", confirm: "Delete everything", danger: true })) {
             // The search index holds what memories and files say, in another form: it goes too.
             await Promise.allSettled([eraseAllData(), clearVectorIndex(), clearKnowledgeDocs(), eraseConnectors(), eraseRoomPins()]);
             // Smaller things kept in this browser profile: recipes, room list, Mac control switch.
