@@ -270,6 +270,12 @@ export class LiveVoiceSession {
     return [base, this.tools.length ? TOOL_GUIDANCE : "", computer, screen ? COMPUTER_GUIDANCE : "", LIVE_RULES].filter(Boolean).join("\n\n");
   }
 
+  /** A frame from the shared camera or screen (about one a second while sharing). */
+  sendFrame(mediaType: string, data: string) {
+    if (this.closed) return;
+    this.send((c) => c.sendImage(mediaType, data));
+  }
+
   /** The end of the chat so far, as text turns (ending on a finished reply). */
   private history(): LiveSetup["history"] {
     const id = this.conversationId;

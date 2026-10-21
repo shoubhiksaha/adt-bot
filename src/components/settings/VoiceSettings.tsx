@@ -73,6 +73,16 @@ export function VoiceSettings() {
         </div>
       </div>
 
+      <Section title="Voice mode look" hint="What you see while you talk. In voice mode you can also show it your camera or screen.">
+        <div className="field">
+          <select id="voice-look" className="select" value={voice.look ?? "orb"} onChange={(e) => set({ look: e.target.value as typeof voice.look })} aria-label="Voice mode look">
+            <option value="orb">Glowing orb</option>
+            <option value="face">A face that talks</option>
+            <option value="picture">The bot's picture</option>
+          </select>
+        </div>
+      </Section>
+
       <Section title="Voice mode conversation" hint="Who hears you and answers in voice mode.">
         <div className="field">
           <select

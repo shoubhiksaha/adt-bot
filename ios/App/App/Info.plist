@@ -76,6 +76,8 @@
 	<string>ADT Bot connects to AI servers on your local network, such as Ollama or LM Studio.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>ADT Bot uses the microphone for voice input.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>ADT Bot uses the camera only when you share it in voice mode, so the bot can see what you show it.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>ADT Bot turns your speech into text for dictation.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

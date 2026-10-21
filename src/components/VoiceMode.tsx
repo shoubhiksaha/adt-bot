@@ -1,4 +1,4 @@
-import { Mic, MicOff, Settings2, X, Zap } from "lucide-react";
+import { Camera, MicOff, Mic, MonitorUp, Settings2, SwitchCamera, X, Zap } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { desktopInvoke, isDesktop } from "../lib/desktop";
 import { useStore } from "../lib/store";
@@ -8,6 +8,7 @@ import { LiveVoiceSession } from "../lib/live-session";
 import { isMoonshine } from "../lib/speech-models";
 import { localSpeechModel, SPEECH_MODELS, whisperDownloaded } from "../lib/whisper";
 import { Avatar } from "./Avatar";
+import { setVisualFeed, VisualFeed, type FeedKind } from "../lib/visual-feed";
 import { openSettings } from "./MessageItem";
 
 const STATUS: Record<VoiceState["phase"], string> = {
@@ -82,6 +83,49 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
   }, []);
+
+  // Camera or screen sharing: a preview in the corner; Gemini Live gets a frame every second (the app's
+  // own pipeline attaches the latest frame to each thing you say, in voice-session.ts).
+  const [feed, setFeed] = useState<VisualFeed | null>(null);
+  const [feedError, setFeedError] = useState("");
+  const [facing, setFacing] = useState<"user" | "environment">("user");
+  const preview = useRef<HTMLVideoElement>(null);
+  const share = async (kind: FeedKind, face = facing) => {
+    setFeedError("");
+    if (feed?.kind === kind && face === facing) {
+      setVisualFeed(null);
+      setFeed(null);
+      return;
+    }
+    try {
+      const next = await VisualFeed.open(kind, face);
+      setVisualFeed(next);
+      setFeed(next);
+      next.stream.getVideoTracks()[0]?.addEventListener("ended", () => {
+        setVisualFeed(null);
+        setFeed((f) => (f === next ? null : f));
+      });
+    } catch (error) {
+      setFeedError((error as Error).message);
+    }
+  };
+  useEffect(() => {
+    if (preview.current) preview.current.srcObject = feed?.stream ?? null;
+    if (!feed) return;
+    const live = session.current instanceof LiveVoiceSession ? session.current : null;
+    const timer = live
+      ? setInterval(() => {
+          const frame = feed.frame(768, 0.6);
+          if (frame) live.sendFrame(frame.mediaType, frame.data);
+        }, 1000)
+      : null;
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [feed]);
+  // Leaving voice mode turns the camera off.
+  useEffect(() => () => setVisualFeed(null), []);
+  const canShareScreen = typeof navigator !== "undefined" && Boolean(navigator.mediaDevices?.getDisplayMedia) && !/Android|iPhone|iPad/.test(navigator.userAgent);
 
   // A modal screen: the app behind it can't be focused or clicked, and doesn't spend time on
   // layout and paint while replies stream in underneath.
@@ -190,11 +234,17 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
           <button
             type="button"
             ref={orb}
-            className={`orb ${phase}`}
+            className={`orb ${phase} look-${voice.look ?? "orb"}`}
             onClick={() => session.current?.tap()}
             aria-label={tapLabel}
           >
-            {(phase === "standby" || phase === "muted") && (phase === "muted" ? <MicOff size={34} /> : <Mic size={34} />)}
+            {(phase === "standby" || phase === "muted") && voice.look === "orb" && (phase === "muted" ? <MicOff size={34} /> : <Mic size={34} />)}
+            {voice.look === "face" && <VoiceFace />}
+            {voice.look === "picture" && (
+              <span className="orb-picture">
+                <Avatar value={bot.avatar} size="lg" />
+              </span>
+            )}
           </button>
         </div>
         <div className="voice-status">{status}</div>
@@ -216,9 +266,9 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
             </div>
           </div>
         )}
-        {state.error && (
+        {(state.error || feedError) && (
           <div className="voice-error" role="alert">
-            {state.error}
+            {state.error || feedError}
           </div>
         )}
         {/* Screen readers hear each finished answer once, not every word as it's spoken. */}
@@ -258,7 +308,49 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
         <span className="hide-touch"> · Space = {tapLabel.toLowerCase()} · M = mute · Esc = end</span>
       </div>
 
+      {feed && (
+        <div className="voice-feed">
+          <video ref={preview} muted playsInline autoPlay className={feed.kind === "camera" && facing === "user" ? "mirror" : ""} />
+          <span className="small">{feed.kind === "camera" ? "Camera on: it sees this" : "Sharing your screen"}</span>
+        </div>
+      )}
+
       <div className="voice-controls">
+        <button
+          type="button"
+          className={`voice-round${feed?.kind === "camera" ? " active" : ""}`}
+          onClick={() => void share("camera")}
+          aria-label={feed?.kind === "camera" ? "Turn the camera off" : "Show it your camera"}
+          title={feed?.kind === "camera" ? "Camera off" : "Show it your camera"}
+        >
+          <Camera size={20} />
+        </button>
+        {feed?.kind === "camera" && (
+          <button
+            type="button"
+            className="voice-round"
+            onClick={() => {
+              const next = facing === "user" ? "environment" : "user";
+              setFacing(next);
+              void share("camera", next);
+            }}
+            aria-label="Switch camera"
+            title="Switch camera"
+          >
+            <SwitchCamera size={20} />
+          </button>
+        )}
+        {canShareScreen && (
+          <button
+            type="button"
+            className={`voice-round${feed?.kind === "screen" ? " active" : ""}`}
+            onClick={() => void share("screen")}
+            aria-label={feed?.kind === "screen" ? "Stop sharing your screen" : "Share your screen"}
+            title={feed?.kind === "screen" ? "Stop sharing" : "Share your screen"}
+          >
+            <MonitorUp size={20} />
+          </button>
+        )}
         <button
           type="button"
           className={`voice-round${phase === "muted" ? " active" : ""}`}
@@ -276,5 +368,18 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
         </button>
       </div>
     </div>
+  );
+}
+
+/** The "face" look: eyes that blink and look up while thinking, a mouth that moves with the voice (--level). */
+function VoiceFace() {
+  return (
+    <svg className="voice-face" viewBox="0 0 200 200" aria-hidden="true">
+      <g className="face-eyes">
+        <ellipse className="face-eye" cx="70" cy="88" rx="12" ry="15" />
+        <ellipse className="face-eye" cx="130" cy="88" rx="12" ry="15" />
+      </g>
+      <rect className="face-mouth" x="74" y="128" width="52" height="18" rx="9" />
+    </svg>
   );
 }

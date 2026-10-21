@@ -106,3 +106,28 @@
   border: 1px solid currentColor;
   border-color: color-mix(in srgb, currentColor 35%, transparent);
 }
+
+/* Teach a task. */
+.teach-task {
+  margin-bottom: 12px;
+}
+.teach-task .rec-dot {
+  color: #ef4444;
+}
+.teach-recording {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, #ef4444 12%, transparent);
+}
+.teach-recording .rec-dot {
+  animation: rec-pulse 1.2s ease-in-out infinite;
+}
+@keyframes rec-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}

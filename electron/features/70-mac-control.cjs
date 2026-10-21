@@ -28,12 +28,14 @@ const PANES = {
   "screen-recording": "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
   automation: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
   microphone: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+  "input-monitoring": "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
 };
 const PANE_LABEL = {
   accessibility: "Privacy & Security → Accessibility",
   "screen-recording": "Privacy & Security → Screen & System Audio Recording",
   automation: "Privacy & Security → Automation",
   microphone: "Privacy & Security → Microphone",
+  "input-monitoring": "Privacy & Security → Input Monitoring",
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -1295,6 +1297,11 @@ exports.register = ({ app, ipcMain, shell, access, onStopAll }) => {
     ensureMac();
     return electronApi()?.systemPreferences?.isTrustedAccessibilityClient?.(true) ?? null;
   });
+  // Teach a task: the helper records what the user does (listen-only, never in password fields).
+  // Stop all ends a recording too: the helper restarts without one.
+  handle("recordStart", ({ seconds }) => helperCall("recordStart", { seconds: Number(seconds) || 600 }, { what: "Recording" }));
+  handle("recordStop", () => helperCall("recordStop", {}, { what: "Recording" }));
+  handle("recordStatus", () => (hasHelper() && helper ? helperCall("recordStatus", {}, { what: "Recording", timeoutMs: 5_000 }) : { recording: false, steps: 0 }));
   handle("screenshot", screenshot);
   handle("cursor", cursor);
   act("move", move);

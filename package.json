@@ -62,7 +62,8 @@
       "icon": "build/icon.png",
       "extendInfo": {
         "NSMicrophoneUsageDescription": "ADT Bot uses the microphone for voice input.",
-        "NSAppleEventsUsageDescription": "ADT Bot sends keystrokes and reads window titles through System Events when you let a bot control this Mac."
+        "NSAppleEventsUsageDescription": "ADT Bot sends keystrokes and reads window titles through System Events when you let a bot control this Mac.",
+        "NSCameraUsageDescription": "ADT Bot uses the camera only when you share it in voice mode, so the bot can see what you show it."
       },
       "hardenedRuntime": true,
       "entitlements": "build/entitlements.mac.plist",

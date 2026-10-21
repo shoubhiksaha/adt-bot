@@ -2453,3 +2453,84 @@ h2,
   border-radius: var(--radius);
   background: var(--secondary);
 }
+
+/* Voice mode: camera or screen preview, and the "face" and "picture" looks. */
+.voice-feed {
+  position: absolute;
+  top: calc(64px + env(safe-area-inset-top));
+  right: 16px;
+  width: min(34vw, 220px);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  z-index: 2;
+}
+.voice-feed video {
+  width: 100%;
+  border-radius: 12px;
+  background: #000;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.35);
+}
+.voice-feed video.mirror {
+  transform: scaleX(-1);
+}
+.orb.look-face,
+.orb.look-picture {
+  display: grid;
+  place-items: center;
+}
+.voice-face {
+  width: 74%;
+  height: 74%;
+  overflow: visible;
+}
+.face-eye,
+.face-mouth {
+  fill: color-mix(in srgb, var(--background) 88%, transparent);
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.face-eye {
+  animation: face-blink 5.2s infinite;
+}
+.face-eyes {
+  transition: transform 0.4s ease;
+}
+.orb.thinking .face-eyes {
+  transform: translate(8px, -10px);
+}
+.orb.hearing .face-eye {
+  transform: scale(1.12);
+}
+.face-mouth {
+  transform: scaleY(0.35);
+  transition: transform 0.08s linear;
+}
+.orb.speaking .face-mouth {
+  transform: scaleY(calc(0.25 + var(--level, 0) * 2.6));
+}
+.orb.standby .face-eye,
+.orb.muted .face-eye {
+  animation: none;
+  transform: scaleY(0.12);
+}
+@keyframes face-blink {
+  0%,
+  92%,
+  100% {
+    transform: scaleY(1);
+  }
+  95% {
+    transform: scaleY(0.08);
+  }
+}
+.orb-picture {
+  transform: scale(calc(1.6 + var(--level, 0) * 0.35));
+  transition: transform 0.06s linear;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .face-eye {
+    animation: none;
+  }
+}

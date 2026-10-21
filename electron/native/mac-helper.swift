@@ -880,6 +880,251 @@ func screenLocked() -> Bool {
   return (session["CGSSessionScreenIsLocked"] as? Bool) == true || (session["CGSSessionScreenIsLocked"] as? Int) == 1
 }
 
+// MARK: Teach a task
+//
+// Records what the user does once, so the app can turn it into a recipe the bots replay: what they
+// click (the control's kind and label, the app), what they type into which field, keys and shortcuts,
+// and app switches. Listen-only: nothing is changed or blocked. Typing in password fields is never
+// recorded (only that something was typed there), ADT Bot's own window is ignored, and recording
+// stops by itself after the time limit (10 minutes at most).
+
+final class Recorder {
+  var tap: CFMachPort?
+  var source: CFRunLoopSource?
+  var observer: NSObjectProtocol?
+  let started = Date()
+  var limit: TimeInterval = 600
+  var steps: [[String: Any]] = []
+  var stopped = false
+  /** The field the latest typing went into (its app and label), to add on to the same step. */
+  var typingKey: String?
+}
+var recorder: Recorder?
+let MAX_RECORDED_STEPS = 400
+
+let KEY_NAMES: [Int64: String] = [
+  36: "return", 76: "enter", 48: "tab", 53: "escape", 51: "delete", 117: "forward delete",
+  123: "left", 124: "right", 125: "down", 126: "up", 115: "home", 119: "end", 116: "page up", 121: "page down",
+]
+
+/** The first piece of text inside an element (a button's caption), for unlabeled controls. */
+func firstText(_ el: AXUIElement, depth: Int = 0) -> String? {
+  if depth > 3 { return nil }
+  for child in children(attr(el, "AXChildren")).prefix(8) {
+    let role = string(attr(child, "AXRole")) ?? ""
+    if role == "AXStaticText", let v = string(attr(child, "AXValue")) ?? string(attr(child, "AXTitle")), !v.isEmpty { return v }
+    if let t = firstText(child, depth: depth + 1) { return t }
+  }
+  return nil
+}
+
+/** What a control is, by name: its kind and label, and its app. A caption or icon inside a button counts as the button. */
+func describeElement(_ start: AXUIElement) -> [String: Any] {
+  var el = start
+  for _ in 0..<4 {
+    let role = string(attr(el, "AXRole")) ?? ""
+    guard role == "AXStaticText" || role == "AXImage", let parent = attr(el, "AXParent"), CFGetTypeID(parent) == AXUIElementGetTypeID() else { break }
+    let up = parent as! AXUIElement
+    let parentRole = string(attr(up, "AXRole")) ?? ""
+    if !ACTIONABLE.contains(parentRole) && parentRole != "AXCell" && parentRole != "AXGroup" { break }
+    el = up
+  }
+  let a = attrs(el)
+  let role = string(a["AXRole"]) ?? ""
+  let subrole = string(a["AXSubrole"]) ?? ""
+  var label = string(a["AXTitle"]) ?? string(a["AXDescription"])
+  if label?.isEmpty ?? true {
+    if TEXT_INPUT.contains(role) { label = string(a["AXPlaceholderValue"]) ?? string(a["AXHelp"]) }
+    else if role == "AXStaticText" { label = string(a["AXValue"]) }
+    else { label = firstText(el) }
+  }
+  let pid = pidOf(el)
+  var out: [String: Any] = ["role": SUBROLE[subrole] ?? ROLE[role] ?? role.replacingOccurrences(of: "AX", with: "").lowercased(), "app": appInfo(pid)["name"] ?? "", "pid": Int(pid)]
+  if let label, !label.isEmpty { out["label"] = clip(label, 80) }
+  if subrole == "AXSecureTextField" { out["secure"] = true }
+  if TEXT_INPUT.contains(role) || subrole == "AXSearchField" { out["field"] = true }
+  return out
+}
+
+func recordStep(_ step: [String: Any]) {
+  guard let r = recorder, !r.stopped else { return }
+  if Date().timeIntervalSince(r.started) > r.limit {
+    stopRecording()
+    return
+  }
+  if r.steps.count >= MAX_RECORDED_STEPS { return }
+  var s = step
+  s["at"] = Int(Date().timeIntervalSince(r.started) * 1000)
+  r.steps.append(s)
+}
+
+/** A click: the control under the pointer, unless it's ADT Bot's own window. */
+func recordClick(_ info: [String: Any], button: String, clicks: Int) {
+  guard let pid = info["pid"] as? Int, !isSelf(pid_t(pid)) else { return }
+  recorder?.typingKey = nil
+  var step = info
+  step["kind"] = "click"
+  step.removeValue(forKey: "pid")
+  if button != "left" { step["button"] = button }
+  if clicks > 1 { step["clicks"] = clicks }
+  recordStep(step)
+}
+
+/**
+ * A key: shortcuts and named keys become key steps; characters add on to the typing in the focused
+ * field (only "something was typed" for a password field); delete takes back the last character.
+ */
+func recordKey(code: Int64, chars: String, flags: CGEventFlags, focused: [String: Any]?) {
+  guard let r = recorder, !r.stopped else { return }
+  if let pid = focused?["pid"] as? Int, isSelf(pid_t(pid)) { return }
+  if let front = NSWorkspace.shared.frontmostApplication, isSelf(front.processIdentifier) { return }
+  let app = (focused?["app"] as? String) ?? NSWorkspace.shared.frontmostApplication?.localizedName ?? ""
+  var mods: [String] = []
+  if flags.contains(.maskControl) { mods.append("ctrl") }
+  if flags.contains(.maskAlternate) { mods.append("option") }
+  if flags.contains(.maskShift) { mods.append("shift") }
+  if flags.contains(.maskCommand) { mods.append("cmd") }
+  let named = KEY_NAMES[code]
+  let shortcut = flags.contains(.maskCommand) || flags.contains(.maskControl)
+  if shortcut || (named != nil && named != "delete") {
+    r.typingKey = nil
+    let key = named ?? chars.lowercased()
+    if key.isEmpty { return }
+    let combo = (mods.filter { $0 != "shift" || named != nil } + [key]).joined(separator: "+")
+    // A password field's shortcuts (paste) aren't news either.
+    if focused?["secure"] as? Bool == true, shortcut { return }
+    recordStep(["kind": "key", "combo": combo, "app": app])
+    return
+  }
+  let field = (focused?["label"] as? String) ?? ""
+  let key = "\(app)|\(field)"
+  if named == "delete" {
+    if r.typingKey == key, var last = r.steps.last, last["kind"] as? String == "type", var text = last["text"] as? String, !text.isEmpty {
+      text.removeLast()
+      last["text"] = text
+      r.steps[r.steps.count - 1] = last
+    } else {
+      recordStep(["kind": "key", "combo": "delete", "app": app])
+    }
+    return
+  }
+  if chars.isEmpty || chars.unicodeScalars.allSatisfy({ CharacterSet.controlCharacters.contains($0) }) { return }
+  if focused?["secure"] as? Bool == true {
+    if r.typingKey != key { recordStep(["kind": "type", "app": app, "field": field, "secure": true]) }
+    r.typingKey = key
+    return
+  }
+  if r.typingKey == key, var last = r.steps.last, last["kind"] as? String == "type", last["secure"] == nil {
+    last["text"] = ((last["text"] as? String) ?? "") + chars
+    r.steps[r.steps.count - 1] = last
+  } else {
+    recordStep(["kind": "type", "app": app, "field": field, "text": chars])
+  }
+  r.typingKey = key
+}
+
+func recordApp(_ app: NSRunningApplication) {
+  if isSelf(app.processIdentifier) { return }
+  recorder?.typingKey = nil
+  let name = app.localizedName ?? ""
+  if let last = recorder?.steps.last, last["kind"] as? String == "app", last["app"] as? String == name { return }
+  recordStep(["kind": "app", "app": name, "bundleId": app.bundleIdentifier ?? ""])
+}
+
+func recordEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent, refcon: UnsafeMutableRawPointer?) -> Unmanaged<CGEvent>? {
+  // macOS switches a slow tap off; switch it back on.
+  if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+    if let tap = recorder?.tap { CGEvent.tapEnable(tap: tap, enable: true) }
+    return Unmanaged.passUnretained(event)
+  }
+  switch type {
+  case .leftMouseDown, .rightMouseDown:
+    let p = event.location
+    var hit: AXUIElement?
+    if AXUIElementCopyElementAtPosition(systemWide, Float(p.x), Float(p.y), &hit) == .success, let hit {
+      var info = describeElement(hit)
+      info["x"] = Int(p.x)
+      info["y"] = Int(p.y)
+      recordClick(info, button: type == .rightMouseDown ? "right" : "left", clicks: Int(event.getIntegerValueField(.mouseEventClickState)))
+    }
+  case .keyDown:
+    var length = 0
+    var buffer = [UniChar](repeating: 0, count: 8)
+    event.keyboardGetUnicodeString(maxStringLength: 8, actualStringLength: &length, unicodeString: &buffer)
+    let chars = String(utf16CodeUnits: buffer, count: length)
+    let focused = attr(systemWide, "AXFocusedUIElement").flatMap { CFGetTypeID($0) == AXUIElementGetTypeID() ? describeElement($0 as! AXUIElement) : nil }
+    recordKey(code: event.getIntegerValueField(.keyboardEventKeycode), chars: chars, flags: event.flags, focused: focused)
+  default:
+    break
+  }
+  return Unmanaged.passUnretained(event)
+}
+
+func startRecording(_ req: [String: Any]) throws -> [String: Any] {
+  if recorder != nil, recorder?.stopped == false { throw Failure(message: "Already recording.") }
+  guard AXIsProcessTrusted() else { throw Failure(message: "Allow ADT Bot under Accessibility in System Settings → Privacy & Security first.", code: "untrusted") }
+  let r = Recorder()
+  r.limit = min(max((req["seconds"] as? Double) ?? 600, 10), 600)
+  let mask = (1 << CGEventType.leftMouseDown.rawValue) | (1 << CGEventType.rightMouseDown.rawValue) | (1 << CGEventType.keyDown.rawValue)
+  guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .tailAppendEventTap, options: .listenOnly, eventsOfInterest: CGEventMask(mask), callback: recordEvent, userInfo: nil) else {
+    throw Failure(message: "macOS didn't let ADT Bot watch the keyboard and mouse. Allow it under Input Monitoring in System Settings → Privacy & Security, then try again.", code: "input-monitoring")
+  }
+  r.tap = tap
+  r.source = CFMachPortCreateRunLoopSource(nil, tap, 0)
+  CFRunLoopAddSource(CFRunLoopGetMain(), r.source, .commonModes)
+  CGEvent.tapEnable(tap: tap, enable: true)
+  r.observer = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { note in
+    if let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication { recordApp(app) }
+  }
+  recorder = r
+  if let front = NSWorkspace.shared.frontmostApplication { recordApp(front) }
+  DispatchQueue.main.asyncAfter(deadline: .now() + r.limit) { if recorder === r { stopRecording() } }
+  return ["recording": true, "seconds": Int(r.limit)]
+}
+
+@discardableResult
+func stopRecording() -> [[String: Any]] {
+  guard let r = recorder else { return [] }
+  if !r.stopped {
+    r.stopped = true
+    if let tap = r.tap { CGEvent.tapEnable(tap: tap, enable: false) }
+    if let source = r.source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
+    if let observer = r.observer { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
+  }
+  return r.steps
+}
+
+func recordingStatus() -> [String: Any] {
+  guard let r = recorder else { return ["recording": false, "steps": 0] }
+  return ["recording": !r.stopped, "steps": r.steps.count, "seconds": Int(Date().timeIntervalSince(r.started))]
+}
+
+/**
+ * Tests only (ADT_HELPER_TEST=1): feeds made-up clicks, keys and app switches through the same code
+ * as real ones, without touching the keyboard or mouse.
+ */
+func recordInject(_ req: [String: Any]) throws -> [String: Any] {
+  guard ProcessInfo.processInfo.environment["ADT_HELPER_TEST"] == "1" else { throw Failure(message: "Unknown command.") }
+  if recorder == nil || recorder?.stopped == true {
+    let r = Recorder()
+    recorder = r
+  }
+  for e in (req["events"] as? [[String: Any]]) ?? [] {
+    switch e["type"] as? String {
+    case "click": recordClick(e["element"] as? [String: Any] ?? [:], button: (e["button"] as? String) ?? "left", clicks: (e["clicks"] as? Int) ?? 1)
+    case "key":
+      var flags: CGEventFlags = []
+      for m in (e["modifiers"] as? [String]) ?? [] { if let f = FLAGS[m] { flags.insert(f) } }
+      recordKey(code: Int64((e["code"] as? Int) ?? -1), chars: (e["chars"] as? String) ?? "", flags: flags, focused: e["focused"] as? [String: Any])
+    case "app":
+      recordStep(["kind": "app", "app": (e["app"] as? String) ?? "", "bundleId": ""])
+      recorder?.typingKey = nil
+    default: break
+    }
+  }
+  return ["steps": recorder?.steps ?? []]
+}
+
 let NEEDS_UNLOCKED: Set<String> = ["snapshot", "press", "setText", "type", "key", "click"]
 
 func handle(_ req: [String: Any]) throws -> Any {
@@ -899,6 +1144,10 @@ func handle(_ req: [String: Any]) throws -> Any {
   case "front":
     guard let pid = frontApp() else { return NSNull() }
     return appInfo(pid)
+  case "recordStart": return try startRecording(req)
+  case "recordStop": return ["steps": stopRecording(), "seconds": recordingStatus()["seconds"] ?? 0]
+  case "recordStatus": return recordingStatus()
+  case "recordInject": return try recordInject(req)
   default: throw Failure(message: "Unknown command.")
   }
 }

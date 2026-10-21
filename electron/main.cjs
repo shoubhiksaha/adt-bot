@@ -367,13 +367,29 @@ app.whenReady().then(() => {
     if (!trustedUrl(webContents.getURL()) || !ALLOWED.includes(permission)) return callback(false);
     if (permission !== "media") return callback(true);
     const types = details.mediaTypes ?? [];
-    if (types.includes("video")) return callback(false);
-    // macOS: ask for the system permission too; without it the app gets a silent microphone.
-    if (process.platform === "darwin" && systemPreferences.getMediaAccessStatus("microphone") !== "granted") {
-      return callback(await systemPreferences.askForMediaAccess("microphone").catch(() => false));
+    // macOS: ask for the system permission too; without it the app gets a silent microphone (or a
+    // black camera). The camera is only used when you share it in voice mode.
+    if (process.platform === "darwin") {
+      for (const [type, device] of [["audio", "microphone"], ["video", "camera"]]) {
+        if (!types.includes(type) || systemPreferences.getMediaAccessStatus(device) === "granted") continue;
+        if (!(await systemPreferences.askForMediaAccess(device).catch(() => false))) return callback(false);
+      }
     }
     callback(true);
   });
+  // "Share your screen" in voice mode: the system's own picker where there is one (macOS 15+),
+  // otherwise the main screen. Only the app's own page can ask.
+  const { desktopCapturer } = require("electron");
+  session.defaultSession.setDisplayMediaRequestHandler(
+    (request, callback) => {
+      if (!trustedUrl(request.frame?.url ?? "")) return callback({});
+      desktopCapturer
+        .getSources({ types: ["screen"] })
+        .then((sources) => callback(sources[0] ? { video: sources[0] } : {}))
+        .catch(() => callback({}));
+    },
+    { useSystemPicker: true },
+  );
   session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
     return Boolean(webContents && trustedUrl(webContents.getURL()) && ALLOWED.includes(permission));
   });

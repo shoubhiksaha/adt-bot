@@ -1,3 +1,5 @@
+import { visualFeed } from "./visual-feed";
+import type { Attachment } from "./types";
 import { type EarlyReply, sendMessage, setVoiceApprover, setVoiceModeActive, startEarlyReply, stopStreaming, stripMemoryTags } from "./chat";
 import { activityFor } from "./agent/asks";
 import { splitThink } from "./llm";
@@ -506,7 +508,8 @@ export class VoiceSession {
   private startEarly(text: string) {
     if (this.approval) return;
     if (this.segmentStartedAt - this.speechEndedAt < LATE_ECHO_MS && echoesLastWords(text, this.lastSpoken)) return;
-    if (!this.context().voice.earlyReply || this.phase() !== "hearing" || this.segmentDuringSpeech) return;
+    // With the camera or screen shared, the answer needs the frame from when you finished speaking.
+    if (!this.context().voice.earlyReply || this.phase() !== "hearing" || this.segmentDuringSpeech || visualFeed()) return;
     if (this.early && sameWords(this.early.text, text)) return;
     this.dropEarly();
     if (isLikelyHallucination(text) || parseVoiceCommand(text, useStore.getState().bots)) return;
@@ -835,7 +838,11 @@ export class VoiceSession {
         feed(false);
         await early.done;
       } else {
-        await sendMessage(text, [], { search: options.search ?? modes.search, think: modes.think, imagine: options.imagine, voice: true });
+        // Camera or screen shared: what you said goes with what it shows right now.
+        const feed = visualFeed();
+        const frame = feed?.frame();
+        const seen: Attachment[] = feed && frame ? [{ kind: "image", dataUrl: frame.dataUrl, name: feed.kind === "camera" ? "camera.jpg" : "screen.jpg" }] : [];
+        await sendMessage(text, seen, { search: options.search ?? modes.search, think: modes.think, imagine: options.imagine, voice: true });
       }
     } finally {
       unsubscribe();

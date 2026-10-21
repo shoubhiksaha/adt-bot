@@ -278,6 +278,8 @@ export type VoiceSettings = {
    * above), or Gemini Live (one model that hears and speaks; the bot's instructions and tools still apply).
    */
   conversation: "app" | "gemini-live";
+  /** How voice mode looks: the glowing orb, an animated face that talks, or the bot's own picture. */
+  look: "orb" | "face" | "picture";
   /** Gemini Live: the Google Gemini provider whose key it uses ("" = the first one with a key), model and voice. */
   liveProviderId: string;
   liveModel: string;

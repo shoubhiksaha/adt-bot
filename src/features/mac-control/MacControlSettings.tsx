@@ -3,6 +3,7 @@ import { Section, Toggle } from "../../components/settings/controls";
 import { useStore } from "../../lib/store";
 import { type MacPermissions, type MacScreenshot, mac } from "./api";
 import { deleteRecipe, useRecipes } from "./recipes";
+import { TeachTask } from "./TeachTask";
 import { isComputerControlDesktop, isMacDesktop, platformComputerNoun, setMacControlEnabled, useMacControl } from "./store";
 import { macTools } from "./tools";
 
@@ -221,7 +222,8 @@ const VARIABLE_RISK: Record<string, string> = {
 function Recipes() {
   const recipes = useRecipes((s) => s.recipes);
   return (
-    <Section title="Recipes" hint="Tasks a bot worked out once and saved, so it can repeat them quickly the same way. Bots save them after doing something you're likely to ask for again.">
+    <Section title="Recipes" hint="Tasks a bot worked out once and saved, so it can repeat them quickly the same way. Bots save them after doing something you're likely to ask for again, or teach one yourself.">
+      {isMacDesktop() && <TeachTask />}
       {recipes.length ? (
         <ul className="mac-control-recipes">
           {recipes.map((r) => (

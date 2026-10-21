@@ -174,6 +174,7 @@ export const defaultSettings: Settings = {
     wakeWord: true,
     handsFree: false,
     conversation: "app",
+    look: "orb",
     liveProviderId: "",
     liveModel: "gemini-3.8-live",
     liveVoice: "Kore",
