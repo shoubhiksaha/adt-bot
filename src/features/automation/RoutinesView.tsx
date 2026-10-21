@@ -2,7 +2,7 @@ import { Bell, ChevronRight, History, Loader2, Pencil, Play, Plus, Trash2 } from
 import { useEffect, useMemo, useState } from "react";
 import { BotAvatar } from "../../components/Avatar";
 import { Dialog } from "../../components/Dialog";
-import { isDesktop } from "../../lib/desktop";
+import { desktopInvoke, isDesktop } from "../../lib/desktop";
 import { useStore } from "../../lib/store";
 import { showConversation } from "./conversations";
 import { syncKeepAlive } from "./keep-alive";
@@ -18,7 +18,9 @@ import {
   updateRoutine,
   useRoutines,
 } from "./routines-store";
-import { runRoutineNow } from "./runner";
+import { pendingEvents, runRoutineNow } from "./runner";
+import { describeTrigger, DESKTOP_TRIGGERS, newWebhookToken, type Trigger, validateTrigger } from "./triggers";
+import { useApps } from "../apps/api";
 import {
   describeSchedule,
   formatWhen,
@@ -151,10 +153,24 @@ function RoutineCard({ routine: r, running, onEdit }: { routine: Routine; runnin
             {!running && last && <span className={`routine-chip ${last.status}`}>{STATUS_LABEL[last.status]}</span>}
           </div>
           <div className="small muted">
-            {bot?.name ?? "Bot deleted"} · {describeSchedule(r.schedule)}
-            {" · "}
-            {r.enabled && r.nextRun ? `Next: ${formatWhen(r.nextRun)}` : r.schedule.type === "once" && r.lastRun ? "Done" : "Off"}
+            {bot?.name ?? "Bot deleted"} ·{" "}
+            {r.trigger ? (
+              <>
+                {describeTrigger(r.trigger, accountLabel(r.trigger))}
+                {" · "}
+                {r.enabled ? (r.triggerState?.checkedAt ? `Checked ${formatWhen(r.triggerState.checkedAt)}` : "Watching") : "Off"}
+                {pendingEvents(r.id) > 0 && ` · ${pendingEvents(r.id)} waiting`}
+              </>
+            ) : (
+              <>
+                {describeSchedule(r.schedule)}
+                {" · "}
+                {r.enabled && r.nextRun ? `Next: ${formatWhen(r.nextRun)}` : r.schedule.type === "once" && r.lastRun ? "Done" : "Off"}
+              </>
+            )}
           </div>
+          {r.trigger?.type === "webhook" && <WebhookAddress token={r.trigger.token} />}
+          {r.triggerState?.error && <div className="small routine-warn">Last check: {r.triggerState.error}</div>}
           <div className="routine-instruction small">{r.instruction}</div>
           {r.disabledReason && <div className="small routine-warn">{r.disabledReason}</div>}
           {error && <div className="small error-text">{error}</div>}
@@ -200,6 +216,7 @@ function RoutineCard({ routine: r, running, onEdit }: { routine: Routine; runnin
               <span className={`routine-chip ${h.status}`}>{STATUS_LABEL[h.status]}</span>
               <span className="small">{new Date(h.startedAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}</span>
               {h.trigger === "manual" && <span className="small muted">run now</span>}
+              {h.trigger === "event" && <span className="small muted">event</span>}
               {h.finishedAt && h.status !== "skipped" && <span className="small muted">{Math.max(1, Math.round((h.finishedAt - h.startedAt) / 1000))} s</span>}
               <span className="small muted grow ellipsis" title={h.summary}>
                 {h.summary}
@@ -217,7 +234,145 @@ function RoutineCard({ routine: r, running, onEdit }: { routine: Routine; runnin
   );
 }
 
-type Draft = { name: string; instruction: string; botId: string; schedule: Schedule; missedRunPolicy: Routine["missedRunPolicy"] };
+type Draft = { name: string; instruction: string; botId: string; schedule: Schedule; missedRunPolicy: Routine["missedRunPolicy"]; trigger?: Trigger };
+
+const WEBHOOK_PORT = 17345;
+
+/** The account a trigger watches, by its label. */
+function accountLabel(t: Trigger): string {
+  return "account" in t ? (useApps.getState().accounts.find((a) => a.id === t.account)?.label ?? "") : "";
+}
+
+function WebhookAddress({ token }: { token: string }) {
+  const url = `http://127.0.0.1:${WEBHOOK_PORT}/hook/${token}`;
+  return (
+    <div className="small routine-webhook">
+      <code>{url}</code>
+      <button type="button" className="inline-btn small" onClick={() => void navigator.clipboard?.writeText(url)}>
+        Copy
+      </button>
+    </div>
+  );
+}
+
+const TRIGGER_TYPES: { type: Trigger["type"]; label: string }[] = [
+  { type: "email", label: "An email arrives" },
+  { type: "feed", label: "A feed posts something new (RSS, Atom, GitHub releases)" },
+  { type: "page", label: "A web page changes" },
+  { type: "slack", label: "A Slack message" },
+  { type: "x", label: "A mention or message on X" },
+  { type: "webhook", label: "A webhook is called" },
+  { type: "folder", label: "Files change in a folder" },
+];
+
+function emptyTrigger(type: Trigger["type"]): Trigger {
+  const first = (service: string) => useApps.getState().accounts.find((a) => a.services.includes(service as never))?.id ?? "";
+  switch (type) {
+    case "email":
+      return { type, account: first("mail") };
+    case "slack":
+      return { type, account: first("chat"), channel: "" };
+    case "x":
+      return { type, account: first("post"), what: "mentions" };
+    case "feed":
+    case "page":
+      return { type, url: "" };
+    case "webhook":
+      return { type, token: newWebhookToken() };
+    case "folder":
+      return { type, path: "" };
+  }
+}
+
+/** The fields for one kind of trigger. */
+function TriggerFields({ trigger, onChange }: { trigger: Trigger; onChange: (t: Trigger) => void }) {
+  const accounts = useApps((s) => s.accounts);
+  const set = (patch: Partial<Trigger>) => onChange({ ...trigger, ...patch } as Trigger);
+  const accountSelect = (service: string, none: string) => {
+    const options = accounts.filter((a) => a.services.includes(service as never));
+    return options.length ? (
+      <select className="select" value={"account" in trigger ? trigger.account : ""} onChange={(e) => set({ account: e.target.value } as Partial<Trigger>)} aria-label="Account">
+        {options.map((a) => (
+          <option key={a.id} value={a.id}>
+            {a.label}
+          </option>
+        ))}
+      </select>
+    ) : (
+      <p className="small error-text">{none} Connect one in Settings → Apps.</p>
+    );
+  };
+  switch (trigger.type) {
+    case "email":
+      return (
+        <div className="routine-trigger-fields">
+          {accountSelect("mail", "No email account is connected.")}
+          <input className="input" placeholder="Sent to (optional), e.g. you+receipts@gmail.com" value={trigger.to ?? ""} onChange={(e) => set({ to: e.target.value })} />
+          <input className="input" placeholder="From (optional), e.g. @shop.com" value={trigger.from ?? ""} onChange={(e) => set({ from: e.target.value })} />
+          <input className="input" placeholder="Subject contains (optional)" value={trigger.subject ?? ""} onChange={(e) => set({ subject: e.target.value })} />
+          <p className="small muted">Tip: email you+anything@gmail.com (or your provider's plus-address) and filter on it to give each routine its own address.</p>
+        </div>
+      );
+    case "slack":
+      return (
+        <div className="routine-trigger-fields">
+          {accountSelect("chat", "No Slack workspace is connected.")}
+          <input className="input" placeholder="#channel" value={trigger.channel} onChange={(e) => set({ channel: e.target.value })} />
+          <input className="input" placeholder="Only messages containing (optional)" value={trigger.contains ?? ""} onChange={(e) => set({ contains: e.target.value })} />
+        </div>
+      );
+    case "x":
+      return (
+        <div className="routine-trigger-fields">
+          {accountSelect("post", "No X account is connected.")}
+          <select className="select" value={trigger.what} onChange={(e) => set({ what: e.target.value as "mentions" | "messages" })} aria-label="What">
+            <option value="mentions">Someone mentions me</option>
+            <option value="messages">I get a direct message</option>
+          </select>
+        </div>
+      );
+    case "feed":
+    case "page":
+      return (
+        <div className="routine-trigger-fields">
+          <input
+            className="input"
+            type="url"
+            placeholder={trigger.type === "feed" ? "https://github.com/owner/repo/releases.atom" : "https://example.com/pricing"}
+            value={trigger.url}
+            onChange={(e) => set({ url: e.target.value.trim() })}
+          />
+          <p className="small muted">Checked every 15 minutes. The first check only notes what's there now.</p>
+        </div>
+      );
+    case "webhook":
+      return (
+        <div className="routine-trigger-fields">
+          <WebhookAddress token={trigger.token} />
+          <p className="small muted">
+            Send a POST to this address (from a script, a shortcut or another app on this computer) and the routine runs with what was sent. It only listens on
+            this computer; to call it from the internet, put a tunnel such as Cloudflare Tunnel in front of it. Keep the address secret.
+          </p>
+        </div>
+      );
+    case "folder":
+      return (
+        <div className="routine-trigger-fields">
+          <div className="input-group">
+            <input className="input" placeholder="/Users/you/Downloads/Invoices" value={trigger.path} onChange={(e) => set({ path: e.target.value })} />
+            <button
+              type="button"
+              className="btn"
+              onClick={() => void desktopInvoke<string>("adt:triggers:pick-folder").then((p) => p && set({ path: p }))}
+            >
+              Choose…
+            </button>
+          </div>
+          <p className="small muted">Runs a few seconds after files are added or changed there (hidden files are ignored).</p>
+        </div>
+      );
+  }
+}
 
 const timezones = (() => {
   try {
@@ -252,28 +407,29 @@ function RoutineEditor({ routine, onClose }: { routine: Routine | null; onClose:
   const activeBotId = useStore((s) => s.activeBotId);
   const [draft, setDraft] = useState<Draft>(() =>
     routine
-      ? { name: routine.name, instruction: routine.instruction, botId: routine.botId, schedule: routine.schedule, missedRunPolicy: routine.missedRunPolicy }
+      ? { name: routine.name, instruction: routine.instruction, botId: routine.botId, schedule: routine.schedule, missedRunPolicy: routine.missedRunPolicy, trigger: routine.trigger }
       : { name: "", instruction: "", botId: activeBotId ?? bots[0]?.id ?? "", schedule: emptySchedule(), missedRunPolicy: "run-once" },
   );
+  const desktop = isDesktop();
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const s = draft.schedule;
   const set = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
   const setSchedule = (patch: Partial<Schedule>) => setDraft((d) => ({ ...d, schedule: { ...d.schedule, ...patch } as Schedule }));
 
-  const scheduleError = validateSchedule(s);
+  const scheduleError = draft.trigger ? validateTrigger(draft.trigger) : validateSchedule(s);
   const preview = useMemo(() => {
-    if (scheduleError) return "";
+    if (scheduleError || draft.trigger) return "";
     const probe = s.type === "interval" ? { ...s, anchor: Date.now() } : s;
     const next = nextRunAfter(probe, Date.now());
     return next ? `Next: ${formatWhen(next)}` : s.type === "once" ? "That time has passed." : "This schedule never runs.";
-  }, [s, scheduleError]);
+  }, [s, scheduleError, draft.trigger]);
 
   const save = async () => {
     setError("");
     setSaving(true);
     try {
-      const input: RoutineInput = { ...draft };
+      const input: RoutineInput = { ...draft, trigger: draft.trigger };
       if (routine) await updateRoutine(routine.id, input);
       else await createRoutine(input);
       onClose();
@@ -312,6 +468,40 @@ function RoutineEditor({ routine, onClose }: { routine: Routine | null; onClose:
           />
         </div>
 
+        <div className="routine-types" role="radiogroup" aria-label="Runs">
+          <button type="button" role="radio" aria-checked={!draft.trigger} className={`pill${draft.trigger ? "" : " on"}`} onClick={() => set({ trigger: undefined })}>
+            On a schedule
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={Boolean(draft.trigger)}
+            className={`pill${draft.trigger ? " on" : ""}`}
+            onClick={() => !draft.trigger && set({ trigger: emptyTrigger(desktop ? "email" : "feed") })}
+          >
+            When something happens
+          </button>
+        </div>
+        {draft.trigger ? (
+          <div className="field">
+            <label htmlFor="routine-trigger">When</label>
+            <select
+              id="routine-trigger"
+              className="select"
+              value={draft.trigger.type}
+              onChange={(e) => set({ trigger: emptyTrigger(e.target.value as Trigger["type"]) })}
+            >
+              {TRIGGER_TYPES.filter((t) => desktop || !DESKTOP_TRIGGERS.has(t.type)).map((t) => (
+                <option key={t.type} value={t.type}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+            <TriggerFields trigger={draft.trigger} onChange={(trigger) => set({ trigger })} />
+            <div className={`small ${scheduleError ? "error-text" : "muted"}`}>{scheduleError ?? `${describeTrigger(draft.trigger, accountLabel(draft.trigger))}. At most 12 runs an hour; what arrives goes to the bot as outside content.`}</div>
+          </div>
+        ) : (
+        <>
         <div className="field">
           <span className="field-label">When</span>
           <div className="routine-types" role="radiogroup" aria-label="Schedule type">
@@ -418,6 +608,8 @@ function RoutineEditor({ routine, onClose }: { routine: Routine | null; onClose:
             <option value="skip">Skip it</option>
           </select>
         </div>
+        </>
+        )}
 
         {error && <div className="small error-text">{error}</div>}
         <div className="btn-row" style={{ justifyContent: "flex-end", marginTop: 8 }}>

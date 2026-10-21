@@ -6,6 +6,7 @@ import { delegate, DELEGATION_TIMEOUT_MS, discuss, DISCUSSION_TIMEOUT_MS, resolv
 import {
   createRoutine,
   deleteRoutine,
+  emptySchedule,
   findRoutine,
   loadRoutines,
   type RoutineInput,
@@ -14,6 +15,8 @@ import {
 } from "./routines-store";
 import { isRoutineRun, markNoUpdate, runRoutineNow } from "./runner";
 import { describeSchedule, formatWhen, localTimezone, MINIMUM_INTERVAL_MINUTES, type Routine, type Schedule } from "./schedule";
+import { describeTrigger, newWebhookToken, type Trigger, validateTrigger } from "./triggers";
+import { useApps } from "../apps/api";
 
 registerToolGroup({ id: "routines", label: "Routines", description: "Create and run scheduled tasks (\"every weekday at 8:00, …\")." });
 registerToolGroup({ id: "bots", label: "Other bots", description: "Ask your other bots to do part of a task with their own tools and knowledge." });
@@ -112,6 +115,62 @@ const SCHEDULE_PROPS = {
   },
 } as const;
 
+const TRIGGER_PROP = {
+  type: "object",
+  description:
+    "Instead of a schedule, run when something happens. type: email (optional to, from, subject filters; to can be a plus-address like " +
+    "you+receipts@gmail.com), feed (url of an RSS/Atom feed), page (url to watch for changes), slack (channel, optional contains), " +
+    "x (what: mentions or messages), webhook. account: which connected account (email address or @username).",
+  properties: {
+    type: { type: "string", enum: ["email", "feed", "page", "slack", "x", "webhook"] },
+    account: { type: "string" },
+    to: { type: "string" },
+    from: { type: "string" },
+    subject: { type: "string" },
+    url: { type: "string" },
+    channel: { type: "string" },
+    contains: { type: "string" },
+    what: { type: "string", enum: ["mentions", "messages"] },
+  },
+  required: ["type"],
+} as const;
+
+/** A trigger from a bot's arguments (accounts by label or id). Folders are left to the user to pick. */
+export function triggerFromArgs(value: unknown): Trigger | { error: string } | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const t = (typeof value === "string" ? JSON.parse(value) : value) as Record<string, unknown>;
+  const accountFor = (service: string) => {
+    const accounts = useApps.getState().accounts.filter((a) => a.services.includes(service as never));
+    const ref = typeof t.account === "string" ? t.account.toLowerCase() : "";
+    return (ref ? accounts.find((a) => a.id === t.account || a.label.toLowerCase().includes(ref)) : accounts[0])?.id ?? "";
+  };
+  const s = (k: string) => (typeof t[k] === "string" ? (t[k] as string).trim() : "") || undefined;
+  let trigger: Trigger;
+  switch (t.type) {
+    case "email":
+      trigger = { type: "email", account: accountFor("mail"), ...(s("to") ? { to: s("to") } : {}), ...(s("from") ? { from: s("from") } : {}), ...(s("subject") ? { subject: s("subject") } : {}) };
+      break;
+    case "feed":
+    case "page":
+      trigger = { type: t.type, url: s("url") ?? "" };
+      break;
+    case "slack":
+      trigger = { type: "slack", account: accountFor("chat"), channel: s("channel") ?? "", ...(s("contains") ? { contains: s("contains") } : {}) };
+      break;
+    case "x":
+      trigger = { type: "x", account: accountFor(t.what === "messages" ? "dms" : "post"), what: t.what === "messages" ? "messages" : "mentions" };
+      break;
+    case "webhook":
+      trigger = { type: "webhook", token: newWebhookToken() };
+      break;
+    default:
+      return { error: "trigger.type must be email, feed, page, slack, x or webhook." };
+  }
+  if ("account" in trigger && !trigger.account) return { error: `No connected account for that. The user can connect one in Settings → Apps.` };
+  const problem = validateTrigger(trigger);
+  return problem ? { error: problem } : trigger;
+}
+
 function botName(id: string): string {
   return useStore.getState().bots.find((b) => b.id === id)?.name ?? "(deleted bot)";
 }
@@ -120,8 +179,10 @@ export function describeRoutine(r: Routine, now = Date.now()): string {
   const last = r.history.find((h) => h.status !== "running");
   return [
     `- ${r.name} (id ${r.id})`,
-    `  Bot: ${botName(r.botId)} · ${describeSchedule(r.schedule, true)} · ${r.enabled ? "on" : "off"}`,
-    `  Next: ${r.enabled && r.nextRun ? formatWhen(r.nextRun, now) : "not scheduled"}${last ? ` · Last: ${last.status} ${formatWhen(last.startedAt, now)}` : ""}`,
+    `  Bot: ${botName(r.botId)} · ${r.trigger ? describeTrigger(r.trigger) : describeSchedule(r.schedule, true)} · ${r.enabled ? "on" : "off"}`,
+    r.trigger
+      ? `  ${r.trigger.type === "webhook" ? `Webhook: POST to http://127.0.0.1:17345/hook/${r.trigger.token}` : "Runs when that happens"}${last ? ` · Last: ${last.status} ${formatWhen(last.startedAt, now)}` : ""}`
+      : `  Next: ${r.enabled && r.nextRun ? formatWhen(r.nextRun, now) : "not scheduled"}${last ? ` · Last: ${last.status} ${formatWhen(last.startedAt, now)}` : ""}`,
     `  Instruction: ${r.instruction.length > 200 ? `${r.instruction.slice(0, 199)}…` : r.instruction}`,
     ...(r.disabledReason ? [`  Note: ${r.disabledReason}`] : []),
   ].join("\n");
@@ -187,14 +248,18 @@ const routineTools: AgentTool[] = [
         instruction: { type: "string", description: "What the bot does on each run, written as a task." },
         bot: { type: "string", description: "Which bot runs it (name or nickname). Defaults to you." },
         ...SCHEDULE_PROPS,
+        trigger: TRIGGER_PROP,
       },
-      required: ["name", "instruction", "schedule_type"],
+      required: ["name", "instruction"],
     },
     async run(args, ctx) {
       await loadRoutines();
-      const schedule = scheduleFromArgs(args);
+      const trigger = triggerFromArgs(args.trigger);
+      if (trigger && "error" in trigger) throw new Error(trigger.error);
+      const schedule = trigger ? emptySchedule() : scheduleFromArgs(args);
       if ("error" in schedule) throw new Error(schedule.error);
       const input: RoutineInput = {
+        ...(trigger ? { trigger } : {}),
         // A missing name is a small-model slip, not worth failing over: derive one from the instruction.
         name: str(args, "name").trim() || str(args, "instruction").trim().split(/\s+/).slice(0, 5).join(" "),
         instruction: str(args, "instruction"),

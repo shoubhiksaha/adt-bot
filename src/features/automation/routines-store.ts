@@ -10,6 +10,7 @@ import {
   type Schedule,
   validateSchedule,
 } from "./schedule";
+import { type Trigger, validateTrigger } from "./triggers";
 
 /** Routines live in their own IndexedDB store on this device (no server). */
 type Saved = { routines: Routine[]; keepAlive: boolean };
@@ -67,6 +68,8 @@ export type RoutineInput = {
   enabled?: boolean;
   missedRunPolicy?: Routine["missedRunPolicy"];
   taintedBy?: string[];
+  /** Run when this happens instead of on the schedule. */
+  trigger?: Trigger;
 };
 
 /** Checks a routine's fields; returns an error sentence or null. */
@@ -76,6 +79,7 @@ export function validateRoutine(input: Partial<RoutineInput>): string | null {
   if (!input.instruction?.trim()) return "Say what the bot should do on each run.";
   if (input.instruction.length > 8000) return "The instruction is too long (8000 characters max).";
   if (!input.botId) return "Pick a bot.";
+  if (input.trigger) return validateTrigger(input.trigger);
   if (!input.schedule) return "Pick a schedule.";
   return validateSchedule(input.schedule);
 }
@@ -84,8 +88,8 @@ export async function createRoutine(input: RoutineInput, now = Date.now()): Prom
   const error = validateRoutine(input);
   if (error) throw new Error(error);
   const schedule = input.schedule.type === "interval" ? { ...input.schedule, anchor: now } : input.schedule;
-  const nextRun = nextRunAfter(schedule, now);
-  if (nextRun === null) throw new Error(schedule.type === "once" ? "That time is already in the past." : "That schedule never runs.");
+  const nextRun = input.trigger ? null : nextRunAfter(schedule, now);
+  if (nextRun === null && !input.trigger) throw new Error(schedule.type === "once" ? "That time is already in the past." : "That schedule never runs.");
   const routine: Routine = {
     id: uid(),
     botId: input.botId,
@@ -95,6 +99,7 @@ export async function createRoutine(input: RoutineInput, now = Date.now()): Prom
     enabled: input.enabled ?? true,
     missedRunPolicy: input.missedRunPolicy ?? "run-once",
     ...(input.taintedBy?.length ? { taintedBy: input.taintedBy } : {}),
+    ...(input.trigger ? { trigger: input.trigger } : {}),
     nextRun,
     consecutiveFailures: 0,
     history: [],
@@ -114,10 +119,13 @@ export async function updateRoutine(id: string, patch: Partial<RoutineInput>, no
   const scheduleChanged = patch.schedule && JSON.stringify(patch.schedule) !== JSON.stringify(current.schedule);
   const schedule = scheduleChanged && merged.schedule.type === "interval" ? { ...merged.schedule, anchor: now } : merged.schedule;
   const turningOn = patch.enabled === true && !current.enabled;
-  const nextRun = scheduleChanged || turningOn || current.nextRun === null ? nextRunAfter(schedule, now) : current.nextRun;
-  if (merged.enabled && nextRun === null) {
+  const evented = Boolean(merged.trigger);
+  const nextRun = evented ? null : scheduleChanged || turningOn || current.nextRun === null ? nextRunAfter(schedule, now) : current.nextRun;
+  if (merged.enabled && nextRun === null && !evented) {
     throw new Error(schedule.type === "once" ? "That time is already in the past." : "That schedule never runs.");
   }
+  // A different trigger starts from scratch (a new inbox, feed or page to watch).
+  const triggerChanged = "trigger" in patch && JSON.stringify(patch.trigger) !== JSON.stringify(current.trigger);
   const updated = await patchRoutine(id, (r) => ({
     ...r,
     ...patch,
@@ -125,6 +133,8 @@ export async function updateRoutine(id: string, patch: Partial<RoutineInput>, no
     instruction: merged.instruction.trim(),
     schedule,
     nextRun,
+    ...(triggerChanged ? { triggerState: undefined } : {}),
+    ...(!merged.trigger ? { trigger: undefined } : {}),
     // Turning a routine back on gives it a clean slate.
     ...(turningOn ? { consecutiveFailures: 0, disabledReason: undefined } : {}),
   }));

@@ -1,0 +1,46 @@
+/* Settings → Apps. Uses the app's tokens from src/styles.css. */
+.app-accounts {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+}
+.app-accounts li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.app-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  margin: 0 0 10px;
+}
+.app-card summary {
+  cursor: pointer;
+  padding: 10px 12px;
+  list-style-position: inside;
+}
+.app-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+.app-card-body .btn {
+  align-self: flex-start;
+}
+.app-steps {
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.5;
+}
+.app-steps a {
+  white-space: nowrap;
+}
+.app-servers {
+  display: grid;
+  grid-template-columns: 1fr 90px;
+  gap: 8px;
+}

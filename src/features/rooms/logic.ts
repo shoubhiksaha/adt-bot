@@ -94,9 +94,9 @@ export function guestText(name: string, text: string): string {
 
 /**
  * Tool groups a guest's question never gets, even with "Full tools": the host's screen, files,
- * knowledge files, connectors (their mail, drive…), coding agents and computers.
+ * knowledge files, connectors and connected apps (their mail, drive…), skills, coding agents and computers.
  */
-export const HOST_PRIVATE_GROUPS = new Set(["mac", "local", "knowledge", "connectors", "cli-agents", "computer", "projects", "routines", "bots"]);
+export const HOST_PRIVATE_GROUPS = new Set(["mac", "local", "knowledge", "connectors", "apps", "skills", "cli-agents", "computer", "projects", "routines", "bots"]);
 
 export function roomPrompt(botName: string, roomName: string, hostName: string): string {
   return [

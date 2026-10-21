@@ -11,3 +11,4 @@ import "../../features/projects/tools";
 import "../../features/mac-control/tools";
 import "../../features/computers/tools";
 import "../../features/skills/tools";
+import "../../features/apps/tools";

@@ -209,3 +209,20 @@
     flex-wrap: wrap;
   }
 }
+
+.routine-trigger-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+}
+.routine-webhook {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.routine-webhook code {
+  overflow-wrap: anywhere;
+}

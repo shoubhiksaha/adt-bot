@@ -7,6 +7,7 @@
  * five-field cron, a known IANA timezone, auto-disable after 10 consecutive failures.
  */
 import { type ParsedCron, parseCron } from "../../lib/agent/vendor/openbot/cron";
+import type { Trigger, TriggerState } from "./triggers";
 
 /** Routines may run at most this often. A model can be talked into anything; the floor cannot. */
 export const MINIMUM_INTERVAL_MINUTES = 15;
@@ -33,7 +34,7 @@ export type RoutineRun = {
   startedAt: number;
   finishedAt?: number;
   status: RunStatus;
-  trigger: "schedule" | "manual";
+  trigger: "schedule" | "manual" | "event";
   conversationId?: string;
   /** Short result or error text. */
   summary?: string;
@@ -59,6 +60,9 @@ export type Routine = {
    * reply…): every run treats its instruction that way too, so Full access asks before commands.
    */
   taintedBy?: string[];
+  /** Runs when this happens instead of on its schedule (an email, a feed item, a webhook…). */
+  trigger?: Trigger;
+  triggerState?: TriggerState;
   history: RoutineRun[];
   createdAt: number;
 };
@@ -288,7 +292,8 @@ export type DuePlan =
   | { action: "advance"; next: number | null };
 
 export function planDue(routine: Routine, now: number): DuePlan {
-  if (!routine.enabled || routine.nextRun === null || routine.nextRun > now) return { action: "none" };
+  // Event routines run when their trigger fires (trigger-runner.ts), not on the clock.
+  if (routine.trigger || !routine.enabled || routine.nextRun === null || routine.nextRun > now) return { action: "none" };
   const scheduledFor = routine.nextRun;
   const next = nextRunAfter(routine.schedule, now);
   if (routine.history.some((r) => r.scheduledFor === scheduledFor)) return { action: "advance", next };

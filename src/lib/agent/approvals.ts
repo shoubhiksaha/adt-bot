@@ -53,6 +53,8 @@ export function taintSensitive(tool: AgentTool, risk: AgentTool["risk"], args: R
   if (tool.group === "routines") return true;
   // Skills are steps bots follow later: an injected instruction mustn't become one.
   if (tool.group === "skills") return true;
+  // Apps (email, calendars, files, Slack, X) can send what the turn has seen to other people.
+  if (tool.group === "apps") return true;
   // Connector tools can send what the turn has seen to someone else.
   if (!isComputerTool(tool)) return tool.kind === "mcp";
   // Screen control (built in, or a Mac-control connector) stays usable: that's what Full access is for.
@@ -87,7 +89,11 @@ export function gate(
   const kind = tool.kind ?? kindForTool(call.name);
   const ask = (reason: string, allowAlways: boolean): GateResult => {
     askedScope.set(call.id, scope);
-    return { outcome: "ask", reason, summary: summarise(call.name, call, target), detail: detailFor(call), kind, allowAlways: allowAlways && !scope };
+    let summary = summarise(call.name, call, target);
+    try {
+      summary = tool.summary?.(call.args ?? {}) || summary;
+    } catch {}
+    return { outcome: "ask", reason, summary, detail: detailFor(call), kind, allowAlways: allowAlways && !scope };
   };
   const tainted = context?.taint?.sources.size ? [...context.taint.sources][0] : "";
   const checkTaint = (allowed: GateResult): GateResult => {

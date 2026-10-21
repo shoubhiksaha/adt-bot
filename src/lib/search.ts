@@ -149,6 +149,20 @@ export async function readPage(url: string, useProxy: boolean, signal?: AbortSig
   }
 }
 
+/**
+ * A public page's raw text (a feed's XML, a JSON file), up to 2 MB: like readPage but without turning
+ * HTML into text. It can't reach this machine or the local network when it goes through the relay.
+ */
+export async function fetchPublicText(url: string, useProxy: boolean, signal?: AbortSignal): Promise<string> {
+  const timeout = AbortSignal.timeout(15000);
+  const headers: Record<string, string> = { accept: "application/rss+xml,application/atom+xml,application/xml,text/xml;q=0.9,*/*;q=0.5" };
+  if (useProxy) headers["x-adtbot-public-only"] = "1";
+  const res = await providerFetch(url, { method: "GET", headers, signal: signal ? AbortSignal.any([signal, timeout]) : timeout }, useProxy);
+  if (!res.ok) throw new Error(`${new URL(url).host} answered ${res.status}`);
+  const body = await res.text();
+  return body.length > 2_000_000 ? body.slice(0, 2_000_000) : body;
+}
+
 /** Links pasted into a message, which the bot should read like a browser would. */
 export function findUrls(text: string): string[] {
   const urls = text.match(/https?:\/\/[^\s<>()"'`]+[^\s<>()"'`.,;:!?]/g) ?? [];

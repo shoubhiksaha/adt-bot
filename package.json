@@ -139,6 +139,7 @@
     "electron": "^44.9.0",
     "electron-builder": "^26.15.3",
     "highlight.js": "^11.12.0",
+    "hoodiecrow-imap": "^3.3.1",
     "idb-keyval": "^6.3.0",
     "js-yaml": "^4.3.2",
     "kokoro-js": "^1.2.1",
@@ -151,6 +152,7 @@
     "rehype-highlight": "^7.0.2",
     "remark-gfm": "^4.0.1",
     "sharp": "^0.35.5",
+    "smtp-server": "^3.20.2",
     "typescript": "^7.0.2",
     "vite": "^8.3.4",
     "vite-plugin-pwa": "^2.0.0",
@@ -164,6 +166,9 @@
     }
   },
   "dependencies": {
-    "electron-updater": "6.8.10"
+    "electron-updater": "6.8.10",
+    "imapflow": "^2.5.9",
+    "mailparser": "^3.10.0",
+    "nodemailer": "^10.1.7"
   }
 }

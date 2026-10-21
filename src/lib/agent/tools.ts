@@ -84,6 +84,8 @@ export type AgentTool = ToolSchema & {
   sandboxed?: (args: Record<string, unknown>) => boolean;
   /** Per-call risk: e.g. a GET is read-only, a POST needs approval. */
   riskFor?: (args: Record<string, unknown>) => ToolRisk;
+  /** What the approval card says, in plain words ("Send an email to bob@example.com: “Lunch?”"). */
+  summary?: (args: Record<string, unknown>) => string;
   /** Give up after this long (default 120 s). */
   timeoutMs?: number;
   run: (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>;
