@@ -1477,7 +1477,8 @@ kbd {
   opacity: 0.4;
   cursor: default;
 }
-@media (max-width: 480px) {
+/* Four mode buttons: icons only until there's room for their labels. */
+@media (max-width: 620px) {
   .pill span {
     display: none;
   }

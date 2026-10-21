@@ -1,4 +1,4 @@
-import { ArrowUp, AudioLines, FileText, Globe, Lightbulb, Loader2, Mic, Paperclip, Sparkles, Square, X } from "lucide-react";
+import { ArrowUp, AudioLines, FileText, Globe, Lightbulb, Loader2, Mic, Paperclip, Sparkles, Square, Telescope, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { sendMessage, stopStreaming } from "../lib/chat";
 import { ACCEPTED_FILES, fileToAttachment, formatBytes } from "../lib/images";
@@ -13,6 +13,7 @@ import { skillsFor } from "../features/skills/skills";
 const COMMANDS = [
   { name: "imagine", description: "Create an image" },
   { name: "search", description: "Answer with live web search" },
+  { name: "research", description: "Deep research: many sources, a cited report" },
   { name: "remember", description: "Save a fact about you" },
 ];
 
@@ -41,6 +42,7 @@ export function Composer({
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [imagine, setImagine] = useState(false);
+  const [research, setResearch] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [voice, setVoice] = useState<Voice>("idle");
   const [notice, setNotice] = useState<string | null>(null);
@@ -115,11 +117,12 @@ export function Composer({
   const submit = () => {
     if (streaming || reading || (!text.trim() && !attachments.length)) return;
     sessionRef.current?.stop();
-    void sendMessage(text, attachments, { search: modes.search, think: modes.think, imagine, dictated: dictatedRef.current });
+    void sendMessage(text, attachments, { search: modes.search, think: modes.think, imagine, research: research && !imagine, dictated: dictatedRef.current });
     dictatedRef.current = false;
     setText("");
     setAttachments([]);
     setImagine(false);
+    setResearch(false);
     setNotice(null);
   };
 
@@ -160,6 +163,8 @@ export function Composer({
 
   const placeholder = imagine
     ? "Describe an image to create…"
+    : research
+      ? "What should I research? (takes a few minutes)"
     : modes.search
       ? `Ask ${botName} with live web search…`
       : `Ask ${botName} anything`;
@@ -294,6 +299,16 @@ export function Composer({
             onClick={() => setMode("think", !modes.think)}
           >
             <Lightbulb size={15} /> <span>Think</span>
+          </button>
+          <button
+            type="button"
+            className={`pill${research && !imagine ? " on" : ""}`}
+            aria-pressed={research}
+            title="Deep research: searches many sources, reads them and writes a cited report"
+            disabled={imagine}
+            onClick={() => setResearch((v) => !v)}
+          >
+            <Telescope size={15} /> <span>Research</span>
           </button>
           <button
             type="button"

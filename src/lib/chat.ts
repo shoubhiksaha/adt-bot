@@ -19,11 +19,14 @@ import { RICH_BLOCKS_GUIDANCE } from "./visualize/fences";
 import { invokedSkill, skillsFor, skillsPrompt, skillText } from "../features/skills/skills";
 import { markUntrusted } from "./agent/vendor/copilotkit/untrusted-content";
 import { groupPrompt, groupView, type GroupTurn, isPass, MAX_ROUNDS, stanceFor } from "./group";
+import { research } from "./research";
 
 export type SendOptions = {
   search?: boolean;
   think?: boolean;
   imagine?: boolean;
+  /** Deep research: plan, search, read, take notes, fill gaps, then a cited report. */
+  research?: boolean;
   /** Spoken conversation: short answers, lighter reasoning, optional faster voice model. */
   voice?: boolean;
   /** The user spoke this message with the mic button (only then is the reply read aloud outside voice mode). */
@@ -144,12 +147,12 @@ export function buildSystemPrompt(bot: Bot, extras: PromptExtras = {}): string {
   return parts.filter(Boolean).join("\n\n");
 }
 
-/** Slash commands: /remember, /imagine (or /image), /search. */
-function parseCommand(text: string): { command?: "remember" | "imagine" | "search"; rest: string } {
-  const match = /^\/(remember|imagine|image|search)\b\s*([\s\S]*)$/i.exec(text.trim());
+/** Slash commands: /remember, /imagine (or /image), /search, /research. */
+function parseCommand(text: string): { command?: "remember" | "imagine" | "search" | "research"; rest: string } {
+  const match = /^\/(remember|imagine|image|search|research)\b\s*([\s\S]*)$/i.exec(text.trim());
   if (!match) return { rest: text.trim() };
   const name = match[1].toLowerCase();
-  return { command: name === "image" ? "imagine" : (name as "remember" | "imagine" | "search"), rest: match[2].trim() };
+  return { command: name === "image" ? "imagine" : (name as "remember" | "imagine" | "search" | "research"), rest: match[2].trim() };
 }
 
 /** Voice mode registers how to ask the user aloud, so tools that need an OK can still run there. */
@@ -173,6 +176,7 @@ export async function sendMessage(text: string, attachments: Attachment[] = [], 
     ...options,
     search: options.search || command === "search",
     imagine: options.imagine || command === "imagine",
+    research: options.research || command === "research",
   };
 
   const conversationId = state.activeConversationId ?? newConversation(bot.id).id;
@@ -190,8 +194,8 @@ export async function sendMessage(text: string, attachments: Attachment[] = [], 
     messages: [...c.messages, userMessage],
     updatedAt: Date.now(),
   }));
-  // A group chat: every bot takes its turn (an image request goes to the first bot only).
-  if (group && !opts.imagine) await runGroup(conversationId, opts);
+  // A group chat: every bot takes its turn (an image or research request goes to the first bot only).
+  if (group && !opts.imagine && !opts.research) await runGroup(conversationId, opts);
   else await runAssistant(conversationId, bot.id, opts);
 }
 
@@ -316,6 +320,7 @@ export async function resendFrom(conversationId: string, messageId: string, newT
   if (index < 0) return;
   const wasImage = replaced.role === "assistant" && replaced.attachments?.some((a) => a.kind === "image");
   const wasSearch = replaced.role === "assistant" && Boolean(replaced.sources?.length);
+  const wasResearch = replaced.role === "assistant" && Boolean(replaced.reasoning?.startsWith("**Research steps**"));
 
   updateConversation(conversationId, (c) => {
     const messages = c.messages.slice(0, index + 1);
@@ -325,6 +330,7 @@ export async function resendFrom(conversationId: string, messageId: string, newT
   const modes = state.settings.modes;
   await runAssistant(conversationId, conversation.botId, {
     imagine: wasImage,
+    research: wasResearch,
     search: wasSearch || modes.search,
     think: modes.think,
   });
@@ -564,6 +570,36 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
     if (notes.some((n) => n.outside)) taint.sources.add("notes from an earlier chat that read outside content");
     // Other bots' replies in a group chat may carry what they read.
     if (group && chat.some((m) => m.role === "assistant" && m.botId && m.botId !== botId)) taint.sources.add("another bot's reply in this group chat");
+
+    if (opts.research && lastUser?.content.trim()) {
+      let report = "";
+      let log = "";
+      let lastPaint = 0;
+      const found = await research({
+        question: lastUser.content,
+        history: chat,
+        provider,
+        model,
+        system: basePrompt,
+        settings,
+        signal,
+        onStatus: (text) => patchReply({ status: text }),
+        onSources: (list) => patchReply({ sources: list }),
+        onEvent: (event) => {
+          firstMs ??= performance.now() - started;
+          if (event.type === "text") report += event.text;
+          else if (event.type === "reasoning") log += event.text;
+          const now = performance.now();
+          if (now - lastPaint > 60) {
+            lastPaint = now;
+            patchReply({ content: report, reasoning: log || undefined, ...(event.type === "text" ? { status: undefined } : {}) });
+          }
+        },
+      });
+      patchReply({ content: report, reasoning: log || undefined, status: undefined, sources: found.length ? found : undefined, stats: { ms: Math.round(performance.now() - started), firstMs: firstMs && Math.round(firstMs) } });
+      if (!signal.aborted && conversationId) void autoTitle(conversationId);
+      return reply.id;
+    }
 
     /** Our own search: query → engine → page reading, results handed to the model as context. */
     const appSearch = async () => {
