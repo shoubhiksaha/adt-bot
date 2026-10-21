@@ -2391,3 +2391,43 @@ h2,
 .slash-menu button:hover {
   background: var(--secondary);
 }
+
+/* Group chats: who's speaking, and the members in the header. */
+.msg-speaker {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.group-avatars {
+  display: inline-flex;
+  align-items: center;
+}
+.group-avatars > * + * {
+  margin-left: -6px;
+}
+.group-avatars.lg > * + * {
+  margin-left: -14px;
+}
+.group-chip {
+  cursor: default;
+}
+.group-order {
+  margin: 0;
+  padding-left: 20px;
+}
+.group-order li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+}
+.group-order .icon-btn {
+  width: 28px;
+  height: 28px;
+}
+.group-form .toggle.compact span .avatar {
+  vertical-align: middle;
+}

@@ -7,7 +7,7 @@ import { isSealed, openSecrets, sealSecrets } from "./backup-crypto";
 import { BOT_PRESETS } from "./presets";
 import { catalogModels, presetById } from "./providers";
 import { appSecretsCodec, SecretKeeper, type SecretMap } from "./secrets";
-import type { Bot, Conversation, ProviderConfig, Settings, Skill } from "./types";
+import type { Bot, Conversation, GroupSettings, ProviderConfig, Settings, Skill } from "./types";
 
 export const uid = () => crypto.randomUUID();
 
@@ -395,6 +395,17 @@ export function newConversation(botId: string, temporary = false): Conversation 
   setState((s) => ({
     conversations: { ...dropTemporary(s), [conversation.id]: conversation },
     activeBotId: botId,
+    activeConversationId: conversation.id,
+  }));
+  return conversation;
+}
+
+/** A group chat with these bots (in speaking order); it becomes the open chat. */
+export function newGroupConversation(members: string[], group: GroupSettings, title: string): Conversation {
+  const conversation: Conversation = { id: uid(), botId: members[0], title, messages: [], updatedAt: Date.now(), members, group, titled: false };
+  setState((s) => ({
+    conversations: { ...dropTemporary(s), [conversation.id]: conversation },
+    activeBotId: members[0],
     activeConversationId: conversation.id,
   }));
   return conversation;

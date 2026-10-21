@@ -2,7 +2,7 @@ import { ArrowDown, ChevronDown, Download, EyeOff, Menu, MoreHorizontal, Sliders
 import { ErrorBoundary } from "./ErrorBoundary";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { conversationMarkdown, newConversation, renameConversation, startNewChat, useStore } from "../lib/store";
-import type { Bot } from "../lib/types";
+import type { Bot, Conversation } from "../lib/types";
 import { Composer } from "./Composer";
 import { CopyButton } from "./CopyButton";
 import { MessageItem } from "./MessageItem";
@@ -47,6 +47,23 @@ async function download(name: string, text: string) {
   a.download = name;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+const GROUP_MODE: Record<NonNullable<Conversation["group"]>["mode"], string> = { discuss: "Discussion", debate: "Debate", panel: "Panel" };
+
+/** What happens when you write in a group chat, in a sentence. */
+function groupIntro(members: Bot[], group: Conversation["group"], bots: Bot[]): string {
+  const names = members.map((m) => m.name);
+  const list = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0];
+  const rounds = group?.rounds ?? 1;
+  const how =
+    group?.mode === "debate"
+      ? `debate it, taking turns for and against`
+      : group?.mode === "panel"
+        ? "each answer on their own first"
+        : "discuss it, each building on the others";
+  const summary = group?.summarizer ? ` Then ${bots.find((b) => b.id === group.summarizer)?.name ?? "a bot"} sums up.` : "";
+  return `Write a question or a task: ${list} ${how}, ${rounds} round${rounds === 1 ? "" : "s"}.${summary}`;
 }
 
 export function ChatView({ bot, onOpenSidebar, onEditBot }: { bot: Bot; onOpenSidebar: () => void; onEditBot: () => void }) {
@@ -101,7 +118,11 @@ export function ChatView({ bot, onOpenSidebar, onEditBot }: { bot: Bot; onOpenSi
   };
 
   const suggestions = SUGGESTIONS[bot.name] ?? SUGGESTIONS.default;
-  const title = conversation && messages.length ? conversation.title : bot.name;
+  // A group chat: its bots, in speaking order.
+  const allBots = useStore((s) => s.bots);
+  const members = (conversation?.members ?? []).map((id) => allBots.find((b) => b.id === id)).filter((b): b is Bot => Boolean(b));
+  const isGroup = members.length > 0;
+  const title = conversation && (messages.length || isGroup) ? conversation.title : bot.name;
 
   return (
     <main className="main">
@@ -110,7 +131,15 @@ export function ChatView({ bot, onOpenSidebar, onEditBot }: { bot: Bot; onOpenSi
           <Menu size={19} />
         </button>
         <div className="title">
-          <BotAvatar bot={bot} />
+          {isGroup ? (
+            <span className="group-avatars" title={members.map((m) => m.name).join(", ")}>
+              {members.slice(0, 4).map((m) => (
+                <BotAvatar key={m.id} bot={m} size="mini" />
+              ))}
+            </span>
+          ) : (
+            <BotAvatar bot={bot} />
+          )}
           {editingTitle && conversation ? (
             <input
               className="input title-input"
@@ -141,10 +170,16 @@ export function ChatView({ bot, onOpenSidebar, onEditBot }: { bot: Bot; onOpenSi
             </span>
           )}
         </div>
-        <button type="button" className="chip" onClick={() => setMenuOpen((v) => !v)} title="Switch model">
-          <span>{bot.model || "Choose model"}</span>
-          <ChevronDown size={14} />
-        </button>
+        {isGroup ? (
+          <span className="chip group-chip" title="Each bot answers with its own model">
+            {GROUP_MODE[conversation?.group?.mode ?? "discuss"]} · {conversation?.group?.rounds ?? 1} round{(conversation?.group?.rounds ?? 1) === 1 ? "" : "s"}
+          </span>
+        ) : (
+          <button type="button" className="chip" onClick={() => setMenuOpen((v) => !v)} title="Switch model">
+            <span>{bot.model || "Choose model"}</span>
+            <ChevronDown size={14} />
+          </button>
+        )}
         <button
           type="button"
           className={`icon-btn hide-narrow${temporary ? " active-toggle" : ""}`}
@@ -198,7 +233,17 @@ export function ChatView({ bot, onOpenSidebar, onEditBot }: { bot: Bot; onOpenSi
         {menuOpen && <ModelMenu bot={bot} onClose={() => setMenuOpen(false)} />}
       </header>
 
-      {messages.length === 0 ? (
+      {messages.length === 0 && isGroup ? (
+        <div className="empty">
+          <span className="group-avatars lg">
+            {members.map((m) => (
+              <BotAvatar key={m.id} bot={m} size="lg" />
+            ))}
+          </span>
+          <h1>{conversation!.title}</h1>
+          <div className="muted">{groupIntro(members, conversation!.group, allBots)}</div>
+        </div>
+      ) : messages.length === 0 ? (
         <div className="empty">
           <BotAvatar bot={bot} size="lg" />
           <h1>{temporary ? "Private chat" : `${greeting()}`}</h1>
@@ -237,7 +282,8 @@ export function ChatView({ bot, onOpenSidebar, onEditBot }: { bot: Bot; onOpenSi
                 <ErrorBoundary key={m.id} fallback={() => <div className="msg-broken small muted">This message can't be shown.</div>}>
                   <MessageItem
                     message={m}
-                    avatar={avatar}
+                    avatar={isGroup && m.role === "assistant" ? (allBots.find((b) => b.id === (m.botId ?? conversation!.botId))?.avatar ?? avatar) : avatar}
+                    speaker={isGroup && m.role === "assistant" ? (allBots.find((b) => b.id === (m.botId ?? conversation!.botId))?.name ?? "A deleted bot") : undefined}
                     conversationId={conversation!.id}
                     busy={busy}
                     live={busy && i === messages.length - 1}
@@ -254,7 +300,7 @@ export function ChatView({ bot, onOpenSidebar, onEditBot }: { bot: Bot; onOpenSi
         </div>
       )}
 
-      <Composer botName={bot.nickname?.trim() || bot.name} prefill={prefill} onVoiceMode={() => window.dispatchEvent(new Event("adt:voice-mode"))} />
+      <Composer botName={isGroup ? "the group" : bot.nickname?.trim() || bot.name} prefill={prefill} onVoiceMode={() => window.dispatchEvent(new Event("adt:voice-mode"))} />
     </main>
   );
 }

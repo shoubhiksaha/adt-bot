@@ -73,12 +73,15 @@ function Stats({ message }: { message: Message }) {
 export const MessageItem = memo(function MessageItem({
   message,
   avatar,
+  speaker,
   conversationId,
   busy,
   live,
 }: {
   message: Message;
   avatar: string;
+  /** Group chats: who wrote this reply. */
+  speaker?: string;
   conversationId: string;
   /** A reply is streaming somewhere in this chat. */
   busy: boolean;
@@ -177,6 +180,12 @@ export const MessageItem = memo(function MessageItem({
     <div className="msg assistant">
       <Avatar value={avatar} />
       <div className="body">
+        {speaker && (
+          <div className="msg-speaker">
+            {speaker}
+            {message.summary && <span className="badge">summary</span>}
+          </div>
+        )}
         {message.status && (
           <div className={`msg-status${live ? " live" : ""}`}>
             {live && <Loader2 size={14} className="spin" />} {message.status}

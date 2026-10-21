@@ -171,8 +171,20 @@ export type Message = {
   stats?: { ms: number; firstMs?: number };
   /** Claude's summary of the conversation up to this reply (server-side compaction), sent back on later turns. */
   compaction?: Record<string, unknown>;
+  /** Group chats: the bot that wrote this reply. */
+  botId?: string;
+  /** Group chats: this reply sums up the discussion. */
+  summary?: boolean;
   createdAt: number;
 };
+
+/**
+ * A group chat's bots and how they take turns. "discuss": each answers in turn, building on the
+ * others. "debate": they take opposite sides and challenge each other. "panel": each answers on its
+ * own first, then they may react. `rounds` is how many times each bot speaks per message; the
+ * summariser (any bot) sums up at the end.
+ */
+export type GroupSettings = { mode: "discuss" | "debate" | "panel"; rounds: number; summarizer?: string };
 
 export type Conversation = {
   id: string;
@@ -187,6 +199,9 @@ export type Conversation = {
   origin?: "routine" | "task";
   /** The last message the bot has learned from (src/lib/learning.ts). */
   learnedThrough?: string;
+  /** Group chat: its bots in speaking order (2–6; botId is the first). */
+  members?: string[];
+  group?: GroupSettings;
 };
 
 /**

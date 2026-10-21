@@ -18,6 +18,7 @@ import { speak } from "./voice";
 import { RICH_BLOCKS_GUIDANCE } from "./visualize/fences";
 import { invokedSkill, skillsFor, skillsPrompt, skillText } from "../features/skills/skills";
 import { markUntrusted } from "./agent/vendor/copilotkit/untrusted-content";
+import { groupPrompt, groupView, type GroupTurn, isPass, MAX_ROUNDS, stanceFor } from "./group";
 
 export type SendOptions = {
   search?: boolean;
@@ -37,6 +38,8 @@ export type SendOptions = {
   unattended?: boolean;
   /** The request carries outside content (e.g. messages from room guests): Full access asks before commands. */
   taintedBy?: string[];
+  /** Group chats: this bot's turn (set by runGroup). */
+  turn?: GroupTurn;
 };
 
 /** Tells the bot where per-message reference material goes (it's attached to the latest message). */
@@ -173,6 +176,7 @@ export async function sendMessage(text: string, attachments: Attachment[] = [], 
   };
 
   const conversationId = state.activeConversationId ?? newConversation(bot.id).id;
+  const group = Boolean(state.conversations[conversationId]?.members?.length);
   const userMessage: Message = {
     id: uid(),
     role: "user",
@@ -186,7 +190,9 @@ export async function sendMessage(text: string, attachments: Attachment[] = [], 
     messages: [...c.messages, userMessage],
     updatedAt: Date.now(),
   }));
-  await runAssistant(conversationId, bot.id, opts);
+  // A group chat: every bot takes its turn (an image request goes to the first bot only).
+  if (group && !opts.imagine) await runGroup(conversationId, opts);
+  else await runAssistant(conversationId, bot.id, opts);
 }
 
 /**
@@ -235,7 +241,7 @@ export function startEarlyReply(text: string, options: SendOptions = {}): EarlyR
   if (!bot || state.streamingId || command || !rest || options.imagine || findUrls(rest).length) return null;
   const conversationId = state.activeConversationId;
   const conversation = conversationId ? state.conversations[conversationId] : undefined;
-  if (conversationId && !conversation) return null;
+  if ((conversationId && !conversation) || conversation?.members?.length) return null;
   const lastId = conversation?.messages.at(-1)?.id;
 
   let keep!: () => void;
@@ -246,7 +252,10 @@ export function startEarlyReply(text: string, options: SendOptions = {}): EarlyR
   });
   kept.catch(() => undefined);
   const draft: Draft = { user: { id: uid(), role: "user", content: rest, createdAt: Date.now() }, kept };
-  const done = runAssistant(conversationId, bot.id, options, draft).catch(() => undefined);
+  const done = runAssistant(conversationId, bot.id, options, draft).then(
+    () => undefined,
+    () => undefined,
+  );
   let status: "pending" | "kept" | "dropped" = "pending";
   const discard = () => {
     if (status !== "pending") return;
@@ -289,6 +298,18 @@ export async function resendFrom(conversationId: string, messageId: string, newT
 
   let index = conversation.messages.findIndex((m) => m.id === messageId);
   if (index < 0) return;
+  if (conversation.members?.length) {
+    // A group chat: everything after the user's message goes, and the whole group answers again.
+    while (index >= 0 && conversation.messages[index].role !== "user") index--;
+    if (index < 0) return;
+    updateConversation(conversationId, (c) => {
+      const messages = c.messages.slice(0, index + 1);
+      if (newText !== undefined) messages[index] = { ...messages[index], content: newText };
+      return { ...c, messages, updatedAt: Date.now() };
+    });
+    await runGroup(conversationId, { search: state.settings.modes.search, think: state.settings.modes.think });
+    return;
+  }
   const replaced = conversation.messages[index];
   // Regenerating an assistant reply means resending the user turn before it.
   if (replaced.role === "assistant") index -= 1;
@@ -336,6 +357,8 @@ export async function sendInBackground(
 
 export function stopStreaming() {
   controller?.abort();
+  // In a group chat, the bots still to speak don't start.
+  for (const g of groups) if (g.foreground) g.stop.abort();
 }
 
 /** Every reply being written right now, on screen or in the background (routines, rooms, bots asking bots). */
@@ -344,9 +367,63 @@ const running = new Set<AbortController>();
 /** "Stop all bots": ends every running reply, foreground and background. Returns how many were stopped. */
 export function stopAllBots(): number {
   const count = running.size;
+  for (const g of groups) g.stop.abort();
   for (const c of [...running]) c.abort();
   controller?.abort();
   return count;
+}
+
+/** Group chats taking their turns right now. */
+const groups = new Set<{ stop: AbortController; foreground: boolean }>();
+
+/**
+ * A group chat's answer to the user's latest message: each bot speaks in turn for the set number of
+ * rounds (a bot that passes is left out; a round where nobody adds anything ends it early), then the
+ * summariser sums up. Stop ends the whole group, not just the bot speaking.
+ */
+export async function runGroup(conversationId: string, opts: SendOptions = {}): Promise<void> {
+  const { conversations, bots } = useStore.getState();
+  const conversation = conversations[conversationId];
+  const members = (conversation?.members ?? []).filter((id) => bots.some((b) => b.id === id));
+  if (!conversation || !members.length) return;
+  const group = conversation.group ?? { mode: "discuss", rounds: 1 };
+  const rounds = Math.min(Math.max(Math.round(group.rounds) || 1, 1), MAX_ROUNDS);
+  const run = { stop: new AbortController(), foreground: !opts.background };
+  groups.add(run);
+  if (opts.signal?.aborted) run.stop.abort();
+  opts.signal?.addEventListener("abort", () => run.stop.abort(), { once: true });
+  const signal = run.stop.signal;
+  const firstRound: string[] = [];
+  try {
+    for (let round = 1; round <= rounds && !signal.aborted; round++) {
+      let said = 0;
+      for (const [index, botId] of members.entries()) {
+        if (signal.aborted) break;
+        const turn: GroupTurn = {
+          round,
+          rounds,
+          ...(group.mode === "debate" ? { stance: stanceFor(index) } : {}),
+          // A panel answers on its own first: nobody sees the others' first answers until round 2.
+          ...(group.mode === "panel" && round === 1 ? { hide: [...firstRound] } : {}),
+        };
+        const id = await runAssistant(conversationId, botId, { ...opts, signal, turn });
+        if (round === 1) firstRound.push(id);
+        const reply = useStore.getState().conversations[conversationId]?.messages.find((m) => m.id === id);
+        if (reply && !reply.error && !reply.toolCalls?.length && isPass(reply.content)) {
+          updateConversation(conversationId, (c) => ({ ...c, messages: c.messages.filter((m) => m.id !== id) }));
+        } else if (reply?.content.trim() && !reply.error) said++;
+      }
+      if (!said) break;
+    }
+    const summarizer = group.summarizer && bots.some((b) => b.id === group.summarizer) ? group.summarizer : null;
+    if (summarizer && !signal.aborted) await runAssistant(conversationId, summarizer, { ...opts, signal, turn: { round: rounds + 1, rounds, summary: true } });
+  } finally {
+    groups.delete(run);
+    if (run.foreground) {
+      controller = null;
+      useStore.setState({ streamingId: null });
+    }
+  }
 }
 
 /**
@@ -361,8 +438,11 @@ export function stopEverything() {
 // The global "Stop all bots" shortcut and menu item (electron/main.cjs).
 if (typeof window !== "undefined") desktopOn("adt:stop-all", () => stopAllBots());
 
-/** `draft`: an early voice reply, kept out of the chat until it's kept (see startEarlyReply); `conversationId` may then be null (a new chat). */
-async function runAssistant(conversationId: string | null, botId: string, opts: SendOptions, draft?: Draft) {
+/**
+ * `draft`: an early voice reply, kept out of the chat until it's kept (see startEarlyReply); `conversationId` may then be null (a new chat).
+ * Resolves with the reply's id.
+ */
+async function runAssistant(conversationId: string | null, botId: string, opts: SendOptions, draft?: Draft): Promise<string> {
   const state = useStore.getState();
   const { settings, providers } = state;
   // What every bot knows (Memory screen) comes with the bot's own memories.
@@ -372,12 +452,24 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
   const provider = voiceOverride || providers.find((p) => p.id === bot.providerId);
   const model = voiceOverride ? settings.voice.voiceModel : bot.model;
   const conversation = conversationId ? state.conversations[conversationId] : undefined;
-  const history = [...(conversation?.messages ?? []), ...(draft ? [draft.user] : [])];
+  const chat = [...(conversation?.messages ?? []), ...(draft ? [draft.user] : [])];
+  // A group chat: the bot sees it from its own seat (others' messages by name).
+  const group = conversation?.members?.length ? conversation : undefined;
+  const members = group ? (group.members ?? []).map((id) => state.bots.find((b) => b.id === id)).filter((b): b is Bot => Boolean(b)) : [];
+  const history = group ? groupView(chat, botId, state.bots, { userName: settings.userName, host: group.botId, hide: opts.turn?.hide }) : chat;
   const temporary = Boolean(conversation?.temporary);
-  const lastUser = [...history].reverse().find((m) => m.role === "user");
+  const lastUser = [...chat].reverse().find((m) => m.role === "user");
   const started = performance.now();
 
-  const reply: Message = { id: uid(), role: "assistant", content: "", model, createdAt: draft?.user.createdAt ?? Date.now() };
+  const reply: Message = {
+    id: uid(),
+    role: "assistant",
+    content: "",
+    model,
+    createdAt: draft?.user.createdAt ?? Date.now(),
+    ...(group ? { botId } : {}),
+    ...(opts.turn?.summary ? { summary: true } : {}),
+  };
   /** A draft's changes wait here until it's kept; null once the reply is in the chat. */
   let held: Partial<Message> | null = draft ? {} : null;
   // updatedAt only moves at the start and end of a reply, so the chat list doesn't re-sort per token.
@@ -422,11 +514,11 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
   try {
     if (opts.imagine) {
       await runImagine(lastUser?.content ?? "", patchReply, signal);
-      return;
+      return reply.id;
     }
     if (!provider || !model) {
-      patchReply({ error: "This bot has no provider or model yet. Open the bot settings (top right) and pick one." });
-      return;
+      patchReply({ error: `${group ? bot.name : "This bot"} has no provider or model yet. Open the bot settings and pick one.` });
+      return reply.id;
     }
 
     // Context: pages the user linked, then live web results.
@@ -441,7 +533,7 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
     }
 
     const thinking = opts.think ? (bot.thinking === "off" ? "high" : bot.thinking) : bot.thinking;
-    const question = recentQuestion(history);
+    const question = recentQuestion(chat);
     const [knowledge, memory, notes] = await Promise.all([
       knowledgeContext([...settings.knowledge, ...(bot.knowledge ?? [])], question),
       memoryContext(bot, question),
@@ -457,6 +549,7 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
       voice: opts.voice ? (settings.voice.concise ? true : "full") : false,
       richBlocks: !opts.voice,
     });
+    const groupRules = group ? groupPrompt(bot, members, group.group ?? { mode: "discuss", rounds: 1 }, opts.turn ?? { round: 1, rounds: 1 }) : "";
     let content = "";
     let reasoning = "";
     let sources: Source[] = [];
@@ -469,6 +562,8 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
     if (skill?.outside) taint.sources.add(`the skill "${skill.name}" (imported or written from outside content)`);
     // A note on a chat that read web pages or connectors could carry what they said.
     if (notes.some((n) => n.outside)) taint.sources.add("notes from an earlier chat that read outside content");
+    // Other bots' replies in a group chat may carry what they read.
+    if (group && chat.some((m) => m.role === "assistant" && m.botId && m.botId !== botId)) taint.sources.add("another bot's reply in this group chat");
 
     /** Our own search: query → engine → page reading, results handed to the model as context. */
     const appSearch = async () => {
@@ -506,7 +601,7 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
         .join("\n\n");
       // Skills the bot may reach for (their steps come with use_skill).
       const skills = agentTools.some((t) => t.name === "use_skill") ? skillsPrompt(skillsFor(bot, state.skills)) : "";
-      const system = [basePrompt, skills, CONTEXT_NOTE].filter(Boolean).join("\n\n");
+      const system = [basePrompt, groupRules, skills, CONTEXT_NOTE].filter(Boolean).join("\n\n");
       const messages = withContext(history, context);
       // Outside content in this turn: Full access asks before commands and file writes (see approvals.ts).
       if (pages.length || sources.length) taint.sources.add(pages.length ? "a linked web page" : "web search results");
@@ -614,7 +709,7 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
     } catch (error) {
       if ((error as Error).name !== "AbortError") {
         patchReply({ content: stripMemoryTags(content), reasoning: reasoning || undefined, error: (error as Error).message, status: undefined });
-        return;
+        return reply.id;
       }
     }
 
@@ -634,6 +729,7 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
       speak(finalText, { voice: settings.voice, providers, useProxy: settings.useProxy });
     }
     if (!signal.aborted && conversationId) void autoTitle(conversationId);
+    return reply.id;
   } catch (error) {
     if ((error as Error).name !== "AbortError") patchReply({ error: (error as Error).message, status: undefined });
     else patchReply({ status: undefined });
@@ -644,13 +740,15 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
       if (draft) draft.over = true;
     } else {
       updateConversation(conversationId!, (c) => ({ ...c, updatedAt: Date.now() }));
-      if (!opts.background) {
+      // A group chat stays busy until its last bot has spoken (runGroup clears it).
+      if (!opts.background && !opts.turn) {
         controller = null;
         useStore.setState({ streamingId: null });
       }
       flushStorage();
     }
   }
+  return reply.id;
 }
 
 async function runImagine(prompt: string, patchReply: (patch: Partial<Message>) => void, signal: AbortSignal) {

@@ -16,6 +16,7 @@ import { preferredMode, themeCss } from "./lib/theme";
 // Dialogs and the setup screen load on demand, keeping the first paint small.
 const SettingsDialog = lazy(() => import("./components/SettingsDialog"));
 const BotDialog = lazy(() => import("./components/BotDialog"));
+const GroupDialog = lazy(() => import("./components/GroupDialog"));
 const VoiceMode = lazy(() => import("./components/VoiceMode").then((m) => ({ default: m.VoiceMode })));
 const ProviderSetup = lazy(() => import("./components/ProviderSetup").then((m) => ({ default: m.ProviderSetup })));
 
@@ -96,6 +97,7 @@ export function App() {
   const activeBotId = useStore((s) => s.activeBotId);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
+  const [newGroup, setNewGroup] = useState(false);
   const [editingBot, setEditingBot] = useState<string | null>(null);
   const [voice, setVoice] = useState<{ request?: string } | null>(null);
   const activeView = useNav((s) => s.view);
@@ -133,13 +135,16 @@ export function App() {
   useEffect(() => {
     const open = (e: Event) => setSettingsTab(((e as CustomEvent).detail as SettingsTab) ?? "general");
     const close = () => setSettingsTab(null);
+    const group = () => setNewGroup(true);
     window.addEventListener("adt:open-settings", open);
     window.addEventListener("adt:close-settings", close);
+    window.addEventListener("adt:new-group", group);
     // Clicking the "update available" notification (desktop).
     const offUpdates = desktopOn("adt:updates:open", () => setSettingsTab("about"));
     return () => {
       window.removeEventListener("adt:open-settings", open);
       window.removeEventListener("adt:close-settings", close);
+      window.removeEventListener("adt:new-group", group);
       offUpdates();
     };
   }, []);
@@ -217,6 +222,7 @@ export function App() {
       )}
       <Suspense fallback={null}>
         {settingsTab && <SettingsDialog initialTab={settingsTab} onClose={() => setSettingsTab(null)} />}
+        {newGroup && <GroupDialog onClose={() => setNewGroup(false)} />}
         {editingBot && <BotDialog botId={editingBot} onClose={() => setEditingBot(null)} />}
       </Suspense>
     </div>

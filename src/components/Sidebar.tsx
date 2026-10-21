@@ -1,4 +1,4 @@
-import { Check, Pencil, Plus, Search, Settings, SquarePen, Trash2, X } from "lucide-react";
+import { Check, Pencil, Plus, Search, Settings, SquarePen, Trash2, Users, X } from "lucide-react";
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import { MOD } from "../lib/keys";
 import { createBot, deleteConversation, openConversation, renameConversation, selectBot, startNewChat, useStore } from "../lib/store";
@@ -183,6 +183,19 @@ export function Sidebar({
             <>
               <div className="section-label">
                 Bots
+                <button
+                  type="button"
+                  className="row-action"
+                  style={{ opacity: 1, marginLeft: "auto" }}
+                  title="New group chat: bots talk it through together"
+                  aria-label="New group chat"
+                  onClick={() => {
+                    window.dispatchEvent(new Event("adt:new-group"));
+                    onClose();
+                  }}
+                >
+                  <Users size={15} />
+                </button>
                 <button
                   type="button"
                   className="row-action"

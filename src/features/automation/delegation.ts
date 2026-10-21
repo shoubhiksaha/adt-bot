@@ -5,9 +5,10 @@
  * The reply shape (Status / Result / Evidence / Unblock) follows the idea of nightly-labs OpenBot's
  * teammate policy, re-written here; no code was copied.
  */
-import { sendInBackground } from "../../lib/chat";
-import { useStore } from "../../lib/store";
-import type { Bot } from "../../lib/types";
+import { runGroup, sendInBackground } from "../../lib/chat";
+import { MAX_MEMBERS, MAX_ROUNDS } from "../../lib/group";
+import { uid, updateConversation, useStore } from "../../lib/store";
+import type { Bot, GroupSettings } from "../../lib/types";
 import { addBackgroundConversation } from "./conversations";
 
 /** user → bot A → bot B → bot C, and C can't hand work on any further. */
@@ -149,4 +150,55 @@ export async function delegate(options: {
   } finally {
     unsubscribe();
   }
+}
+
+export const DISCUSSION_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * A bot asks two or more other bots to talk something through (a discussion, a debate or a panel)
+ * in a linked group chat, and gets the transcript back. Same loop guards as handing over a task.
+ */
+export async function discuss(options: {
+  caller: Bot;
+  members: Bot[];
+  topic: string;
+  mode: GroupSettings["mode"];
+  rounds: number;
+  conversationId: string;
+  signal: AbortSignal;
+  progress?: (text: string) => void;
+  shared?: boolean;
+  unattended?: boolean;
+  taintedBy?: string[];
+}): Promise<{ transcript: string; conversationId: string; title: string }> {
+  const { caller, topic, conversationId, progress } = options;
+  const members = options.members.filter((b) => b.id !== caller.id);
+  if (!topic.trim()) throw new Error("Say what the bots should discuss.");
+  if (members.length < 2) throw new Error("Name at least two other bots (for one, use ask_bot).");
+  if (members.length > MAX_MEMBERS) throw new Error(`At most ${MAX_MEMBERS} bots can discuss at once.`);
+  const chain = chainFor(conversationId, caller.id);
+  if (chain.depth >= 1 || useStore.getState().conversations[conversationId]?.members?.length) {
+    throw new Error("This chat was started by another bot or is already a group chat, so it can't start a discussion. Do the work yourself.");
+  }
+  const parentTemporary = Boolean(useStore.getState().conversations[conversationId]?.temporary);
+  const title = `Discussion: ${topic.trim().split("\n")[0]}`;
+  const conversation = addBackgroundConversation(members[0].id, title, parentTemporary);
+  const rounds = Math.min(Math.max(Math.round(options.rounds) || 2, 1), MAX_ROUNDS);
+  updateConversation(conversation.id, (c) => ({
+    ...c,
+    members: members.map((m) => m.id),
+    group: { mode: options.mode, rounds },
+    messages: [{ id: uid(), role: "user", content: `${caller.name}, another bot working for the user, asks you to discuss:\n\n${topic.trim()}`, createdAt: Date.now() }],
+  }));
+  registerChain(conversation.id, { depth: chain.depth + 1, bots: [...chain.bots, ...members.map((m) => m.id)] });
+  progress?.(`${members.map((m) => m.name).join(", ")} are discussing…`);
+  const signal = AbortSignal.any([options.signal, AbortSignal.timeout(DISCUSSION_TIMEOUT_MS)]);
+  await runGroup(conversation.id, { background: true, signal, shared: options.shared, unattended: options.unattended, taintedBy: options.taintedBy });
+  if (options.signal.aborted) throw new DOMException("Aborted", "AbortError");
+  const bots = useStore.getState().bots;
+  const replies = (useStore.getState().conversations[conversation.id]?.messages ?? []).filter((m) => m.role === "assistant" && m.content.trim());
+  const transcript = replies
+    .map((m) => `${bots.find((b) => b.id === m.botId)?.name ?? "A bot"}: ${m.error ? `(error: ${m.error})` : m.content.trim()}`)
+    .join("\n\n");
+  return { transcript: transcript.length > 8000 ? `${transcript.slice(0, 8000)}\n[…cut]` : transcript || "Nobody answered.", conversationId: conversation.id, title };
 }

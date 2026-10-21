@@ -50,7 +50,8 @@ export function unlearned(conversation: Conversation): Message[] {
 
 /** Whether there's something new to learn from in this chat. */
 export function needsLearning(conversation: Conversation | undefined, bot: Bot | undefined): boolean {
-  if (!conversation || !bot?.autoMemory || conversation.temporary || conversation.origin) return false;
+  // Group chats aren't learned from: whose words are whose gets muddled across bots.
+  if (!conversation || !bot?.autoMemory || conversation.temporary || conversation.origin || conversation.members?.length) return false;
   const fresh = unlearned(conversation);
   const said = fresh
     .filter((m) => m.role === "user")

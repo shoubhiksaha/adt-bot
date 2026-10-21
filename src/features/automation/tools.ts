@@ -2,7 +2,7 @@
 import { type AgentTool, registerTool, registerToolGroup, str, type ToolContext } from "../../lib/agent/tools";
 import { useStore } from "../../lib/store";
 import type { Bot } from "../../lib/types";
-import { delegate, DELEGATION_TIMEOUT_MS, resolveBot } from "./delegation";
+import { delegate, DELEGATION_TIMEOUT_MS, discuss, DISCUSSION_TIMEOUT_MS, resolveBot } from "./delegation";
 import {
   createRoutine,
   deleteRoutine,
@@ -352,6 +352,52 @@ const botTools: AgentTool[] = [
         display: { kind: "conversation", conversationId: result.conversationId, label: `Open chat with ${found.name}`, text: result.report },
         // Another model's words: treat them as information, not instructions.
         untrustedSource: `${found.name}'s reply`,
+      };
+    },
+  },
+  {
+    name: "discuss_with_bots",
+    group: "bots",
+    risk: "read",
+    description:
+      "Have two or more of the user's other bots talk something through in a linked group chat (a discussion, a debate with sides, or a " +
+      "panel of independent answers) and get the transcript. Use it when several viewpoints or a challenge would make the answer better.",
+    parameters: {
+      type: "object",
+      properties: {
+        bots: { type: "array", items: { type: "string" }, description: "Names or nicknames of 2 to 6 other bots." },
+        topic: { type: "string", description: "The question or task, written so it stands alone." },
+        mode: { type: "string", enum: ["discuss", "debate", "panel"], description: "discuss (default), debate, or panel." },
+        rounds: { type: "number", description: "How many times each bot speaks, 1 to 5 (default 2)." },
+      },
+      required: ["bots", "topic"],
+    },
+    timeoutMs: DISCUSSION_TIMEOUT_MS + 15_000,
+    async run(args, ctx) {
+      const all = useStore.getState().bots;
+      const names = Array.isArray(args.bots) ? args.bots.map(String) : str(args, "bots").split(",");
+      const members = names.map((n) => resolveBot(all, n)).map((found) => {
+        if ("error" in found) throw new Error(found.error);
+        return found;
+      });
+      const mode = ["discuss", "debate", "panel"].includes(str(args, "mode")) ? (str(args, "mode") as "discuss" | "debate" | "panel") : "discuss";
+      const result = await discuss({
+        caller: ctx.bot,
+        members: [...new Map(members.map((m) => [m.id, m])).values()],
+        topic: str(args, "topic"),
+        mode,
+        rounds: Number(args.rounds) || 2,
+        conversationId: ctx.conversationId,
+        signal: ctx.signal,
+        progress: ctx.progress,
+        shared: ctx.shared,
+        unattended: ctx.unattended,
+        taintedBy: taintOf(ctx),
+      });
+      return {
+        content: `Transcript of "${result.title}":\n${result.transcript}\n\nTell the user what came out of it, in your own words: the main answer, and where the bots disagreed.`,
+        display: { kind: "conversation", conversationId: result.conversationId, label: "Open the discussion", text: result.transcript.slice(0, 600) },
+        untrustedSource: "other bots' replies",
       };
     },
   },
