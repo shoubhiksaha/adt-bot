@@ -49,6 +49,40 @@ const LABELS: Record<string, string> = {
   update_routine: "Changed a routine",
   delete_routine: "Deleted a routine",
   list_routines: "Checked routines",
+  run_routine_now: "Ran a routine",
+  routine_no_update: "Found nothing new",
+  save_skill: "Saved a skill",
+  use_skill: "Used a skill",
+  search_past_chats: "Searched past chats",
+  read_past_chat: "Read an earlier chat",
+  list_bots: "Checked the bots",
+  discuss_with_bots: "Started a discussion",
+  create_video: "Created a video",
+  list_projects: "Checked projects",
+  list_tasks: "Checked tasks",
+  create_task: "Created a task",
+  update_task: "Updated a task",
+  add_task_comment: "Commented on a task",
+  computer_run: "Ran a command on its computer",
+  computer_read_file: "Read a file on its computer",
+  computer_write_file: "Wrote a file on its computer",
+  computer_list_files: "Listed files on its computer",
+  computer_browse: "Browsed on its computer",
+  email_search: "Searched email",
+  email_read: "Read an email",
+  email_draft: "Drafted an email",
+  email_send: "Sent an email",
+  calendar_events: "Checked the calendar",
+  calendar_create: "Added a calendar event",
+  files_search: "Searched files",
+  files_read: "Read a file",
+  files_create: "Created a file",
+  slack_read: "Read Slack",
+  slack_post: "Posted in Slack",
+  x_search: "Searched X",
+  x_mentions: "Checked X mentions",
+  x_post: "Posted on X",
+  x_send_message: "Sent a message on X",
 };
 
 
@@ -56,12 +90,29 @@ const LABELS: Record<string, string> = {
 const FILE_TOOLS = new Set(["write_file", "run_command"]);
 
 
+/** The labels' past-tense verbs, for actions that haven't happened (waiting for you, or refused). */
+const NOT_YET: Record<string, string> = {
+  Searched: "search", Read: "read", Saved: "save", Created: "create", Checked: "check", Calculated: "calculate", Ran: "run", Wrote: "write",
+  Listed: "list", Opened: "open", Looked: "look", Drew: "draw", Asked: "ask", Pressed: "press", Typed: "type", Took: "take", Clicked: "click",
+  Scrolled: "scroll", Dragged: "drag", Used: "use", Scheduled: "schedule", Changed: "change", Deleted: "delete", Undid: "undo",
+  Commented: "comment", Added: "add", Browsed: "browse", Started: "start", Drafted: "draft", Sent: "send", Posted: "post", Updated: "update",
+  Found: "find",
+};
+
 function label(call: ToolCallRecord): string {
-  const base = LABELS[call.name] ?? call.name.replace(/^mcp_/, "").replace(/[_-]+/g, " ");
+  const named = LABELS[call.name];
+  const base = named ?? call.name.replace(/^mcp_/, "").replace(/[_-]+/g, " ");
   const main = mainArg(call);
-  if (call.name === "mac_press" && !main && typeof call.args.id === "number") return `${base} an element`;
-  if (call.name === "rewind") return call.args.action === "undo" ? "Undid file changes" : "Checked file changes";
-  return main ? `${base}: ${main}` : base;
+  let text = base;
+  if (call.name === "mac_press" && !main && typeof call.args.id === "number") text = `${base} an element`;
+  else if (call.name === "rewind") text = call.args.action === "undo" ? "Undid file changes" : "Checked file changes";
+  else if (main) text = `${base}: ${main}`;
+  // Not done (yet): "Wants to run a command…", "Didn't run a command…".
+  const notDone = call.status === "awaiting" || call.status === "denied" || (call.status === "pending" && Boolean(call.review || call.result));
+  if (!notDone) return text;
+  const [first, ...rest] = text.split(" ");
+  const intended = NOT_YET[first] && (named || call.name === "rewind" || call.name === "mac_press") ? [NOT_YET[first], ...rest].join(" ") : `use ${text}`;
+  return call.status === "denied" ? `Didn't ${intended}` : `Wants to ${intended}`;
 }
 
 

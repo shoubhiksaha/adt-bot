@@ -35,7 +35,9 @@ export default function BotEmailField({ bot }: { bot: Bot }) {
 
   const account = accounts.find((a) => a.id === config?.account) ?? accounts[0];
   const tag = config?.tag ?? tagFor(bot.name);
-  const address = botAddress(ownAddress(account), tag);
+  const own = ownAddress(account);
+  const address = botAddress(own, tag);
+  const at = own.lastIndexOf("@");
   const save = (patch: { account?: string; tag?: string; enabled?: boolean }) =>
     patchBotMail(bot.id, (c) => {
       const next = { account: account.id, tag, enabled: false, ...c, ...patch };
@@ -45,7 +47,7 @@ export default function BotEmailField({ bot }: { bot: Bot }) {
   const draft = tagDraft ?? tag;
 
   return (
-    <div className="field bot-email">
+    <div className="bot-email">
       <label className="toggle">
         <input type="checkbox" checked={Boolean(config?.enabled)} onChange={(e) => void save({ enabled: e.target.checked })} />
         <span>
@@ -58,49 +60,54 @@ export default function BotEmailField({ bot }: { bot: Bot }) {
           </span>
         </span>
       </label>
-      <div className="field-row">
-        {accounts.length > 1 && (
-          <div className="field">
-            <label htmlFor="bot-email-account">Account</label>
-            <select id="bot-email-account" className="select" value={account.id} onChange={(e) => void save({ account: e.target.value })}>
-              {accounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {ownAddress(a)}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
+      {accounts.length > 1 && (
         <div className="field">
-          <label htmlFor="bot-email-tag">Address</label>
-          <div className="input-group">
-            <input
-              id="bot-email-tag"
-              className="input"
-              value={draft}
-              aria-invalid={!validTag(draft)}
-              onChange={(e) => setTagDraft(e.target.value.toLowerCase())}
-              onBlur={() => {
-                if (validTag(draft) && draft !== tag) void save({ tag: draft });
-                setTagDraft(null);
-              }}
-            />
-            <button
-              type="button"
-              className="btn"
-              disabled={!address}
-              onClick={() => {
-                void navigator.clipboard.writeText(address).then(() => {
-                  setCopied(true);
-                  setTimeout(() => setCopied(false), 1500);
-                });
-              }}
-            >
-              <Copy size={14} /> {copied ? "Copied" : "Copy"}
-            </button>
-          </div>
-          <span className="small muted">{validTag(draft) ? botAddress(ownAddress(account), draft) : "Letters, numbers and dashes only."}</span>
+          <label htmlFor="bot-email-account">Account</label>
+          <select id="bot-email-account" className="select" value={account.id} onChange={(e) => void save({ account: e.target.value })}>
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {ownAddress(a)}
+              </option>
+            ))}
+          </select>
         </div>
+      )}
+      <div className="field">
+        <label htmlFor="bot-email-tag">{bot.name}'s address</label>
+        <div className="input-group bot-email-address">
+          <span className="bot-email-part" aria-hidden="true">
+            {own.slice(0, at)}+
+          </span>
+          <input
+            id="bot-email-tag"
+            className="input"
+            aria-label="The part after the +"
+            value={draft}
+            aria-invalid={!validTag(draft)}
+            onChange={(e) => setTagDraft(e.target.value.toLowerCase())}
+            onBlur={() => {
+              if (validTag(draft) && draft !== tag) void save({ tag: draft });
+              setTagDraft(null);
+            }}
+          />
+          <span className="bot-email-part" aria-hidden="true">
+            {own.slice(at)}
+          </span>
+          <button
+            type="button"
+            className="btn"
+            disabled={!address}
+            onClick={() => {
+              void navigator.clipboard.writeText(address).then(() => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              });
+            }}
+          >
+            <Copy size={14} /> {copied ? "Copied" : "Copy"}
+          </button>
+        </div>
+        {!validTag(draft) && <span className="small error-text">Letters, numbers and dashes only.</span>}
       </div>
       {config?.enabled && (
         <span className="small muted bot-email-status">

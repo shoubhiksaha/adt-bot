@@ -46,8 +46,26 @@
 }
 
 /* Bot settings → Email this bot. */
-.bot-email .field-row {
-  margin-top: 6px;
+.bot-email {
+  margin-bottom: 14px;
+}
+.bot-email .toggle {
+  margin-bottom: 8px;
+}
+.bot-email-address {
+  align-items: center;
+}
+.bot-email-part {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted-foreground);
+  font-size: 14px;
+}
+.bot-email-address .input {
+  flex: 1 1 80px;
 }
 .bot-email input[aria-invalid="true"] {
   border-color: var(--destructive);

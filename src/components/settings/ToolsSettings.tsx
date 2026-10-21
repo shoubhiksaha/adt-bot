@@ -149,10 +149,11 @@ export function ToolsSettings() {
           <div className="field">
             <label htmlFor="reviewer-mode">Reviewer</label>
             <select id="reviewer-mode" className="select" value={agent.reviewer ?? "off"} onChange={(e) => set({ reviewer: e.target.value as NonNullable<typeof agent.reviewer> })}>
-              <option value="off">Off: approval cards always come to you</option>
-              <option value="approve">Fewer questions: it answers clear-cut approvals</option>
-              <option value="check">Fewer questions + extra check: it also double-checks commands, file changes and sending your rules allow</option>
+              <option value="off">Off</option>
+              <option value="approve">Fewer questions</option>
+              <option value="check">Fewer questions + extra check</option>
             </select>
+            <span className="small muted">{REVIEWER_MODES[agent.reviewer ?? "off"]}</span>
           </div>
           {(agent.reviewer ?? "off") !== "off" && (
             <div className="field">
@@ -235,6 +236,12 @@ export function ToolsSettings() {
     </div>
   );
 }
+
+const REVIEWER_MODES = {
+  off: "Approval cards always come to you.",
+  approve: "It answers clear-cut approval cards for you.",
+  check: "It also double-checks commands, file changes and sending your rules already allow.",
+} as const;
 
 function lines(text: string): string[] {
   return text

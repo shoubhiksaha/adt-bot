@@ -90,6 +90,7 @@ export function ServerBrowser() {
 
   return (
     <div className="server-browser">
+      <div className="field-label">Server browser</div>
       <form
         className="input-group"
         onSubmit={(e) => {
@@ -132,7 +133,7 @@ export function ServerBrowser() {
           setTyped("");
         }}
       >
-        <input className="input" aria-label="Text to type" placeholder="Click a field above, then type here (passwords too)" type="password" value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" />
+        <input className="input" aria-label="Text to type" placeholder="Click a field, then type here" type="password" value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" />
         <button type="submit" className="btn">
           Type
         </button>
