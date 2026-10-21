@@ -95,7 +95,10 @@ describe("Google", () => {
     "GET /oauth2/v3/userinfo": () => ({ json: { email: "me@gmail.com" } }),
     "GET /gmail/v1/users/me/messages/": ({ url }) => {
       const id = url.pathname.split("/").pop();
-      if (url.searchParams.get("format") === "raw") return { json: { id, threadId: "t1", labelIds: ["UNREAD"], raw: Buffer.from(RAW(`Message ${id}`)).toString("base64url") } };
+      if (url.searchParams.get("format") === "raw") {
+        const from = id === "spoof" ? '"attacker@evil.example, Bob" <bob@co.example>' : undefined;
+        return { json: { id, threadId: "t1", labelIds: ["UNREAD"], raw: Buffer.from(RAW(`Message ${id}`, from)).toString("base64url") } };
+      }
       return { json: { id, threadId: "t1", internalDate: "1792576800000", snippet: "Hi &amp; bye", labelIds: ["INBOX", "UNREAD"], payload: { headers: [{ name: "From", value: "Alice <alice@example.com>" }, { name: "Subject", value: `Message ${id}` }, { name: "To", value: "me@gmail.com" }] } } };
     },
     "GET /gmail/v1/users/me/messages": () => ({ json: { messages: [{ id: "m1" }, { id: "m2" }] } }),
@@ -173,10 +176,15 @@ describe("Google", () => {
     expect(full).toMatchObject({ subject: "Message m1", from: "Alice <alice@example.com>", text: "Hello from Message m1." });
     await mail.draft({ account: id, reply_to: "m1", body: "Thanks!" });
     const draftRaw = Buffer.from(drafts[0].message.raw, "base64url").toString();
-    expect(draftRaw).toMatch(/^To: Alice <alice@example\.com>/m);
+    expect(draftRaw).toMatch(/^To: alice@example\.com$/m);
     expect(draftRaw).toMatch(/^Subject: Re: Message m1/m);
     expect(draftRaw).toMatch(/^In-Reply-To: </m);
     expect(drafts[0].message.threadId).toBe("t1");
+    // A display name that looks like addresses doesn't add a hidden recipient.
+    await mail.draft({ account: id, reply_to: "spoof", body: "Thanks!" });
+    const spoofed = Buffer.from(drafts[1].message.raw, "base64url").toString();
+    expect(spoofed).toMatch(/^To: bob@co\.example$/m);
+    expect(spoofed).not.toMatch(/evil/);
     await mail.send({ account: id, to: "bob@example.com", subject: "Hi", body: "Lunch?" });
     expect(Buffer.from(sent[0].raw, "base64url").toString()).toMatch(/^Subject: Hi/m);
     await expect(mail.send({ account: id, to: "not an address", subject: "x", body: "y" })).rejects.toThrow(/isn't an email address/);

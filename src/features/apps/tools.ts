@@ -86,7 +86,9 @@ const tools: AgentTool[] = [
     async run(args) {
       const a = pickAccount("mail", args.account);
       const d = await appsCall<{ to: string[]; subject: string }>("mail.draft", { ...args, account: a.id });
-      return `Draft saved in ${a.label}: to ${d.to.join(", ")}, “${d.subject}”. The user can review and send it from their mail app.`;
+      const text = `Draft saved in ${a.label}: to ${d.to.join(", ")}, “${d.subject}”. The user can review and send it from their mail app.`;
+      // A reply's subject and recipients come from the email it answers.
+      return args.reply_to ? { content: text, untrustedSource: "the email being answered" } : text;
     },
   },
   {
@@ -105,7 +107,8 @@ const tools: AgentTool[] = [
     async run(args) {
       const a = pickAccount("mail", args.account);
       const d = await appsCall<{ to: string[]; subject: string }>("mail.send", { ...args, account: a.id });
-      return `Sent from ${a.label} to ${d.to.join(", ")}: “${d.subject}”.`;
+      const text = `Sent from ${a.label} to ${d.to.join(", ")}: “${d.subject}”.`;
+      return args.reply_to ? { content: text, untrustedSource: "the email being answered" } : text;
     },
   },
   {
@@ -216,7 +219,11 @@ const tools: AgentTool[] = [
       const a = pickAccount("chat", args.account, "slack");
       if (!str(args, "channel").trim()) {
         const channels = await appsCall<{ name: string; member: boolean; topic: string }[]>("slack.channels", { account: a.id });
-        return `Channels in ${a.label}:\n${channels.map((c) => `- ${c.name}${c.member ? "" : " (the app isn't in it)"}${c.topic ? `: ${quoted(c.topic, 80)}` : ""}`).join("\n")}`;
+        // Names and topics are set by anyone in the workspace: outside content.
+        return {
+          content: `Channels in ${a.label}:\n${channels.map((c) => `- ${c.name}${c.member ? "" : " (the app isn't in it)"}${c.topic ? `: ${quoted(c.topic, 80)}` : ""}`).join("\n")}`,
+          untrustedSource: "Slack channel names and topics",
+        };
       }
       const r = await appsCall<{ messages: { from: string; text: string; date: string; ts: string }[] }>("slack.read", { ...args, account: a.id });
       const lines = [...r.messages].reverse().map((m) => `- ${when(m.date)} ${m.from}: ${m.text}`);

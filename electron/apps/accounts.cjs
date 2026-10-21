@@ -244,7 +244,13 @@ function createAccounts({ dir, vault, fetch = globalThis.fetch, openExternal, en
         const code = await new Promise((resolve, reject) => {
           const timer = setTimeout(() => reject(new Error("Sign-in timed out. Try again.")), SIGN_IN_TIMEOUT_MS);
           server.onRequest((req, res) => {
-            const back = new URL(req.url, server.redirectUri);
+            let back;
+            try {
+              back = new URL(req.url, server.redirectUri);
+            } catch {
+              res.writeHead(400).end();
+              return;
+            }
             if (back.pathname !== (provider.callbackPath ?? "/") || (!back.searchParams.has("code") && !back.searchParams.has("error"))) {
               res.writeHead(404).end();
               return;

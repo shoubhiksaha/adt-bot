@@ -30,7 +30,8 @@ export async function checkTrigger(trigger: Trigger, state: TriggerState): Promi
         .map((m) => ({
           title: `Email from ${m.from}: ${m.subject || "(no subject)"}`,
           details: `From: ${m.from}\nTo: ${m.to.join(", ")}\nSubject: ${m.subject}\nDate: ${m.date}\nEmail id (for email_read): ${m.id}${m.snippet ? `\n\n${clip(m.snippet, 600)}` : ""}`,
-          source: `an email from ${m.from}`,
+          // A fixed label: the sender's name stays inside the wrapped content.
+          source: "an email",
         }));
       return { state: { ...state, cursor: r.cursor }, events };
     }
@@ -43,18 +44,18 @@ export async function checkTrigger(trigger: Trigger, state: TriggerState): Promi
       const events = fresh
         .filter((m) => !trigger.contains || m.text.toLowerCase().includes(trigger.contains.toLowerCase()))
         .reverse()
-        .map((m) => ({ title: `${m.from} in ${trigger.channel}`, details: `${m.text}\n(Slack message ts ${m.ts})`, source: `a Slack message from ${m.from}` }));
+        .map((m) => ({ title: `${m.from} in ${trigger.channel}`, details: `${m.text}\n(Slack message ts ${m.ts})`, source: "a Slack message" }));
       return { state: { ...state, cursor }, events };
     }
     case "x": {
       if (trigger.what === "messages") {
         const r = await appsCall<{ newest: string; messages: { id: string; from: string; mine: boolean; text: string }[] }>("x.messages", { account: trigger.account, since: state.cursor });
         if (!state.cursor) return { state: { ...state, cursor: r.newest }, events: [] };
-        return { state: { ...state, cursor: r.newest || state.cursor }, events: r.messages.filter((m) => !m.mine).map((m) => ({ title: `Message on X from ${m.from}`, details: m.text, source: `a message on X from ${m.from}` })) };
+        return { state: { ...state, cursor: r.newest || state.cursor }, events: r.messages.filter((m) => !m.mine).map((m) => ({ title: `Message on X from ${m.from}`, details: m.text, source: "a message on X" })) };
       }
       const r = await appsCall<{ newest: string; posts: { id: string; from: string; text: string; link: string }[] }>("x.mentions", { account: trigger.account, since: state.cursor });
       if (!state.cursor) return { state: { ...state, cursor: r.newest }, events: [] };
-      return { state: { ...state, cursor: r.newest || state.cursor }, events: r.posts.map((p) => ({ title: `${p.from} mentioned you on X`, details: `${p.text}\n${p.link} (post id ${p.id})`, source: `a post on X by ${p.from}` })) };
+      return { state: { ...state, cursor: r.newest || state.cursor }, events: r.posts.map((p) => ({ title: `${p.from} mentioned you on X`, details: `${p.text}\n${p.link} (post id ${p.id})`, source: "a post on X" })) };
     }
     case "feed": {
       const items = parseFeed(await fetchPublicText(trigger.url, useProxy));

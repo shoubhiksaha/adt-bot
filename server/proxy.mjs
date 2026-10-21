@@ -53,12 +53,20 @@ export function isLinkLocal(address) {
   return false;
 }
 
-/** Loopback, LAN, link-local, CGNAT/Tailscale and IPv6 unique-local addresses. */
+/**
+ * Loopback, LAN, link-local, CGNAT/Tailscale and IPv6 unique-local addresses, plus the special ranges
+ * that aren't the public internet: 0.0.0.0/8 (reaches this machine on Linux and macOS), 192.0.0.0/24,
+ * the benchmarking range 198.18.0.0/15, multicast and reserved (224.0.0.0 and up).
+ */
 export function isPrivateAddress(address) {
   const ip = address.replace(/^\[|\]$/g, "").toLowerCase();
   if (isIP(ip) === 4) {
-    const [a, b] = ip.split(".").map(Number);
+    const [a, b, c] = ip.split(".").map(Number);
     return (
+      a === 0 ||
+      a >= 224 ||
+      (a === 192 && b === 0 && c === 0) ||
+      (a === 198 && (b === 18 || b === 19)) ||
       a === 10 ||
       a === 127 ||
       (a === 172 && b >= 16 && b <= 31) ||

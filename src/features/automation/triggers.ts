@@ -116,8 +116,9 @@ const bare = (s: string) => (/<([^>]+)>\s*$/.exec(s)?.[1] ?? s).trim().toLowerCa
  */
 export function matchesEmail(t: Extract<Trigger, { type: "email" }>, m: { from: string; to: string[]; subject: string }, own: string): boolean {
   if (own && bare(m.from) === own.toLowerCase()) return false;
-  if (t.from && !lower(m.from).includes(lower(t.from))) return false;
-  if (t.to && !m.to.some((to) => lower(to).includes(lower(t.to)))) return false;
+  // On the address itself: a display name like "ceo@mycompany.com" can't pass a "from @mycompany.com" filter.
+  if (t.from && !bare(m.from).includes(lower(t.from))) return false;
+  if (t.to && !m.to.some((to) => bare(to).includes(lower(t.to)))) return false;
   if (t.subject && !lower(m.subject).includes(lower(t.subject))) return false;
   return true;
 }
@@ -127,7 +128,7 @@ export type FeedItem = { id: string; title: string; link: string; date: string; 
 const decodeXml = (s: string) =>
   s
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
-    .replace(/<[^>]+>/g, " ")
+    .replace(/<[^<>]+>/g, " ")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
@@ -137,13 +138,42 @@ const decodeXml = (s: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
+/** The feed's <item> or <entry> elements, found with indexOf (a feed of unclosed tags can't make it slow). */
+function feedBlocks(xml: string, max = 100): string[] {
+  const lower = xml.toLowerCase();
+  const blocks: string[] = [];
+  let at = 0;
+  while (blocks.length < max) {
+    const item = lower.indexOf("<item", at);
+    const entry = lower.indexOf("<entry", at);
+    const start = item < 0 ? entry : entry < 0 ? item : Math.min(item, entry);
+    if (start < 0) break;
+    const name = start === item ? "item" : "entry";
+    const next = lower[start + name.length + 1] ?? "";
+    if (/[a-z0-9-]/.test(next)) {
+      at = start + 1;
+      continue;
+    }
+    const end = lower.indexOf(`</${name}`, start);
+    if (end < 0) break;
+    blocks.push(xml.slice(start, Math.min(end + name.length + 3, start + 200_000)));
+    at = end + 1;
+  }
+  return blocks;
+}
+
 /** Items of an RSS or Atom feed, newest first as the feed lists them. */
 export function parseFeed(xml: string): FeedItem[] {
-  const blocks = xml.match(/<(item|entry)\b[\s\S]*?<\/\1>/gi) ?? [];
-  return blocks.slice(0, 100).map((block) => {
-    const tag = (name: string) => {
-      const m = new RegExp(`<${name}\\b[^>]*>([\\s\\S]*?)<\\/${name}>`, "i").exec(block);
-      return m ? decodeXml(m[1]) : "";
+  const blocks = feedBlocks(xml.slice(0, 3_000_000));
+  return blocks.map((block) => {
+    const lowerBlock = block.toLowerCase();
+    const tag = (tagName: string) => {
+      const name = tagName.toLowerCase();
+      const open = lowerBlock.search(new RegExp(`<${name.replace(":", "\\:")}[\\s>/]`));
+      if (open < 0) return "";
+      const gt = block.indexOf(">", open);
+      const close = lowerBlock.indexOf(`</${name}`, gt);
+      return gt >= 0 && close > gt ? decodeXml(block.slice(gt + 1, close)) : "";
     };
     const atomLink = /<link\b[^>]*rel=["']alternate["'][^>]*href=["']([^"']+)["']/i.exec(block)?.[1] ?? /<link\b[^>]*href=["']([^"']+)["']/i.exec(block)?.[1];
     const link = atomLink ?? tag("link");

@@ -92,7 +92,8 @@ function createCalendar({ accounts }) {
         end: { dateTime: end.replace(/Z$/, ""), timeZone: "UTC" },
         location: { displayName: location },
         body: { contentType: "Text", content: description },
-        attendees: attendees.map((address) => ({ emailAddress: { address }, type: "required" })),
+        // Outlook emails everyone on the list, so they're only added when the user asked to invite them.
+        ...(params.notify ? { attendees: attendees.map((address) => ({ emailAddress: { address }, type: "required" })) } : {}),
       },
     });
     return { id: data.id, title, start, end, link: data.webLink ?? "" };

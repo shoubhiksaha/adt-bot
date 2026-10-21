@@ -157,6 +157,10 @@ registerTool({
     const bot = bots.find((b) => b.id === ctx.bot.id);
     if (isDuplicate(screening.text!, [...(bot?.memory ?? []), ...(settings.sharedMemory ?? [])])) return "Already remembered.";
     if (ctx.conversationId && conversations[ctx.conversationId]?.temporary) return "Not saved: this is a private chat.";
+    // A routine or a task from another bot, after reading outside content: nobody is there to say it's true.
+    if (ctx.conversationId && conversations[ctx.conversationId]?.origin && ctx.taint?.sources.size) {
+      return "Not saved: this run read outside content, so facts about the user are only saved when they say them in a chat.";
+    }
     if (args.for_all_bots === true) {
       addSharedMemory([screening.text!]);
       return `Remembered for every bot: ${screening.text}`;

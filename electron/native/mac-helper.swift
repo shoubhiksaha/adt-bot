@@ -998,6 +998,14 @@ func recordKey(code: Int64, chars: String, flags: CGEventFlags, focused: [String
   }
   let field = (focused?["label"] as? String) ?? ""
   let key = "\(app)|\(field)"
+  // Typing whose field can't be identified, or in a terminal (sudo prompts aren't password fields),
+  // is never recorded: only that something was typed there.
+  let terminal = app.range(of: "^(Terminal|iTerm2?|Warp|kitty|Alacritty|WezTerm|Ghostty|Hyper|Tabby)$", options: .regularExpression) != nil
+  if (focused == nil || terminal), named == nil {
+    if r.typingKey != key { recordStep(["kind": "type", "app": app, "field": field, "secure": true, "unknown": true]) }
+    r.typingKey = key
+    return
+  }
   if named == "delete" {
     if r.typingKey == key, var last = r.steps.last, last["kind"] as? String == "type", var text = last["text"] as? String, !text.isEmpty {
       text.removeLast()

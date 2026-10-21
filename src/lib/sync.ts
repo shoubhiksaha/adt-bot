@@ -52,12 +52,21 @@ export function mergeTombstones(a: Record<string, number>, b: Record<string, num
   return out;
 }
 
-/** This device's copy and the server's as one. Local API keys win over blanks from the other copy. */
+/**
+ * This device's API key may go with a provider record from the other copy only when that record
+ * still points where this device's does: a copy that moved the address (someone with the sync code)
+ * must not receive the key.
+ */
+export function keepsLocalKey(mine: ProviderConfig | undefined, merged: ProviderConfig): boolean {
+  return Boolean(mine?.apiKey && !merged.apiKey && mine.baseUrl === merged.baseUrl && mine.kind === merged.kind && mine.presetId === merged.presetId);
+}
+
+/** This device's copy and the server's as one. Local API keys stay with records that still point where they did. */
 export function mergeSnapshots(local: SyncSnapshot, remote: SyncSnapshot, now = Date.now()): SyncSnapshot {
   const tombstones = mergeTombstones(local.tombstones, remote.tombstones, now);
   const providers = mergeRecords(local.providers, remote.providers, tombstones).map((p) => {
     const mine = local.providers.find((x) => x.id === p.id);
-    return mine?.apiKey && !p.apiKey ? { ...p, apiKey: mine.apiKey, headers: mine.headers ?? p.headers } : p;
+    return keepsLocalKey(mine, p) ? { ...p, apiKey: mine!.apiKey, headers: mine!.headers ?? p.headers } : p;
   });
   return {
     v: 1,
@@ -68,6 +77,49 @@ export function mergeSnapshots(local: SyncSnapshot, remote: SyncSnapshot, now = 
     conversations: mergeRecords(local.conversations, remote.conversations, tombstones),
     skills: mergeRecords(local.skills, remote.skills, tombstones),
     profile: remote.profile.updatedAt > local.profile.updatedAt ? remote.profile : local.profile,
+    tombstones,
+  };
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof v === "object" && !Array.isArray(v);
+
+/**
+ * A copy from the server, checked before it's merged: only well-formed records, and no change dated
+ * in the future (a copy stamped years ahead would otherwise win every merge, for ever).
+ */
+export function sanitizeSnapshot(raw: unknown, now = Date.now()): SyncSnapshot {
+  if (!isRecord(raw) || raw.v !== 1) throw new Error("The synced copy isn't readable.");
+  const latest = now + 86_400_000;
+  const clampStamps = <T extends Record<string, unknown>>(r: T): T => {
+    const out: Record<string, unknown> = { ...r };
+    for (const k of ["rev", "updatedAt", "createdAt"]) if (typeof out[k] === "number" && (out[k] as number) > latest) out[k] = now;
+    return out as T;
+  };
+  const records = <T>(value: unknown): T[] =>
+    (Array.isArray(value) ? value : []).filter((r): r is Record<string, unknown> => isRecord(r) && typeof r.id === "string" && r.id.length <= 200).map((r) => clampStamps(r) as T);
+  const conversations = records<Conversation>(raw.conversations).filter((c) => Array.isArray(c.messages) && typeof c.botId === "string");
+  const bots = records<Bot>(raw.bots).filter((b) => typeof b.name === "string" && Array.isArray(b.memory));
+  const providers = records<ProviderConfig>(raw.providers).filter((p) => typeof p.baseUrl === "string" && typeof p.kind === "string");
+  const skills = records<Skill>(raw.skills).filter((s) => typeof s.name === "string" && typeof s.instructions === "string");
+  const tombstones: Record<string, number> = {};
+  if (isRecord(raw.tombstones)) for (const [id, at] of Object.entries(raw.tombstones)) if (typeof at === "number") tombstones[id] = Math.min(at, now);
+  const p = isRecord(raw.profile) ? raw.profile : {};
+  const str = (v: unknown) => (typeof v === "string" ? v : "");
+  return {
+    v: 1,
+    at: typeof raw.at === "number" ? raw.at : 0,
+    device: str(raw.device).slice(0, 80),
+    providers,
+    bots,
+    conversations,
+    skills,
+    profile: {
+      userName: str(p.userName),
+      about: str(p.about),
+      customInstructions: str(p.customInstructions),
+      sharedMemory: Array.isArray(p.sharedMemory) ? p.sharedMemory.filter((m): m is string => typeof m === "string") : [],
+      updatedAt: typeof p.updatedAt === "number" ? Math.min(p.updatedAt, now) : 0,
+    },
     tombstones,
   };
 }
@@ -104,9 +156,12 @@ const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 /** A new sync code: 20 random characters in groups of five (100 bits), e.g. K7QPM-2XRTA-…. */
 export function newSyncCode(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(20));
-  const chars = [...bytes].map((b) => ALPHABET[b % ALPHABET.length]).join("");
-  return chars.match(/.{5}/g)!.join("-");
+  for (;;) {
+    const bytes = crypto.getRandomValues(new Uint8Array(20));
+    const chars = [...bytes].map((b) => ALPHABET[b % ALPHABET.length]).join("");
+    // Rarely a random draw repeats too much for syncCodeProblem: draw again.
+    if (new Set(chars).size >= 10) return chars.match(/.{5}/g)!.join("-");
+  }
 }
 
 /** The code as typed on another device: spaces, dashes and case don't matter. */
@@ -117,7 +172,8 @@ export function normaliseCode(code: string): string {
 export function syncCodeProblem(code: string): string {
   const clean = normaliseCode(code);
   if (!clean) return "Enter or create a sync code.";
-  if (clean.length < 16) return "That code is too short: use the 20-character code from your other device, or create one.";
+  // The code is both the key and the vault's address: a guessable one would open your data to anyone.
+  if (clean.length < 20 || new Set(clean).size < 10) return "Use the 20-character code from your other device, or press New code.";
   return "";
 }
 
@@ -143,9 +199,32 @@ export async function syncKeys(code: string, iterations = 600_000): Promise<Sync
 
 const AAD = new TextEncoder().encode("adt-bot sync v1");
 
+/** A synced copy unpacks to at most this much (a tiny file that unpacks to gigabytes is refused). */
+export const MAX_UNPACKED_BYTES = 256 * 1024 * 1024;
+
 async function gzip(bytes: Uint8Array, mode: "compress" | "decompress"): Promise<Uint8Array> {
   const stream = new Blob([bytes as BlobPart]).stream().pipeThrough(mode === "compress" ? new CompressionStream("gzip") : new DecompressionStream("gzip"));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
+  if (mode === "compress") return new Uint8Array(await new Response(stream).arrayBuffer());
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > MAX_UNPACKED_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error("The synced copy is too large to open.");
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.length;
+  }
+  return out;
 }
 
 export async function seal(snapshot: SyncSnapshot, keys: SyncKeys): Promise<string> {
@@ -164,9 +243,7 @@ export async function unseal(body: string, keys: SyncKeys): Promise<SyncSnapshot
   } catch {
     throw new Error("The synced copy can't be opened with this code.");
   }
-  const snapshot = JSON.parse(new TextDecoder().decode(await gzip(plain, "decompress"))) as SyncSnapshot;
-  if (snapshot?.v !== 1 || !Array.isArray(snapshot.bots)) throw new Error("The synced copy isn't readable.");
-  return snapshot;
+  return sanitizeSnapshot(JSON.parse(new TextDecoder().decode(await gzip(plain, "decompress"))));
 }
 
 // The server ------------------------------------------------------------------------------------

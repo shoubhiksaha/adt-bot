@@ -540,13 +540,17 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
     }
 
     // Context: pages the user linked, then live web results.
-    const urls = findUrls(lastUser?.content ?? "");
+    // What the user wrote themselves: wrapped outside content (an email that set off a routine) is
+    // data, so a link or a "/skill" line in it isn't a request.
+    const ownWords = stripUntrusted(lastUser?.content ?? "");
+    const urls = findUrls(ownWords);
     const pages: { url: string; text: string }[] = [];
     if (urls.length) {
       patchReply({ status: urls.length === 1 ? "Reading the link…" : `Reading ${urls.length} links…` });
       // A public link may not redirect into this machine or the local network; a private one the
       // user pasted themselves (their router, a local server) is read as asked.
-      const texts = await Promise.all(urls.map((url) => readPage(url, settings.useProxy, signal, publicLink(url))));
+      // A turn that carries outside content only ever reads public pages.
+      const texts = await Promise.all(urls.map((url) => readPage(url, settings.useProxy, signal, publicLink(url) || Boolean(opts.taintedBy?.length))));
       texts.forEach((text, i) => text && pages.push({ url: urls[i], text }));
     }
 
@@ -576,7 +580,10 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
     let toolsRan = false;
     const taint: TurnTaint = { sources: new Set(opts.taintedBy ?? []) };
     // "/weekly-report …": the user handed the bot one of its skills.
-    const skill = invokedSkill(lastUser?.content ?? "", skillsFor(bot, state.skills));
+    const skill = invokedSkill(ownWords, skillsFor(bot, state.skills));
+    // Outside content earlier in this chat (a routine's email, a guest's message) is still in what the bot reads.
+    if (chat.some((m) => m.role === "user" && m.content.includes("<untrusted_data"))) taint.sources.add("outside content earlier in this chat");
+    if (knowledge.outside) taint.sources.add("knowledge files that came with a bot template");
     if (skill?.outside) taint.sources.add(`the skill "${skill.name}" (imported or written from outside content)`);
     // A note on a chat that read web pages or connectors could carry what they said.
     if (notes.some((n) => n.outside)) taint.sources.add("notes from an earlier chat that read outside content");
@@ -763,7 +770,8 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
 
     // An early voice reply that has finished writing waits here until it's kept (or dropped).
     if (draft) await draft.kept;
-    if (!temporary) addMemory(bot.id, rememberedFacts(content, useStore.getState().bots.find((b) => b.id === bot.id)?.memory ?? bot.memory));
+    // Runs set off by outside content (an email, a guest, another bot) don't save facts about the user.
+    if (!temporary && !opts.taintedBy?.length) addMemory(bot.id, rememberedFacts(content, useStore.getState().bots.find((b) => b.id === bot.id)?.memory ?? bot.memory));
     const finalText = stripMemoryTags(content);
     patchReply({
       content: finalText,
@@ -923,6 +931,20 @@ function recentQuestion(history: Message[]): string {
     .slice(-2)
     .map((m) => m.content)
     .join(" ");
+}
+
+/** Text with wrapped outside content (<untrusted_data> blocks) taken out: what the user wrote themselves. */
+export function stripUntrusted(text: string): string {
+  let out = "";
+  let at = 0;
+  for (;;) {
+    const start = text.indexOf("<untrusted_data", at);
+    if (start < 0) return out + text.slice(at);
+    out += text.slice(at, start);
+    const end = text.indexOf("</untrusted_data>", start);
+    if (end < 0) return out;
+    at = end + "</untrusted_data>".length;
+  }
 }
 
 /** A link to somewhere on the public web (not this machine or the local network). */

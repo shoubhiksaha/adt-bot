@@ -190,7 +190,7 @@ function createMail({ accounts, ImapFlow = () => require("imapflow").ImapFlow, n
     if (replyTo) {
       const original = await read({ account: a.id, id: replyTo });
       out.reply = original;
-      if (!out.to.length) out.to = addresses(original.from);
+      if (!out.to.length && original.fromAddress) out.to = addresses(original.fromAddress);
       if (!out.subject) out.subject = /^re:/i.test(original.subject) ? original.subject : `Re: ${original.subject}`;
     }
     if (!out.to.length) throw new Error("Say who it's to.");

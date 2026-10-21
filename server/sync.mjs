@@ -23,13 +23,24 @@ const sha = (value) => createHash("sha256").update(value).digest("hex");
  * @param {{ dir: string, maxBytes?: number, maxVaults?: number, perMinute?: number }} options
  * @returns {(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse, next: () => void) => void}
  */
-export function createSyncHandler({ dir, maxBytes = 32 * 1024 * 1024, maxVaults = 50, perMinute = 120 }) {
+export function createSyncHandler({ dir, maxBytes = 32 * 1024 * 1024, maxVaults = 50, perMinute = 120, maxInFlight = 4 * 32 * 1024 * 1024, trustProxy = false }) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const calls = new Map();
+  /** Bytes of uploads being received right now, across everyone: many big uploads at once can't exhaust memory. */
+  let inFlight = 0;
+  const vaultCount = () => readdirSync(dir).filter((f) => f.endsWith(".json")).length;
+  const writeAtomic = (name, data) => {
+    const tmp = join(dir, `${name}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`);
+    writeFileSync(tmp, data, { mode: 0o600 });
+    renameSync(tmp, join(dir, name));
+  };
   const meta = (vault) => {
     try {
-      return JSON.parse(readFileSync(join(dir, `${vault}.json`), "utf8"));
-    } catch {
+      const m = JSON.parse(readFileSync(join(dir, `${vault}.json`), "utf8"));
+      return typeof m?.tokenHash === "string" && typeof m.etag === "string" ? m : null;
+    } catch (error) {
+      // A file that exists but can't be read stays claimed: nobody can take the vault over.
+      if (error?.code !== "ENOENT") return { tokenHash: "", etag: "", broken: true };
       return null;
     }
   };
@@ -43,7 +54,9 @@ export function createSyncHandler({ dir, maxBytes = 32 * 1024 * 1024, maxVaults 
     if (!match) return next();
     if (req.method === "OPTIONS") return reply(res, 204);
     const vault = match[1];
-    const ip = req.socket.remoteAddress ?? "";
+    // Behind a reverse proxy every client has the proxy's address: its X-Forwarded-For only when trusted.
+    const forwarded = trustProxy ? String(req.headers["x-forwarded-for"] ?? "").split(",")[0].trim() : "";
+    const ip = forwarded || req.socket.remoteAddress || "";
     const now = Date.now();
     const recent = (calls.get(ip) ?? []).filter((t) => now - t < 60_000);
     if (recent.length >= perMinute) return reply(res, 429, { error: "Too many requests; try again in a minute." });
@@ -53,6 +66,7 @@ export function createSyncHandler({ dir, maxBytes = 32 * 1024 * 1024, maxVaults 
     const token = String(req.headers["x-adtbot-sync-token"] ?? "");
     if (!TOKEN.test(token)) return reply(res, 401, { error: "Missing sync token." });
     const saved = meta(vault);
+    if (saved?.broken) return reply(res, 500, { error: "This vault's record is damaged; delete it on the server to start over." });
     if (saved) {
       const a = Buffer.from(saved.tokenHash, "hex");
       const b = Buffer.from(sha(token), "hex");
@@ -62,7 +76,12 @@ export function createSyncHandler({ dir, maxBytes = 32 * 1024 * 1024, maxVaults 
     if (req.method === "GET") {
       if (!saved) return reply(res, 404, { error: "Nothing synced yet." });
       if (req.headers["if-none-match"] === saved.etag) return reply(res, 304, undefined, { etag: saved.etag });
-      const body = readFileSync(join(dir, `${vault}.blob`));
+      let body;
+      try {
+        body = readFileSync(join(dir, `${vault}.blob`));
+      } catch {
+        return reply(res, 500, { error: "The synced copy is missing on the server." });
+      }
       res.writeHead(200, { ...CORS, "content-type": "application/json", "cache-control": "no-store", etag: saved.etag });
       return res.end(body);
     }
@@ -78,22 +97,35 @@ export function createSyncHandler({ dir, maxBytes = 32 * 1024 * 1024, maxVaults 
     const ifMatch = String(req.headers["if-match"] ?? "");
     // Someone else's copy landed since this device last looked: it must merge first.
     if (saved ? ifMatch !== saved.etag : ifMatch && ifMatch !== "none") return reply(res, 412, { error: "The synced copy changed; sync again." });
-    if (!saved && readdirSync(dir).filter((f) => f.endsWith(".json")).length >= maxVaults) return reply(res, 507, { error: "This server has no room for another sync vault." });
+    if (!saved && vaultCount() >= maxVaults) return reply(res, 507, { error: "This server has no room for another sync vault." });
+    const declared = Number(req.headers["content-length"] ?? 0);
+    if (declared > maxBytes) return reply(res, 413, { error: `Too large (over ${Math.round(maxBytes / 1048576)} MB).` });
+    if (inFlight + Math.max(declared, 1) > maxInFlight) return reply(res, 503, { error: "The server is busy; try again in a moment." });
     const chunks = [];
     let size = 0;
     let tooBig = false;
+    let counted = 0;
+    const release = () => {
+      inFlight -= counted;
+      counted = 0;
+    };
     req.on("data", (chunk) => {
       size += chunk.length;
-      if (size > maxBytes) {
+      if (size > maxBytes || inFlight + chunk.length > maxInFlight) {
         tooBig = true;
-        reply(res, 413, { error: `Too large (over ${Math.round(maxBytes / 1048576)} MB).` });
+        release();
+        reply(res, size > maxBytes ? 413 : 503, { error: size > maxBytes ? `Too large (over ${Math.round(maxBytes / 1048576)} MB).` : "The server is busy; try again in a moment." });
         req.destroy();
         return;
       }
+      inFlight += chunk.length;
+      counted += chunk.length;
       chunks.push(chunk);
     });
+    req.on("close", release);
     req.on("end", () => {
       if (tooBig) return;
+      release();
       const body = Buffer.concat(chunks);
       try {
         const box = JSON.parse(body.toString("utf8"));
@@ -104,11 +136,15 @@ export function createSyncHandler({ dir, maxBytes = 32 * 1024 * 1024, maxVaults 
       // Two devices racing: the second finds the ETag moved on.
       const current = meta(vault);
       if ((current?.etag ?? "") !== (saved?.etag ?? "")) return reply(res, 412, { error: "The synced copy changed; sync again." });
+      // New vaults uploading at the same time: the limit still holds.
+      if (!current && vaultCount() >= maxVaults) return reply(res, 507, { error: "This server has no room for another sync vault." });
       const etag = `"${sha(body).slice(0, 20)}-${randomBytes(3).toString("hex")}"`;
-      const tmp = join(dir, `${vault}.${process.pid}.tmp`);
-      writeFileSync(tmp, body, { mode: 0o600 });
-      renameSync(tmp, join(dir, `${vault}.blob`));
-      writeFileSync(join(dir, `${vault}.json`), JSON.stringify({ tokenHash: saved?.tokenHash ?? sha(token), etag, updatedAt: Date.now(), size }), { mode: 0o600 });
+      try {
+        writeAtomic(`${vault}.blob`, body);
+        writeAtomic(`${vault}.json`, JSON.stringify({ tokenHash: saved?.tokenHash ?? sha(token), etag, updatedAt: Date.now(), size }));
+      } catch (error) {
+        return reply(res, 507, { error: `Couldn't store it (${error?.code ?? "disk error"}).` });
+      }
       reply(res, 200, { ok: true }, { etag });
     });
   };

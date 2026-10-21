@@ -39,8 +39,20 @@ const PRIVATE_SUFFIXES = [".localhost", ".local", ".lan", ".home", ".internal", 
 function isPrivateAddress(address) {
   const ip = String(address).replace(/^\[|\]$/g, "").toLowerCase();
   if (isIP(ip) === 4) {
-    const [a, b] = ip.split(".").map(Number);
-    return a === 0 || a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127);
+    const [a, b, c] = ip.split(".").map(Number);
+    // Also the special ranges that aren't the public internet (as server/proxy.mjs).
+    return (
+      a === 0 ||
+      a >= 224 ||
+      (a === 192 && b === 0 && c === 0) ||
+      (a === 198 && (b === 18 || b === 19)) ||
+      a === 10 ||
+      a === 127 ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 169 && b === 254) ||
+      (a === 100 && b >= 64 && b <= 127)
+    );
   }
   if (isIP(ip) === 6) {
     if (ip === "::1" || ip === "::") return true;

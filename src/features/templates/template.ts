@@ -152,7 +152,11 @@ export async function installTemplate(template: BotTemplate, trusted = false): P
   const memory = trusted ? template.memory : template.memory.filter((m) => screen(m).ok);
   if (memory.length < template.memory.length) notes.push(`${template.memory.length - memory.length} memory item(s) looked like instructions or secrets and were left out.`);
   const knowledge: KnowledgeRef[] = [];
-  for (const file of template.knowledge) knowledge.push(await saveKnowledgeText(file.name, file.text));
+  for (const file of template.knowledge) {
+    const ref = await saveKnowledgeText(file.name, file.text);
+    // Files from someone else's template are outside content (a hidden instruction stays information).
+    knowledge.push(trusted ? ref : { ...ref, outside: true });
+  }
   updateBot(created.id, {
     name: template.bot.name,
     nickname: template.bot.nickname ?? "",

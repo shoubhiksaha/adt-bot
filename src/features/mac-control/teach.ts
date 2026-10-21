@@ -15,6 +15,8 @@ export type RecordedStep = {
   field?: string;
   text?: string;
   secure?: boolean;
+  /** Typing in a field the recorder couldn't identify, or in a terminal: not recorded. */
+  unknown?: boolean;
   combo?: string;
   button?: string;
   clicks?: number;
@@ -76,7 +78,11 @@ export function draftRecipe(recorded: RecordedStep[]): Draft {
     }
     if (s.kind === "type") {
       if (s.secure) {
-        skipped.push(`A password typed in ${s.app || "an app"}: bots never type passwords, so that part will ask you.`);
+        skipped.push(
+          s.unknown
+            ? `Typing in ${s.app || "an app"} that wasn't recorded (a terminal, or a field that couldn't be identified).`
+            : `A password typed in ${s.app || "an app"}: bots never type passwords, so that part will ask you.`,
+        );
         continue;
       }
       if (!s.text) continue;

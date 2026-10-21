@@ -112,7 +112,8 @@ export function skillsFor(bot: Pick<Bot, "id">, skills: Skill[]): Skill[] {
 /** Tells the bot which skills it has (names and when to use them); use_skill fetches the steps. */
 export function skillsPrompt(skills: Skill[]): string {
   if (!skills.length) return "";
-  const lines = skills.slice(0, LISTED).map((s) => `- ${s.name}: ${s.description.replace(/\s+/g, " ").slice(0, 200)}`);
+  // An unchecked skill's description came from outside: only its name goes in the instructions.
+  const lines = skills.slice(0, LISTED).map((s) => (s.outside ? `- ${s.name} (imported, not checked by the user)` : `- ${s.name}: ${s.description.replace(/\s+/g, " ").slice(0, 200)}`));
   return [
     "Skills: saved how-tos for tasks the user does again and again. When a task matches one, call use_skill with its name first and follow its steps.",
     ...lines,

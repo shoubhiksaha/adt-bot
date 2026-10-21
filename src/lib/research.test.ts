@@ -134,3 +134,15 @@ describe("research", () => {
     ).rejects.toThrow();
   });
 });
+
+describe("reading pages", () => {
+  it("stays fast on hostile pages full of unclosed tags", async () => {
+    const { extractText, stripTags } = await import("./search");
+    const started = performance.now();
+    extractText("<script".repeat(100_000));
+    extractText("<".repeat(1_000_000));
+    stripTags("<".repeat(1_000_000));
+    expect(performance.now() - started).toBeLessThan(1500);
+    expect(extractText("<html><head><title>x</title></head><body><nav>menu</nav><p>Hello <b>world</b></p><script>evil()</script></body></html>")).toBe("Hello world");
+  });
+});

@@ -58,7 +58,7 @@ describe("sync storage", () => {
 
   it("works with the app's sync client end to end", async () => {
     const keys = await syncKeys("ABCDEFGHJKLMNPQRSTUV", 1000);
-    const snapshot = { v: 1, at: 1, device: "Mac", providers: [], bots: [{ id: "a", name: "ADT" }], conversations: [], skills: [], profile: { userName: "", about: "", customInstructions: "", sharedMemory: [], updatedAt: 0 }, tombstones: {} };
+    const snapshot = { v: 1, at: 1, device: "Mac", providers: [], bots: [{ id: "a", name: "ADT", memory: [] }], conversations: [], skills: [], profile: { userName: "", about: "", customInstructions: "", sharedMemory: [], updatedAt: 0 }, tombstones: {} };
     expect(await pull(base, keys, false)).toBeNull();
     const etag = await push(base, keys, await seal(snapshot, keys), false, "");
     expect(etag).toMatch(/^"/);

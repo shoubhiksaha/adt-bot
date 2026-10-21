@@ -27,7 +27,13 @@ exports.register = ({ ipcMain, send }) => {
         res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
         res.end(JSON.stringify(body));
       };
-      const match = /^\/hook\/([\w-]{20,})$/.exec(new URL(req.url, "http://x").pathname);
+      let path = "";
+      try {
+        path = new URL(req.url, "http://x").pathname;
+      } catch {
+        return reply(400, { error: "bad request" });
+      }
+      const match = /^\/hook\/([\w-]{20,})$/.exec(path);
       const routineId = match && hooks.get(match[1]);
       if (!routineId) return reply(404, { error: "not found" });
       if (req.method !== "POST") return reply(405, { error: "use POST" });

@@ -69,10 +69,16 @@ export function startServer(options = {}) {
   const sync = options.sync ? createSyncHandler(options.sync) : (_req, _res, next) => next();
   const agent = options.agent ? options.agent.handle : (_req, _res, next) => next();
   const server = createServer((req, res) => {
-    Promise.resolve(sync(req, res, () => agent(req, res, () => proxy(req, res, () => serveStatic(req, res))))).catch(() => {
+    const fail = () => {
       if (!res.headersSent) res.writeHead(500);
       res.end();
-    });
+    };
+    // A handler that throws (synchronously or not) answers 500 instead of taking the server down.
+    try {
+      Promise.resolve(sync(req, res, () => agent(req, res, () => proxy(req, res, () => serveStatic(req, res))))).catch(fail);
+    } catch {
+      fail();
+    }
   });
   const host = options.host ?? "127.0.0.1";
   return new Promise((resolvePromise, reject) => {
@@ -114,6 +120,8 @@ if (isMain) {
             dir: join(dataDir(), "sync"),
             maxBytes: Number(process.env.ADT_SYNC_MAX_MB || 32) * 1024 * 1024,
             maxVaults: Number(process.env.ADT_SYNC_MAX_VAULTS || 50),
+            // Behind a reverse proxy (nginx, Caddy): rate-limit by the client's address it passes on.
+            trustProxy: process.env.ADT_TRUST_PROXY === "1",
           }
         : false,
     agent,

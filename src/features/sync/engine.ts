@@ -6,7 +6,7 @@ import { create } from "zustand";
 import { detectEnv } from "../../lib/transport";
 import { useStore } from "../../lib/store";
 import type { Conversation, Message, ProviderConfig } from "../../lib/types";
-import { digest, mergeSnapshots, pull, push, seal, slimConversation, type SyncKeys, syncKeys, type SyncSnapshot, unseal } from "../../lib/sync";
+import { digest, keepsLocalKey, mergeSnapshots, pull, push, seal, slimConversation, type SyncKeys, syncKeys, type SyncSnapshot, unseal } from "../../lib/sync";
 
 export type SyncStatus = { state: "off" | "syncing" | "ok" | "error"; lastSync?: number; error?: string };
 export const useSyncStatus = create<SyncStatus>(() => ({ state: "off" }));
@@ -64,7 +64,8 @@ export function applySnapshot(merged: SyncSnapshot) {
     return {
       providers: merged.providers.map((p) => {
         const mine = s.providers.find((x) => x.id === p.id);
-        return mine?.apiKey && !p.apiKey ? { ...p, apiKey: mine.apiKey, headers: mine.headers ?? p.headers } : p;
+        // The key stays only while the provider still points where it did here.
+        return keepsLocalKey(mine, p) ? { ...p, apiKey: mine!.apiKey, headers: mine!.headers ?? p.headers } : p;
       }),
       bots: merged.bots,
       conversations,

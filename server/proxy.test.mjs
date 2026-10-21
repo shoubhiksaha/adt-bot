@@ -45,6 +45,11 @@ describe("self-hosted relay", () => {
     expect(await reachesPrivateNetwork("[::ffff:7f00:1]")).toBe(true);
     expect(await reachesPrivateNetwork("does-not-exist.invalid")).toBe(true);
     expect(await reachesPrivateNetwork("93.184.215.14")).toBe(false);
+    // 0.0.0.0 reaches this machine on Linux and macOS; multicast and reserved ranges aren't the internet.
+    expect(await reachesPrivateNetwork("0.0.0.0")).toBe(true);
+    expect(await reachesPrivateNetwork("[::ffff:0:0]")).toBe(true);
+    expect(await reachesPrivateNetwork("224.0.0.1")).toBe(true);
+    expect(await reachesPrivateNetwork("198.18.0.1")).toBe(true);
   });
 
   it("never reaches link-local addresses (cloud metadata)", async () => {

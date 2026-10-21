@@ -99,7 +99,8 @@ function ReviewDraft({ draft, onClose }: { draft: Draft; onClose: () => void }) 
           name: skill,
           description: description || `Doing "${name}" in ${apps.join(", ")}`,
           instructions: [
-            `Use the recipe "${recipe.name}" (mac_recipe_run) with ${draft.params.length ? draft.params.map((p) => `${p} (e.g. "${draft.examples[p]}")`).join(", ") : "no values"}. If it fails, do the same by hand:`,
+            // What the user typed while recording stays out of the skill (it's stored and sent to the model).
+            `Use the recipe "${recipe.name}" (mac_recipe_run)${draft.params.length ? ` with ${draft.params.join(", ")}` : ""}. If it fails, do the same by hand:`,
             "",
             stepsInWords(recipe.steps),
             ...(draft.skipped.length ? ["", "Not recorded (ask the user, or work it out):", ...draft.skipped.map((s) => `- ${s}`)] : []),

@@ -32,7 +32,15 @@ export type ModelInfo = {
 };
 
 /** A document the bots can draw on. Its text lives in IndexedDB, keyed by id. */
-export type KnowledgeRef = { id: string; name: string; size: number; chars: number; addedAt: number };
+export type KnowledgeRef = {
+  id: string;
+  name: string;
+  size: number;
+  chars: number;
+  addedAt: number;
+  /** Came with a bot template from a file: its text counts as outside content. */
+  outside?: boolean;
+};
 
 export type Bot = {
   id: string;

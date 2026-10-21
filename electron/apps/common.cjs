@@ -68,6 +68,8 @@ async function parseMime(raw, extra = {}) {
   return {
     ...extra,
     from: list(mail.from)[0] ?? "",
+    // The sender's address alone: a display name like "a@evil.com, Bob" is never read as addresses.
+    fromAddress: mail.from?.value?.[0]?.address ?? "",
     to: list(mail.to),
     cc: list(mail.cc),
     subject: mail.subject ?? "",
@@ -79,13 +81,36 @@ async function parseMime(raw, extra = {}) {
   };
 }
 
+/** The HTML without these elements, found with indexOf (unclosed tags can't make it slow). */
+function removeElements(html, tags) {
+  const lower = html.toLowerCase();
+  let out = "";
+  let at = 0;
+  for (;;) {
+    let next = -1;
+    let tag = "";
+    for (const t of tags) {
+      const i = lower.indexOf(`<${t}`, at);
+      if (i >= 0 && (next < 0 || i < next) && !/[a-z0-9-]/.test(lower[i + t.length + 1] ?? "")) {
+        next = i;
+        tag = t;
+      }
+    }
+    if (next < 0) return out + html.slice(at);
+    out += html.slice(at, next);
+    const end = lower.indexOf(`</${tag}`, next);
+    const gt = end < 0 ? -1 : lower.indexOf(">", end);
+    if (gt < 0) return out;
+    at = gt + 1;
+  }
+}
+
 /** Rough HTML to text, for mail that only has HTML. */
 function htmlToText(html) {
-  return html
-    .replace(/<(script|style|head)[\s\S]*?<\/\1>/gi, "")
+  return removeElements(String(html).slice(0, 2_000_000), ["script", "style", "head"])
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/(p|div|li|tr|h\d)>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
+    .replace(/<[^<>]+>/g, "")
     .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")

@@ -1,3 +1,4 @@
+import { markUntrusted } from "./agent/vendor/copilotkit/untrusted-content";
 import { clear, createStore, del, get, set } from "idb-keyval";
 import { hybridRank } from "./hybrid";
 import type { KnowledgeRef } from "./types";
@@ -51,7 +52,7 @@ export async function knowledgeChunks(id: string): Promise<string[]> {
   return text ? chunk(text) : [];
 }
 
-export type KnowledgeContext = { prompt: string; used: string[] };
+export type KnowledgeContext = { prompt: string; used: string[]; outside?: boolean };
 
 /** Builds the knowledge section of the system prompt for a question. */
 export async function knowledgeContext(refs: KnowledgeRef[], query: string): Promise<KnowledgeContext> {
@@ -62,10 +63,13 @@ export async function knowledgeContext(refs: KnowledgeRef[], query: string): Pro
   const total = available.reduce((n, t) => n + t.text.length, 0);
 
   if (total <= FULL_TEXT_LIMIT) {
-    return {
-      prompt: wrap(available.map((t) => `<document name="${t.ref.name}">\n${t.text}\n</document>`).join("\n\n")),
-      used: available.map((t) => t.ref.name),
-    };
+    return asOutside(
+      {
+        prompt: wrap(available.map((t) => `<document name="${t.ref.name}">\n${t.text}\n</document>`).join("\n\n")),
+        used: available.map((t) => t.ref.name),
+      },
+      available.some((t) => t.ref.outside),
+    );
   }
 
   const chunks = available.flatMap((t) => chunk(t.text).map((text, i) => ({ name: t.ref.name, index: i, text, source: knowledgeSource(t.ref.id) })));
@@ -73,13 +77,22 @@ export async function knowledgeContext(refs: KnowledgeRef[], query: string): Pro
   const ranked = (await hybridRank(chunks, query, rank(chunks, query))).items.slice(0, TOP_CHUNKS);
   if (!ranked.length) return { prompt: "", used: [] };
   ranked.sort((a, b) => (a.name === b.name ? a.index - b.index : a.name.localeCompare(b.name)));
-  return {
-    prompt: wrap(
-      ranked.map((c) => `<excerpt document="${c.name}" part="${c.index + 1}">\n${c.text}\n</excerpt>`).join("\n\n"),
-      true,
-    ),
-    used: [...new Set(ranked.map((c) => c.name))],
-  };
+  const used = [...new Set(ranked.map((c) => c.name))];
+  return asOutside(
+    {
+      prompt: wrap(
+        ranked.map((c) => `<excerpt document="${c.name}" part="${c.index + 1}">\n${c.text}\n</excerpt>`).join("\n\n"),
+        true,
+      ),
+      used,
+    },
+    available.some((t) => t.ref.outside && used.includes(t.ref.name)),
+  );
+}
+
+/** Files that came with a template from someone else are outside content: wrapped, and the turn marked. */
+function asOutside(context: KnowledgeContext, outside: boolean): KnowledgeContext {
+  return outside ? { ...context, prompt: markUntrusted(context.prompt, "knowledge files that came with a bot template"), outside: true } : context;
 }
 
 function wrap(body: string, excerpts = false): string {

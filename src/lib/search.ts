@@ -196,14 +196,59 @@ function resolveDuckDuckGoUrl(href: string): string | null {
   }
 }
 
+/** Pages are cut to this before reading: a huge or hostile page can't stall the app. */
+const MAX_HTML = 1_500_000;
+
+/**
+ * The page without these elements (and comments), found with indexOf: a page full of unclosed tags
+ * can't make it slow (a lazy regex over them is quadratic). An element that never closes ends the page.
+ */
+export function removeElements(html: string, tags: string[]): string {
+  const lower = html.toLowerCase();
+  let out = "";
+  let at = 0;
+  for (;;) {
+    let next = -1;
+    let tag = "";
+    for (const t of ["!--", ...tags]) {
+      const i = lower.indexOf(`<${t}`, at);
+      if (i >= 0 && (next < 0 || i < next)) {
+        // "<header" isn't "<head": the name must end there.
+        if (t !== "!--" && /[a-z0-9-]/.test(lower[i + t.length + 1] ?? "")) continue;
+        next = i;
+        tag = t;
+      }
+    }
+    if (next < 0) return out + html.slice(at);
+    out += `${html.slice(at, next)} `;
+    const close = tag === "!--" ? "-->" : `</${tag}`;
+    const end = lower.indexOf(close, next + tag.length + 1);
+    if (end < 0) return out;
+    const gt = tag === "!--" ? end + 2 : lower.indexOf(">", end);
+    if (gt < 0) return out;
+    at = gt + 1;
+  }
+}
+
+/** The inside of the first <article> or <main> element, if there is one. */
+function mainContent(html: string): string | null {
+  const lower = html.toLowerCase();
+  for (const tag of ["article", "main"]) {
+    const start = lower.search(new RegExp(`<${tag}\\b`));
+    if (start < 0) continue;
+    const open = lower.indexOf(">", start);
+    const end = lower.indexOf(`</${tag}`, open);
+    if (open >= 0 && end > open) return html.slice(open + 1, end);
+  }
+  return null;
+}
+
 /** Readable text from an HTML page: main content first, chrome and scripts removed. */
 export function extractText(html: string): string {
-  let body = html
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/<(script|style|noscript|svg|template|iframe|head)\b[\s\S]*?<\/\1>/gi, " ");
-  const main = /<(article|main)\b[^>]*>([\s\S]*?)<\/\1>/i.exec(body);
-  if (main && stripTags(main[2]).length > 400) body = main[2];
-  body = body.replace(/<(nav|header|footer|aside|form)\b[\s\S]*?<\/\1>/gi, " ");
+  let body = removeElements(html.slice(0, MAX_HTML), ["script", "style", "noscript", "svg", "template", "iframe", "head"]);
+  const main = mainContent(body);
+  if (main && stripTags(main).length > 400) body = main;
+  body = removeElements(body, ["nav", "header", "footer", "aside", "form"]);
   return stripTags(body.replace(/<\/(p|div|li|h[1-6]|tr|br|section)>/gi, "\n").replace(/<br\s*\/?>/gi, "\n"))
     .replace(/[ \t]+/g, " ")
     .replace(/\n\s*\n+/g, "\n")
@@ -211,7 +256,8 @@ export function extractText(html: string): string {
 }
 
 export function stripTags(html: string): string {
-  return decodeEntities(html.replace(/<[^>]+>/g, "")).replace(/[ \t\r]+/g, " ").trim();
+  // [^<>]: a run of "<" can't make it backtrack (with [^>] it was quadratic).
+  return decodeEntities(html.replace(/<[^<>]+>/g, "")).replace(/[ \t\r]+/g, " ").trim();
 }
 
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", hellip: "…", mdash: "—", ndash: "–" };
