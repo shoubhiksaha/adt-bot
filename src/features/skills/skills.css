@@ -1,0 +1,79 @@
+/* Skills screen. Uses the app's tokens from src/styles.css. */
+.skills-view {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 18px 16px 40px;
+}
+.skills-head {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.skills-head p {
+  margin: 4px 0 0;
+  flex: 1 1 320px;
+}
+.skills-empty {
+  text-align: center;
+  padding: 40px 12px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+}
+.skills-empty h2 {
+  margin: 0 0 6px;
+  font-size: 18px;
+}
+.skill-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.skill-card {
+  display: flex;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  padding: 12px 14px;
+}
+.skill-main {
+  flex: 1;
+  min-width: 0;
+}
+.skill-main p {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+.skill-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.skill-title code {
+  font-size: 14px;
+  font-weight: 600;
+}
+.skill-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+}
+.badge.warn {
+  background: color-mix(in srgb, #f59e0b 22%, transparent);
+  color: var(--foreground);
+}
+.skill-form .textarea.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+@media (max-width: 560px) {
+  .skill-card {
+    flex-direction: column;
+  }
+}

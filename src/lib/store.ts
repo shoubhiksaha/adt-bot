@@ -7,7 +7,7 @@ import { isSealed, openSecrets, sealSecrets } from "./backup-crypto";
 import { BOT_PRESETS } from "./presets";
 import { catalogModels, presetById } from "./providers";
 import { appSecretsCodec, SecretKeeper, type SecretMap } from "./secrets";
-import type { Bot, Conversation, ProviderConfig, Settings } from "./types";
+import type { Bot, Conversation, ProviderConfig, Settings, Skill } from "./types";
 
 export const uid = () => crypto.randomUUID();
 
@@ -18,6 +18,8 @@ export type State = {
   providers: ProviderConfig[];
   bots: Bot[];
   conversations: Record<string, Conversation>;
+  /** Reusable how-tos every bot can use (src/features/skills). */
+  skills: Skill[];
   activeBotId: string | null;
   activeConversationId: string | null;
   settings: Settings;
@@ -125,6 +127,7 @@ export const defaultSettings: Settings = {
   userName: "",
   about: "",
   knowledge: [],
+  sharedMemory: [],
   semanticSearch: false,
   sendOnEnter: true,
   useProxy: true,
@@ -197,6 +200,7 @@ export const useStore = create<State>()(
       providers: [],
       bots: BOT_PRESETS.map((preset) => makeBot(preset)),
       conversations: {},
+      skills: [],
       activeBotId: null,
       activeConversationId: null,
       settings: defaultSettings,
@@ -252,7 +256,7 @@ export const useStore = create<State>()(
         settings.voice.cloudTts = Object.fromEntries(
           Object.entries(defaultSettings.voice.cloudTts).map(([id, d]) => [id, { ...d, ...savedCloud?.[id as keyof typeof savedCloud] }]),
         ) as Settings["voice"]["cloudTts"];
-        return { ...current, ...saved, settings };
+        return { ...current, ...saved, skills: Array.isArray(saved.skills) ? saved.skills : current.skills, settings };
       },
       onRehydrateStorage: () => () => useStore.setState({ hydrated: true }),
     },
@@ -340,6 +344,13 @@ export function deleteBot(id: string) {
   });
 }
 
+/** Facts every bot knows. */
+export function addSharedMemory(facts: string[]) {
+  const clean = facts.map((f) => f.trim()).filter(Boolean);
+  if (!clean.length) return;
+  setState((s) => ({ settings: { ...s.settings, sharedMemory: [...(s.settings.sharedMemory ?? []), ...clean.filter((f) => !(s.settings.sharedMemory ?? []).includes(f))] } }));
+}
+
 export function addMemory(botId: string, facts: string[]) {
   const clean = facts.map((f) => f.trim()).filter(Boolean);
   if (!clean.length) return;
@@ -408,8 +419,10 @@ export function renameConversation(id: string, title: string) {
 
 export function deleteConversation(id: string) {
   setState((s) => {
-    const { [id]: _removed, ...rest } = s.conversations;
-    return { conversations: rest, activeConversationId: s.activeConversationId === id ? null : s.activeConversationId };
+    const { [id]: removed, ...rest } = s.conversations;
+    // The bot's note on a deleted chat goes with it.
+    const bots = removed ? s.bots.map((b) => (b.journal?.some((e) => e.conversationId === id) ? { ...b, journal: b.journal.filter((e) => e.conversationId !== id) } : b)) : s.bots;
+    return { conversations: rest, bots, activeConversationId: s.activeConversationId === id ? null : s.activeConversationId };
   });
 }
 
@@ -426,7 +439,7 @@ export function withoutSecrets(settings: Settings): Settings {
 
 /** Everything a backup holds, with keys and secret header values blanked, plus the keys taken out. */
 function backupParts() {
-  const { providers, bots, conversations, settings } = getState();
+  const { providers, bots, conversations, settings, skills } = getState();
   const { value, secrets } = appSecretsCodec<{ providers: ProviderConfig[]; settings: Settings }>().split({ providers, settings });
   const body = {
     app: "adt-bot",
@@ -435,6 +448,7 @@ function backupParts() {
     providers: value.providers,
     bots,
     conversations: Object.fromEntries(Object.entries(conversations).filter(([, c]) => !c.temporary)),
+    skills,
     settings: value.settings,
   };
   return { body, secrets };
@@ -506,6 +520,7 @@ export function importData(json: string) {
     providers: data.providers ?? [],
     bots: data.bots ?? [],
     conversations: data.conversations ?? {},
+    skills: Array.isArray(data.skills) ? data.skills : getState().skills,
     settings: {
       ...imported,
       // An imported file never changes what bots may do on this computer.

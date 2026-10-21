@@ -6,4 +6,8 @@ import "./projects";
 import "./rooms";
 import "./mac-control";
 import "./computers";
+import "./memory";
+import "./skills";
+import "./activity";
+import "./templates";
 export {};

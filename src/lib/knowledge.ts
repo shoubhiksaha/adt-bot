@@ -36,7 +36,8 @@ export async function removeKnowledgeText(id: string) {
   await deleteVectors(knowledgeSource(id)).catch(() => undefined);
 }
 
-async function loadText(id: string): Promise<string> {
+/** A knowledge file's full text ("" if it's gone). */
+export async function loadText(id: string): Promise<string> {
   if (!cache.has(id)) cache.set(id, (docs ? await get<string>(id, docs) : undefined) ?? "");
   return cache.get(id)!;
 }

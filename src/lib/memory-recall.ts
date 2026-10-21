@@ -9,6 +9,12 @@ import type { Bot } from "./types";
  * is on ("what's my sister's name" recalls "Riya is my sibling").
  */
 
+/** The bot with the facts every bot knows (Memory screen) in front of its own. */
+export function withSharedMemory<T extends Pick<Bot, "memory">>(bot: T, shared: string[] | undefined): T {
+  const extra = (shared ?? []).filter((f) => !bot.memory.includes(f));
+  return extra.length ? { ...bot, memory: [...extra, ...bot.memory] } : bot;
+}
+
 /** Up to this much (~1,500 tokens), every memory goes into every prompt. */
 export const MEMORY_IN_FULL_CHARS = 6000;
 /** Above it, the newest memories up to this much always go in… */

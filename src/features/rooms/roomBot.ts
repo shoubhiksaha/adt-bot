@@ -40,7 +40,7 @@ export async function runRoomBot(o: Options) {
     return;
   }
 
-  const bot: Bot = { ...o.bot, memory: [], autoMemory: false };
+  const bot: Bot = { ...o.bot, memory: [], journal: [], autoMemory: false };
   const system = [buildSystemPrompt(bot), roomPrompt(bot.name, o.roomName, o.hostName)].join("\n\n");
   const all = o.tools === "none" ? [] : toolsFor({ settings, providers, platform: "desktop", bot });
   const full = o.guest ? all.filter((t) => !HOST_PRIVATE_GROUPS.has(t.group) && t.kind !== "mcp") : all;

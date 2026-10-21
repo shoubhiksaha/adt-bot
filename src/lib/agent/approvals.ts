@@ -51,6 +51,8 @@ export function taintSensitive(tool: AgentTool, risk: AgentTool["risk"], args: R
   if (tool.name === "mac_recipes" && args.action === "save") return true;
   // Routines run again later with the same tools: an injected instruction must not schedule itself.
   if (tool.group === "routines") return true;
+  // Skills are steps bots follow later: an injected instruction mustn't become one.
+  if (tool.group === "skills") return true;
   // Connector tools can send what the turn has seen to someone else.
   if (!isComputerTool(tool)) return tool.kind === "mcp";
   // Screen control (built in, or a Mac-control connector) stays usable: that's what Full access is for.

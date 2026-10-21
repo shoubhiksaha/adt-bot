@@ -49,7 +49,7 @@ export function firingMessage(instruction: string): string {
 function routineChat(routine: Routine): string {
   const existing = routine.conversationId ? useStore.getState().conversations[routine.conversationId] : undefined;
   if (existing && existing.botId === routine.botId && existing.messages.length < MAX_CHAT_MESSAGES) return existing.id;
-  return addBackgroundConversation(routine.botId, `Routine: ${routine.name}`).id;
+  return addBackgroundConversation(routine.botId, `Routine: ${routine.name}`, false, "routine").id;
 }
 
 const newRun = (patch: Partial<RoutineRun> & Pick<RoutineRun, "trigger">): RoutineRun => ({

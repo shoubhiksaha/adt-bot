@@ -3,7 +3,7 @@ import { openConversation, uid, useStore } from "../../lib/store";
 import type { Conversation } from "../../lib/types";
 
 /** Adds a chat without switching the screen to it (routine runs, delegated tasks). */
-export function addBackgroundConversation(botId: string, title: string, temporary = false): Conversation {
+export function addBackgroundConversation(botId: string, title: string, temporary = false, origin: Conversation["origin"] = "task"): Conversation {
   const conversation: Conversation = {
     id: uid(),
     botId,
@@ -13,6 +13,7 @@ export function addBackgroundConversation(botId: string, title: string, temporar
     // Our own title; the smart titler leaves it alone.
     titled: true,
     temporary: temporary || undefined,
+    origin,
   };
   useStore.setState((s) => ({ conversations: { ...s.conversations, [conversation.id]: conversation } }));
   return conversation;

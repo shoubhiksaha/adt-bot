@@ -1,0 +1,107 @@
+/* Agent log screen. Uses the app's tokens from src/styles.css. */
+.activity-view {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 18px 16px 40px;
+}
+.log-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 8px;
+}
+.log-filters input[type="search"] {
+  flex: 1 1 220px;
+}
+.log-filters select {
+  flex: 0 1 180px;
+  width: auto;
+}
+.log-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.log-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+}
+.log-row + .log-row {
+  border-top: 1px solid var(--border);
+}
+.log-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font-size: 14px;
+}
+.log-line .chev {
+  flex: none;
+  transition: transform 0.15s;
+}
+.log-row.open .chev {
+  transform: rotate(90deg);
+}
+.log-time {
+  flex: none;
+  white-space: nowrap;
+}
+.log-what {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.log-summary {
+  color: var(--muted-foreground);
+}
+.badge.outcome-error {
+  background: color-mix(in srgb, #ef4444 22%, transparent);
+  color: var(--foreground);
+}
+.badge.outcome-denied {
+  background: color-mix(in srgb, #f59e0b 22%, transparent);
+  color: var(--foreground);
+}
+.log-detail {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  gap: 4px 10px;
+  margin: 0;
+  padding: 0 12px 10px 32px;
+}
+.log-detail dt {
+  color: var(--muted-foreground);
+}
+.log-detail dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.log-empty {
+  padding: 30px 0;
+  text-align: center;
+}
+@media (max-width: 640px) {
+  .log-time {
+    display: none;
+  }
+  .log-detail {
+    grid-template-columns: 1fr;
+    padding-left: 12px;
+  }
+}

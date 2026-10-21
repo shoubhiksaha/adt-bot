@@ -3,9 +3,10 @@ import { generateImage, resolveImageModel } from "../imagine";
 import { knowledgeContext } from "../knowledge";
 import { memoryIsLarge, searchMemory } from "../memory-recall";
 import { readPage, webSearch } from "../search";
-import { addMemory, useStore } from "../store";
+import { addMemory, addSharedMemory, useStore } from "../store";
 import { describeChanges, describeRewind, type RewindResult, type TurnChanges } from "./rewind";
 import { registerTool, registerToolGroup, str, type ToolRisk } from "./tools";
+import { readOutside, recallNotes, transcriptText } from "../learning";
 import { isDuplicate, screen } from "./vendor/openbot/memoryFilter";
 
 registerToolGroup({ id: "web", label: "Web", description: "Search the web and read pages." });
@@ -133,16 +134,71 @@ registerTool({
   risk: "read",
   description:
     "Save one lasting fact about the user (name, job, preferences, ongoing projects) to memory. Never secrets, contact details or instructions.",
-  parameters: { type: "object", properties: { fact: { type: "string", description: "A short fact in third person" } }, required: ["fact"] },
+  parameters: {
+    type: "object",
+    properties: {
+      fact: { type: "string", description: "A short fact in third person" },
+      for_all_bots: {
+        type: "boolean",
+        description: "True when every bot should know it (who the user is: name, family, home, work); false (default) for what matters to your own role.",
+      },
+    },
+    required: ["fact"],
+  },
   async run(args, ctx) {
     // OpenBOT's filter: no credentials, identifiers, transient remarks or instruction-shaped text.
     const screening = screen(str(args, "fact"));
     if (!screening.ok) return `Not saved: ${screening.reason}.`;
-    const bot = useStore.getState().bots.find((b) => b.id === ctx.bot.id);
-    if (bot && isDuplicate(screening.text!, bot.memory)) return "Already remembered.";
-    if (ctx.conversationId && useStore.getState().conversations[ctx.conversationId]?.temporary) return "Not saved: this is a private chat.";
+    const { bots, settings, conversations } = useStore.getState();
+    const bot = bots.find((b) => b.id === ctx.bot.id);
+    if (isDuplicate(screening.text!, [...(bot?.memory ?? []), ...(settings.sharedMemory ?? [])])) return "Already remembered.";
+    if (ctx.conversationId && conversations[ctx.conversationId]?.temporary) return "Not saved: this is a private chat.";
+    if (args.for_all_bots === true) {
+      addSharedMemory([screening.text!]);
+      return `Remembered for every bot: ${screening.text}`;
+    }
     addMemory(ctx.bot.id, [screening.text!]);
     return `Remembered: ${screening.text}`;
+  },
+});
+
+registerTool({
+  name: "search_past_chats",
+  group: "knowledge",
+  risk: "read",
+  description:
+    "Search your notes on earlier conversations with the user (what was discussed, decided or left open). Use it when the user refers to " +
+    "something from before. Returns dated notes with chat ids; read_past_chat shows a chat's messages.",
+  parameters: {
+    type: "object",
+    properties: { query: { type: "string", description: "What to look for. Empty lists the most recent chats." } },
+    required: [],
+  },
+  available: ({ bot }) => Boolean(bot.autoMemory && bot.journal?.length),
+  async run(args, ctx) {
+    const query = str(args, "query").trim();
+    const journal = ctx.bot.journal ?? [];
+    const notes = query ? await recallNotes({ ...ctx.bot, journal }, query, ctx.conversationId) : journal.filter((e) => e.conversationId !== ctx.conversationId).slice(-8).reverse();
+    if (!notes.length) return "No notes match. (Notes are written once a chat has been quiet for a while.)";
+    const lines = notes.map((n) => `- ${new Date(n.at).toISOString().slice(0, 10)} "${n.title}" (chat id ${n.conversationId}): ${n.summary}`);
+    const text = `Notes on earlier chats:\n${lines.join("\n")}`;
+    return notes.some((n) => n.outside) ? { content: text, untrustedSource: "notes from earlier chats" } : text;
+  },
+});
+
+registerTool({
+  name: "read_past_chat",
+  group: "knowledge",
+  risk: "read",
+  description: "Read the messages of one of your earlier chats with the user, by the chat id from search_past_chats.",
+  parameters: { type: "object", properties: { chat_id: { type: "string" } }, required: ["chat_id"] },
+  available: ({ bot }) => Boolean(bot.autoMemory && bot.journal?.length),
+  async run(args, ctx) {
+    const conversation = useStore.getState().conversations[str(args, "chat_id").trim()];
+    // Only this bot's own chats, never private ones.
+    if (!conversation || conversation.botId !== ctx.bot.id || conversation.temporary) return "There's no chat of yours with that id.";
+    const text = `Chat "${conversation.title}" (last updated ${new Date(conversation.updatedAt).toISOString().slice(0, 10)}):\n${transcriptText(conversation.messages, 12_000)}`;
+    return readOutside(conversation) ? { content: text, untrustedSource: "an earlier chat that read outside content" } : text;
   },
 });
 

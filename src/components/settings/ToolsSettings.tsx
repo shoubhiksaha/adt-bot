@@ -1,7 +1,8 @@
-import { Trash2 } from "lucide-react";
+import { ScrollText } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ACCESS_MODES, type ComputerAccess } from "../../lib/agent/access";
-import { type ActivityEntry, clearActivity, listActivity } from "../../lib/agent/activity";
+import { type ActivityEntry, listActivity } from "../../lib/agent/activity";
+import { openView } from "../../features/registry";
 import { allToolGroups, allTools } from "../../lib/agent/tools";
 import { isDesktop } from "../../lib/desktop";
 import { updateSettings, useStore } from "../../lib/store";
@@ -169,27 +170,18 @@ export function ToolsSettings() {
         </details>
       </Section>
 
-      <Section title="Activity log" hint="Everything bots did with tools, newest first. Stored on this device.">
-        {log.length ? (
-          <div className="activity-log">
-            {log.slice(0, 150).map((entry) => (
-              <div key={entry.id} className={`activity-row ${entry.outcome}`}>
-                <span className="small muted">{new Date(entry.at).toLocaleString()}</span>
-                <span className="grow ellipsis">
-                  <strong>{entry.bot}</strong> · {entry.summary || entry.tool}
-                </span>
-                <span className={`badge outcome-${entry.outcome}`}>{entry.outcome}</span>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="small muted">Nothing yet.</p>
-        )}
-        {log.length > 0 && (
-          <button type="button" className="btn" onClick={() => void clearActivity().then(() => setLog([]))}>
-            <Trash2 size={14} /> Clear log
-          </button>
-        )}
+      <Section title="Agent log" hint="Everything bots did with tools, why it was allowed, what it was given and what came back. Stored on this device.">
+        <p className="small muted">{log.length ? `${log.length} actions recorded.` : "Nothing yet."}</p>
+        <button
+          type="button"
+          className="btn"
+          onClick={() => {
+            openView("activity");
+            window.dispatchEvent(new Event("adt:close-settings"));
+          }}
+        >
+          <ScrollText size={14} /> Open the agent log
+        </button>
       </Section>
     </div>
   );

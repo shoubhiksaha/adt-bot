@@ -8,6 +8,7 @@ import type { SettingsTab } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { stopStreaming } from "./lib/chat";
 import { desktopOn } from "./lib/desktop";
+import { startLearning } from "./lib/learning";
 import { startSemanticSearch } from "./lib/semantic";
 import { selectBot, startNewChat, useStore } from "./lib/store";
 import { preferredMode, themeCss } from "./lib/theme";
@@ -116,7 +117,10 @@ export function App() {
 
   // Smarter memory search keeps its index current in the background (only when it's switched on).
   useEffect(() => {
-    if (hydrated) startSemanticSearch();
+    if (!hydrated) return;
+    startSemanticSearch();
+    // Bots note finished chats and lasting facts in the background (when "Learn from our chats" is on).
+    startLearning();
   }, [hydrated]);
 
   // Warm up the Markdown renderer once the first screen is up.
@@ -128,11 +132,14 @@ export function App() {
 
   useEffect(() => {
     const open = (e: Event) => setSettingsTab(((e as CustomEvent).detail as SettingsTab) ?? "general");
+    const close = () => setSettingsTab(null);
     window.addEventListener("adt:open-settings", open);
+    window.addEventListener("adt:close-settings", close);
     // Clicking the "update available" notification (desktop).
     const offUpdates = desktopOn("adt:updates:open", () => setSettingsTab("about"));
     return () => {
       window.removeEventListener("adt:open-settings", open);
+      window.removeEventListener("adt:close-settings", close);
       offUpdates();
     };
   }, []);

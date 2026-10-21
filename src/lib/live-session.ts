@@ -6,6 +6,7 @@ import { accessGuidance, isComputerTool } from "./agent/access";
 import { activityFor } from "./agent/asks";
 import { COMPUTER_GUIDANCE, createToolRunner, TOOL_GUIDANCE, type ToolRunner } from "./agent/loop";
 import { type AgentTool, type ToolContext, toolsFor, type TurnTaint } from "./agent/tools";
+import { withSharedMemory } from "./memory-recall";
 import { buildSystemPrompt, setVoiceApprover, setVoiceModeActive, stripMemoryTags, titleFrom } from "./chat";
 import { closeReason, LIVE_MODELS, LiveConnection, type LiveCall, type LiveEvent, type LiveSetup, pcm16Base64, pcm16Samples } from "./gemini-live";
 import workletUrl from "./pcm-worklet.js?url";
@@ -255,7 +256,7 @@ export class LiveVoiceSession {
     const bot = bots.find((b) => b.id === activeBotId)!;
     // Memories are saved with the remember tool: a <remember> tag would be read out.
     const base = buildSystemPrompt(
-      { ...bot, autoMemory: false },
+      { ...withSharedMemory(bot, settings.sharedMemory), autoMemory: false },
       {
         userName: settings.userName,
         about: settings.about,

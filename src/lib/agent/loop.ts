@@ -1,10 +1,10 @@
 import { type ChatRequest, type StreamEvent, streamChat, type ToolTurn } from "../llm";
 import { presetById } from "../providers";
 import type { ToolCallRecord } from "../types";
-import { logActivity } from "./activity";
+import { type ActivityEntry, logActivity, redactArgs, resultPreview } from "./activity";
 import { accessGuidance, isComputerTool } from "./access";
 import { askAloudDetail, askAloudText } from "./asks";
-import { decide, gate, waitForDecision, isPending, type Decision } from "./approvals";
+import { decide, gate, type GateResult, waitForDecision, isPending, type Decision } from "./approvals";
 import { type AgentTool, getTool, type ToolContext, toResult } from "./tools";
 import { insideWorkspace } from "./builtin";
 import { isTerminalApp, TERMINAL_APPS } from "./danger";
@@ -345,10 +345,22 @@ export function createToolRunner(options: {
     }
 
     const verdict = gate(tool, call, context, await typingIntoTerminal(call, context));
-    const botName = context.bot.name;
+    // The agent log: who did what, with what, why it was allowed, and what came back.
+    const log = (outcome: ActivityEntry["outcome"], summary: string, extra: Partial<ActivityEntry> = {}) =>
+      void logActivity({
+        bot: context.bot.name,
+        botId: context.bot.id,
+        tool: call.name,
+        summary,
+        outcome,
+        conversationId: context.conversationId,
+        args: redactArgs(call.args ?? {}),
+        ...(context.taint?.sources.size ? { taint: [...context.taint.sources].join("; ").slice(0, 200) } : {}),
+        ...extra,
+      });
     if (verdict.outcome === "deny") {
       update(call.id, { status: "denied", result: verdict.refusal });
-      void logActivity({ bot: botName, tool: call.name, summary: verdict.reason, outcome: "denied", conversationId: context.conversationId });
+      log("denied", verdict.reason, { decision: verdict.reason });
       return { id: call.id, name: call.name, content: verdict.refusal, isError: true };
     }
     if (verdict.outcome === "ask" && context.unattended && !context.askAloud) {
@@ -356,15 +368,15 @@ export function createToolRunner(options: {
         "Refused: this needs the user's approval, and approval cards can't be shown in voice mode. Don't retry it. " +
         "Tell the user what you wanted to do, and that they can do it from the chat, or allow it under Settings → Tools & safety → Computer access.";
       update(call.id, { status: "denied", result: "Needs approval (not possible in voice mode)" });
-      void logActivity({ bot: botName, tool: call.name, summary: verdict.summary, outcome: "denied", conversationId: context.conversationId });
+      log("denied", verdict.summary, { decision: `needed approval (${verdict.reason}), and nobody could answer` });
       return { id: call.id, name: call.name, content, isError: true };
     }
+    let decision: Decision | undefined;
     if (verdict.outcome === "ask") {
       update(call.id, {
         status: "awaiting",
         approval: { summary: verdict.summary, detail: verdict.detail, reason: verdict.reason, kind: verdict.kind, allowAlways: verdict.allowAlways },
       });
-      let decision: Decision;
       if (context.unattended && context.askAloud) {
         // Voice mode: asked aloud; the card in the chat answers too, whichever comes first.
         const settle = new AbortController();
@@ -381,7 +393,7 @@ export function createToolRunner(options: {
       if (decision === "deny") {
         const content = "The user declined this action. Don't retry it; tell them what you were trying to do or suggest another way.";
         update(call.id, { status: "denied", result: "Declined", approval: undefined });
-        void logActivity({ bot: botName, tool: call.name, summary: verdict.summary, outcome: "denied", conversationId: context.conversationId });
+        log("denied", verdict.summary, { decision: `asked (${verdict.reason}); you declined` });
         return { id: call.id, name: call.name, content, isError: true };
       }
       update(call.id, { approval: undefined });
@@ -404,19 +416,16 @@ export function createToolRunner(options: {
       if (value.untrustedSource) content = markUntrusted(content, value.untrustedSource);
       if (value.untrustedSource && context.taint && taints(tool, call)) context.taint.sources.add(value.untrustedSource.slice(0, 80));
       update(call.id, { status: "done", result: preview(value.content ?? ""), display: value.display, ms: Date.now() - started });
-      void logActivity({
-        bot: botName,
-        tool: call.name,
-        summary: verdict.outcome === "ask" ? verdict.summary : summariseArgs(call),
-        outcome: "done",
+      log("done", verdict.outcome === "ask" ? verdict.summary : summariseArgs(call), {
         ms: Date.now() - started,
-        conversationId: context.conversationId,
+        decision: allowedBecause(verdict, decision),
+        result: resultPreview(value.content ?? ""),
       });
       return { id: call.id, name: call.name, content, ...(value.image ? { image: value.image } : {}) };
     } catch (error) {
       const content = `Error: ${(error as Error).message}`;
       update(call.id, { status: "error", result: content, ms: Date.now() - started });
-      void logActivity({ bot: botName, tool: call.name, summary: content.slice(0, 160), outcome: "error", conversationId: context.conversationId });
+      log("error", summariseArgs(call), { ms: Date.now() - started, decision: allowedBecause(verdict, decision), result: resultPreview(content) });
       return { id: call.id, name: call.name, content, isError: true };
     }
   }
@@ -473,6 +482,12 @@ function searchTools(tools: AgentTool[], query: string): AgentTool[] {
 
 function preview(text: string): string {
   return text.length > 4000 ? `${text.slice(0, 4000)}…` : text;
+}
+
+/** Why a call that ran was allowed, for the agent log. */
+function allowedBecause(verdict: GateResult, decision: Decision | undefined): string {
+  if (verdict.outcome !== "ask") return verdict.reason;
+  return decision === "always" ? `asked (${verdict.reason}); you chose Always allow` : `asked (${verdict.reason}); you allowed it`;
 }
 
 function summariseArgs(call: ToolCall): string {

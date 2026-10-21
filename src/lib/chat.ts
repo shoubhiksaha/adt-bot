@@ -11,9 +11,13 @@ import { pointsAtPrivateHost } from "./agent/builtin";
 import { addMemory, flushStorage, newConversation, uid, updateConversation, useStore } from "./store";
 import type { Attachment, Bot, Message, Source } from "./types";
 import { knowledgeContext } from "./knowledge";
-import { memoryContext, recalledPrompt } from "./memory-recall";
+import { memoryContext, recalledPrompt, withSharedMemory } from "./memory-recall";
+import { notesPrompt, recallNotes } from "./learning";
+import { isDuplicate, screen } from "./agent/vendor/openbot/memoryFilter";
 import { speak } from "./voice";
 import { RICH_BLOCKS_GUIDANCE } from "./visualize/fences";
+import { invokedSkill, skillsFor, skillsPrompt, skillText } from "../features/skills/skills";
+import { markUntrusted } from "./agent/vendor/copilotkit/untrusted-content";
 
 export type SendOptions = {
   search?: boolean;
@@ -76,6 +80,19 @@ export function setVoiceModeActive(active: boolean) {
 
 // Also accepts the malformed `<remember fact>` small local models sometimes write.
 const REMEMBER_TAG = /<remember(?:>([\s\S]*?)(?:<\/remember>|$)|\s+([^>]*)>)/g;
+
+/**
+ * Facts the reply asked to remember with <remember> tags, through the same screen as the remember
+ * tool (no credentials, identifiers or instruction-shaped text) and without repeats.
+ */
+export function rememberedFacts(content: string, known: string[]): string[] {
+  const kept: string[] = [];
+  for (const match of content.matchAll(REMEMBER_TAG)) {
+    const screening = screen((match[1] ?? match[2] ?? "").trim());
+    if (screening.ok && screening.text && !isDuplicate(screening.text, [...known, ...kept])) kept.push(screening.text);
+  }
+  return kept;
+}
 
 /** Hide memory tags from the visible reply (including one still being streamed). */
 export function stripMemoryTags(text: string): string {
@@ -347,8 +364,9 @@ if (typeof window !== "undefined") desktopOn("adt:stop-all", () => stopAllBots()
 /** `draft`: an early voice reply, kept out of the chat until it's kept (see startEarlyReply); `conversationId` may then be null (a new chat). */
 async function runAssistant(conversationId: string | null, botId: string, opts: SendOptions, draft?: Draft) {
   const state = useStore.getState();
-  const bot = state.bots.find((b) => b.id === botId)!;
   const { settings, providers } = state;
+  // What every bot knows (Memory screen) comes with the bot's own memories.
+  const bot = withSharedMemory(state.bots.find((b) => b.id === botId)!, settings.sharedMemory);
   // Voice conversations can use a separate, faster model.
   const voiceOverride = opts.voice && settings.voice.voiceModel && providers.find((p) => p.id === settings.voice.voiceProviderId);
   const provider = voiceOverride || providers.find((p) => p.id === bot.providerId);
@@ -424,9 +442,10 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
 
     const thinking = opts.think ? (bot.thinking === "off" ? "high" : bot.thinking) : bot.thinking;
     const question = recentQuestion(history);
-    const [knowledge, memory] = await Promise.all([
+    const [knowledge, memory, notes] = await Promise.all([
       knowledgeContext([...settings.knowledge, ...(bot.knowledge ?? [])], question),
       memoryContext(bot, question),
+      temporary ? [] : recallNotes(bot, question, conversationId),
     ]);
     if (knowledge.used.length) patchReply({ knowledge: knowledge.used });
     const basePrompt = buildSystemPrompt(bot, {
@@ -445,6 +464,11 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
     let note: string | undefined;
     let toolsRan = false;
     const taint: TurnTaint = { sources: new Set(opts.taintedBy ?? []) };
+    // "/weekly-report …": the user handed the bot one of its skills.
+    const skill = invokedSkill(lastUser?.content ?? "", skillsFor(bot, state.skills));
+    if (skill?.outside) taint.sources.add(`the skill "${skill.name}" (imported or written from outside content)`);
+    // A note on a chat that read web pages or connectors could carry what they said.
+    if (notes.some((n) => n.outside)) taint.sources.add("notes from an earlier chat that read outside content");
 
     /** Our own search: query → engine → page reading, results handed to the model as context. */
     const appSearch = async () => {
@@ -471,10 +495,18 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
       // Knowledge, linked pages and search results go with the latest message, not in the system
       // prompt: outside content never sits where the bot's own instructions are, and the system
       // prompt stays the same from turn to turn (prompt caching).
-      const context = [recalledPrompt(memory.recalled), knowledge.prompt, pages.length || sources.length ? sourcesPrompt(query, sources, pages) : ""]
+      const context = [
+        skill ? `The user asked you to use the skill /${skill.name}. Follow it:\n\n${skill.outside ? markUntrusted(skillText(skill), `the skill "${skill.name}"`) : skillText(skill)}` : "",
+        recalledPrompt(memory.recalled),
+        notesPrompt(notes),
+        knowledge.prompt,
+        pages.length || sources.length ? sourcesPrompt(query, sources, pages) : "",
+      ]
         .filter(Boolean)
         .join("\n\n");
-      const system = [basePrompt, CONTEXT_NOTE].join("\n\n");
+      // Skills the bot may reach for (their steps come with use_skill).
+      const skills = agentTools.some((t) => t.name === "use_skill") ? skillsPrompt(skillsFor(bot, state.skills)) : "";
+      const system = [basePrompt, skills, CONTEXT_NOTE].filter(Boolean).join("\n\n");
       const messages = withContext(history, context);
       // Outside content in this turn: Full access asks before commands and file writes (see approvals.ts).
       if (pages.length || sources.length) taint.sources.add(pages.length ? "a linked web page" : "web search results");
@@ -588,8 +620,7 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
 
     // An early voice reply that has finished writing waits here until it's kept (or dropped).
     if (draft) await draft.kept;
-    const remembered = [...content.matchAll(REMEMBER_TAG)].map((m) => (m[1] ?? m[2] ?? "").trim());
-    if (remembered.length && !temporary) addMemory(bot.id, remembered);
+    if (!temporary) addMemory(bot.id, rememberedFacts(content, useStore.getState().bots.find((b) => b.id === bot.id)?.memory ?? bot.memory));
     const finalText = stripMemoryTags(content);
     patchReply({
       content: finalText,

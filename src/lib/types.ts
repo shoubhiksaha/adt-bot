@@ -50,9 +50,50 @@ export type Bot = {
   thinking: ThinkingLevel;
   /** Durable facts the bot carries into every conversation. */
   memory: string[];
-  /** Let the bot save new memories by emitting <remember> tags. */
+  /**
+   * Learn from chats: save facts the user states (<remember> tags, the remember tool) and, after a
+   * chat goes quiet, a note on what it was about plus lasting facts and preferences (src/lib/learning.ts).
+   */
   autoMemory: boolean;
+  /** Notes on past conversations, one per chat, recalled in later chats when relevant. */
+  journal?: JournalEntry[];
   createdAt: number;
+};
+
+/**
+ * A skill: a reusable how-to (when to use it, the steps, checks, what to return, what needs an OK),
+ * shared by the bots. Same shape as a SKILL.md file (name + description + instructions), so skills
+ * move between ADT Bot and other agents that read that format.
+ */
+export type Skill = {
+  id: string;
+  /** Lowercase words joined by hyphens; typed as /name in the message box. */
+  name: string;
+  /** When to use it: bots decide from this. */
+  description: string;
+  /** The how-to itself (Markdown). */
+  instructions: string;
+  /** Bots that may use it ("all" = every bot). */
+  bots: string[] | "all";
+  source: "user" | "bot" | "imported" | "recorded";
+  /**
+   * Imported from a file, or written by a bot whose chat had read outside content: its steps count
+   * as outside content when used, so Full access asks before commands and file changes.
+   */
+  outside?: boolean;
+  createdAt: number;
+  updatedAt: number;
+};
+
+/** A bot's note on one past conversation, so the topic can be picked up later. */
+export type JournalEntry = {
+  conversationId: string;
+  title: string;
+  summary: string;
+  /** When the note was last written. */
+  at: number;
+  /** The chat had read outside content (web pages, connectors…), so recalling the note counts as outside content too. */
+  outside?: boolean;
 };
 
 /** One tool the bot used while answering, as shown in the chat and recorded in the activity log. */
@@ -142,6 +183,10 @@ export type Conversation = {
   /** Private chat: never written to storage and gone when you leave it. */
   temporary?: boolean;
   titled?: boolean;
+  /** Started by the app rather than the user: a routine run, or a task one bot handed another. */
+  origin?: "routine" | "task";
+  /** The last message the bot has learned from (src/lib/learning.ts). */
+  learnedThrough?: string;
 };
 
 /**
@@ -248,6 +293,8 @@ export type Settings = {
   about: string;
   /** Files every bot can draw on (company profile, handbook, product docs…). */
   knowledge: KnowledgeRef[];
+  /** Facts every bot knows about the user (Memory screen); each bot also has its own. */
+  sharedMemory: string[];
   /** "Smarter memory search": also find memories and knowledge passages by meaning, with an on-device model. */
   semanticSearch: boolean;
   sendOnEnter: boolean;

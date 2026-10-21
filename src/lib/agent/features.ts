@@ -10,3 +10,4 @@ import "../cli-agents/tool";
 import "../../features/projects/tools";
 import "../../features/mac-control/tools";
 import "../../features/computers/tools";
+import "../../features/skills/tools";

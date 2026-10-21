@@ -7,6 +7,14 @@ import { updateSettings, useStore } from "../lib/store";
 import type { Attachment } from "../lib/types";
 import { listen, type ListenSession, resolveEngine, warmVoice } from "../lib/voice";
 import { onWhisperProgress } from "../lib/whisper";
+import { skillsFor } from "../features/skills/skills";
+
+/** Commands the message box understands (skills add their own /names). */
+const COMMANDS = [
+  { name: "imagine", description: "Create an image" },
+  { name: "search", description: "Answer with live web search" },
+  { name: "remember", description: "Save a fact about you" },
+];
 
 type Voice = "idle" | "dictating" | "recording" | "transcribing";
 
@@ -37,6 +45,24 @@ export function Composer({
   const [voice, setVoice] = useState<Voice>("idle");
   const [notice, setNotice] = useState<string | null>(null);
   const [reading, setReading] = useState(0);
+  const [menuIndex, setMenuIndex] = useState(0);
+  const activeBot = useStore((s) => s.bots.find((b) => b.id === s.activeBotId));
+  const skills = useStore((s) => s.skills);
+  // Typing "/name": commands and this bot's skills that start with what's typed.
+  const slash = /^\/([a-z0-9-]*)$/i.exec(text);
+  const suggestions = slash
+    ? [
+        ...COMMANDS.map((c) => ({ ...c, skill: false })),
+        ...(activeBot ? skillsFor(activeBot, skills) : []).map((s) => ({ name: s.name, description: s.description, skill: true })),
+      ]
+        .filter((c) => c.name.startsWith(slash[1].toLowerCase()))
+        .slice(0, 8)
+    : [];
+  const pick = (name: string) => {
+    setText(`/${name} `);
+    setMenuIndex(0);
+    textareaRef.current?.focus();
+  };
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   /** The message in the box was spoken with the mic button (see Settings → Voice → read replies aloud). */
@@ -182,6 +208,18 @@ export function Composer({
             )}
           </div>
         )}
+        {suggestions.length > 0 && (
+          <ul className="slash-menu" role="listbox" aria-label="Commands and skills">
+            {suggestions.map((c, i) => (
+              <li key={`${c.skill}-${c.name}`} role="option" aria-selected={i === Math.min(menuIndex, suggestions.length - 1)}>
+                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => pick(c.name)}>
+                  <code>/{c.name}</code>
+                  <span className="muted small">{c.skill ? `Skill: ${c.description}` : c.description}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         <textarea
           ref={textareaRef}
           rows={1}
@@ -198,6 +236,18 @@ export function Composer({
             }
           }}
           onKeyDown={(e) => {
+            if (suggestions.length && !e.nativeEvent.isComposing) {
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault();
+                setMenuIndex((i) => (i + (e.key === "ArrowDown" ? 1 : suggestions.length - 1)) % suggestions.length);
+                return;
+              }
+              if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+                e.preventDefault();
+                pick(suggestions[Math.min(menuIndex, suggestions.length - 1)].name);
+                return;
+              }
+            }
             if (e.key === "Escape" && streaming) {
               e.preventDefault();
               stopStreaming();
@@ -305,7 +355,7 @@ export function Composer({
             ? `Downloading the speech model (one time)… ${download}%`
             : voice === "recording" || voice === "dictating"
             ? "Listening… tap the mic again to stop."
-            : "AI can make mistakes. Commands: /imagine, /search, /remember"}
+            : "AI can make mistakes. Type / for commands and skills"}
         </div>
       )}
     </div>

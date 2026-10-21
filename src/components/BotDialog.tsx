@@ -1,5 +1,5 @@
-import { FileUp, ImagePlus, Trash2, X } from "lucide-react";
-import { useRef, useState } from "react";
+import { FileUp, ImagePlus, Share, Trash2, X } from "lucide-react";
+import { lazy, Suspense, useRef, useState } from "react";
 import { allToolGroups } from "../lib/agent/tools";
 import { fileText } from "../lib/images";
 import { presetById } from "../lib/providers";
@@ -10,11 +10,14 @@ import { Dialog } from "./Dialog";
 import { KNOWLEDGE_ACCEPT, KnowledgeFiles } from "./KnowledgeFiles";
 import { ModelField } from "./ModelField";
 
+const TemplateExportDialog = lazy(() => import("../features/templates/TemplatesView").then((m) => ({ default: m.TemplateExportDialog })));
+
 export default function BotDialog({ botId, onClose }: { botId: string; onClose: () => void }) {
   const bot = useStore((s) => s.bots.find((b) => b.id === botId));
   const providers = useStore((s) => s.providers);
   const [newMemory, setNewMemory] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
+  const [sharing, setSharing] = useState(false);
   const pictureInput = useRef<HTMLInputElement>(null);
   if (!bot) return null;
 
@@ -140,9 +143,13 @@ export default function BotDialog({ botId, onClose }: { botId: string; onClose: 
       <label className="toggle">
         <input type="checkbox" checked={bot.autoMemory} onChange={(e) => set({ autoMemory: e.target.checked })} />
         <span>
-          <strong>Auto memory</strong>
+          <strong>Learn from our chats</strong>
           <br />
-          <span className="small muted">The bot saves durable facts about you and recalls them in every chat.</span>
+          <span className="small muted">
+            Saves lasting facts and preferences you mention and, once a chat goes quiet, a short note on what it was about, so later chats
+            can pick it up. Uses one short request to this bot's model per chat. Private chats are never learned from; everything below can
+            be deleted.
+          </span>
         </span>
       </label>
       <div className="field">
@@ -266,6 +273,35 @@ export default function BotDialog({ botId, onClose }: { botId: string; onClose: 
         </form>
       </div>
 
+      {(bot.journal?.length ?? 0) > 0 && (
+        <div className="field">
+          <label>Notes on past chats ({bot.journal!.length})</label>
+          <ul className="memory-list journal-list">
+            {[...bot.journal!].reverse().map((entry) => (
+              <li key={entry.conversationId}>
+                <span>
+                  <strong>{entry.title}</strong> <span className="small muted">{new Date(entry.at).toLocaleDateString()}</span>
+                  <br />
+                  <span className="small">{entry.summary}</span>
+                </span>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  style={{ width: 26, height: 26 }}
+                  aria-label="Forget this note"
+                  onClick={() => set({ journal: bot.journal!.filter((e) => e.conversationId !== entry.conversationId) })}
+                >
+                  <X size={14} />
+                </button>
+              </li>
+            ))}
+          </ul>
+          <button type="button" className="link-btn" onClick={() => confirm(`Forget all of ${bot.name}'s notes on past chats?`) && set({ journal: [] })}>
+            Forget all notes
+          </button>
+        </div>
+      )}
+
       <div className="btn-row" style={{ justifyContent: "space-between", marginTop: 8 }}>
         <button
           type="button"
@@ -279,10 +315,18 @@ export default function BotDialog({ botId, onClose }: { botId: string; onClose: 
         >
           <Trash2 size={14} /> Delete bot
         </button>
+        <button type="button" className="btn" onClick={() => setSharing(true)} title="Save this bot's setup as a file others can add">
+          <Share size={14} /> Share as template
+        </button>
         <button type="button" className="btn primary" onClick={onClose}>
           Done
         </button>
       </div>
+      {sharing && (
+        <Suspense fallback={null}>
+          <TemplateExportDialog bot={bot} onClose={() => setSharing(false)} />
+        </Suspense>
+      )}
     </Dialog>
   );
 }
