@@ -1,7 +1,7 @@
 {
   "name": "adt-bot",
   "productName": "ADT Bot",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "Bring-your-own-key AI chat bots for web, desktop and mobile. Derived from Rakazo (Apache-2.0).",
   "license": "Apache-2.0",
   "author": "ADT Bot",
