@@ -442,7 +442,7 @@ Platform notes for private servers:
 | --- | --- | --- |
 | Web (dev) | `npm run dev` | http://localhost:5173 |
 | Web (self-hosted) | `npm run build && npm start` | http://127.0.0.1:8787 |
-| Web (Docker) | `docker build -t adt-bot . && docker run -p 8787:8787 adt-bot` (add `--build-arg BROWSER=1` for the server's browser) | http://localhost:8787 |
+| Web (Docker) | `docker build -t adt-bot . && docker run -p 8787:8787 adt-bot` (add `--build-arg BROWSER=1` for the server's browser, and run it with `-e ADT_BROWSER_NO_SANDBOX=1` unless your Docker gives containers user namespaces) | http://localhost:8787 |
 | Web (static hosting) | `npm run build`, then upload `dist/` to any static host | see the CORS note below |
 | Desktop app (run) | `npm run desktop` | Electron window |
 | macOS installer | `npm run dist:mac` | `release/*.dmg`, `.zip` |
