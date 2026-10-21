@@ -66,22 +66,28 @@ Bots can do things as well as talk. Turn it on or off, and choose what needs you
   **Allow once / Always allow / Deny** in the chat; destructive actions always ask. A deny list blocks commands
   such as `rm -rf /` and `sudo`. Content from the web, files, connectors and room guests is marked as untrusted
   data and kept out of the system prompt. Models can still be fooled by it, so once a reply has read outside
-  content, commands, file changes, new routines and connector tools ask first, even with Full access. Images in replies load only
+  content (a web page, search results, a page in your browser, text on your screen, another bot's reply, a room
+  guest), commands, file changes, scripts, new routines, opened links and connector tools ask first, even with Full
+  access. That carries over to work it hands to another bot and to routines it sets up. Typing into a terminal
+  always asks, and bots can never operate ADT Bot's own window (its settings and approval buttons). Images in replies load only
   when you click them. **⌘⇧⎋** (Ctrl+Alt+Shift+Esc elsewhere) stops every bot from any app. Every action is in
   the activity log.
 - **Computer access** (desktop): three levels in **Settings → Tools & safety**.
   - **Sandbox**: bots only use the `~/ADT Bot Workspace` folder. Commands run there under an OS sandbox: macOS
     `sandbox-exec`, or `bubblewrap` on Linux (not yet on Windows). The sandbox can't read the rest of your home
-    folder or shared temp folders, launch apps or connect to the network, and screen control is off. Connectors
+    folder, other users' folders, shared temp folders, apps' shared data, system preferences, keychains or logs,
+    launch apps, connect to the network or reach local services (Docker, ssh-agent), and screen control is off. Connectors
     (MCP servers) you add run as you configured them, outside the sandbox.
   - **Restrictive** (default): the whole computer, with approvals as above.
   - **Full access**: bots control the whole computer without asking: commands, files, apps, screen, mouse and
     keyboard, and the app's own actions (scheduling routines, projects, images). AppleScripts run unasked unless
-    they delete, quit apps, shut down, need admin rights or run risky shell commands. Destructive actions still
+    they delete, quit apps, shut down, need admin rights, run risky shell commands or run other code (Terminal,
+    `run script`, page JavaScript). Destructive actions still
     ask unless you turn that off, and the deny list still applies. Shared rooms never get more than Restrictive.
 - **Approvals in voice mode**: when something needs your OK mid-conversation, the bot asks aloud ("Can I create a
-  routine: Weekly planning? Say yes or no.") and shows Allow / Don't allow; answer either way. No answer in a
-  minute counts as no.
+  routine: Weekly planning, which will: …? Say yes or no.") and shows Allow / Don't allow with the full command or
+  instruction; answer either way. Only a clear yes counts ("okay, wait…" or "sure, but first…" asks again). No
+  answer in a minute counts as no.
 - **Charts and cards**: bar charts, stat tiles, timelines and flow diagrams inline in the chat, plus email,
   message and link cards with Copy / Open in Mail.
 - **Projects (kanban boards)**: Backlog → To do → In progress → Review → Done, with labels, due dates,
