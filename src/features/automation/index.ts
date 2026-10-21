@@ -7,6 +7,7 @@ import { listenForNotificationClicks, syncKeepAlive } from "./keep-alive";
 import { loadRoutines } from "./routines-store";
 import { startScheduler } from "./runner";
 import { startTriggers } from "./trigger-runner";
+import { startServerRoutines } from "./server-routines";
 
 registerView({ id: "routines", label: "Routines", icon: CalendarClock, order: 30, Component: lazy(() => import("./RoutinesView")) });
 
@@ -15,6 +16,7 @@ function start() {
   listenForNotificationClicks();
   startScheduler();
   startTriggers();
+  startServerRoutines();
 }
 
 if (typeof window !== "undefined") {

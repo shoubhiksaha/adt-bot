@@ -19,3 +19,6 @@ build/native/
 
 # The update signing key lives in ~/.config/adt-bot; never commit a copy
 update-signing-key*
+
+# Built by `npm run build` (vite.headless.config.ts)
+server/headless/

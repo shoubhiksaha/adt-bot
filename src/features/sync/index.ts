@@ -4,7 +4,7 @@ import { registerSettingsTab } from "../registry";
 import { startSync } from "./engine";
 import { SyncSettings } from "./SyncSettings";
 
-registerSettingsTab({ id: "sync", label: "Sync", order: 36, Component: SyncSettings });
+registerSettingsTab({ id: "sync", label: "Sync & server", order: 36, Component: SyncSettings });
 
 if (typeof window !== "undefined") {
   if (useStore.getState().hydrated) startSync();

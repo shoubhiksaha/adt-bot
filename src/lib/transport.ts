@@ -27,6 +27,8 @@ let envPromise: Promise<Env> | null = null;
 
 export function detectEnv(): Promise<Env> {
   envPromise ??= (async (): Promise<Env> => {
+    // The server's always-on runner uses this code in Node, where there is no window.
+    if (typeof window === "undefined") return { platform: "web", proxy: false };
     if (window.adtbotDesktop) {
       return { platform: "desktop", proxy: true, proxyToken: window.adtbotDesktop.proxyToken };
     }

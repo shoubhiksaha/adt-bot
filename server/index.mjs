@@ -88,6 +88,13 @@ export function startServer(options = {}) {
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   const host = process.env.HOST ?? "127.0.0.1";
+  // ADT_AGENT_TOKEN: run routines here while your computers are off (server/agent.mjs).
+  let agent;
+  if (process.env.ADT_AGENT_TOKEN) {
+    const { createAgentHost, ntfyNotifier } = await import("./agent.mjs");
+    agent = createAgentHost({ dir: join(dataDir(), "agent"), token: process.env.ADT_AGENT_TOKEN, notify: ntfyNotifier(process.env.ADT_NTFY_URL) });
+    agent.start();
+  }
   const loopback = host === "127.0.0.1" || host === "localhost" || host === "::1";
   const { url } = await startServer({
     host,
@@ -109,9 +116,11 @@ if (isMain) {
             maxVaults: Number(process.env.ADT_SYNC_MAX_VAULTS || 50),
           }
         : false,
+    agent,
   });
   console.log(`ADT Bot running at ${url}`);
   if (process.env.ADT_SYNC === "1") console.log(`Sync is on (data in ${join(dataDir(), "sync")}).`);
+  if (agent) console.log(`Always-on routines are on (data in ${join(dataDir(), "agent")}).`);
   // ROOMS=1: also open a LAN chat room (people only; bots in rooms need the desktop app).
   if (process.env.ROOMS === "1") {
     const { createRoomHub } = await import("./rooms.mjs");

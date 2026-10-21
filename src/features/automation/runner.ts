@@ -138,7 +138,14 @@ function summarise(text: string): string {
 /** "Run now": records the run, then carries it out. Returns once the run finished. */
 export async function runRoutineNow(routineId: string): Promise<RoutineRun> {
   await loadRoutines();
-  if (!getRoutine(routineId)) throw new Error("No such routine.");
+  const routine = getRoutine(routineId);
+  if (!routine) throw new Error("No such routine.");
+  if (routine.where === "server") {
+    // It runs on the server; its result arrives with the next collection.
+    const { runOnServerNow } = await import("./server-routines");
+    await runOnServerNow(routineId);
+    return { id: crypto.randomUUID(), startedAt: Date.now(), status: "running", trigger: "manual", summary: "Started on your server; the result arrives in a minute or two." };
+  }
   if (useRoutines.getState().running.includes(routineId)) throw new Error("This routine is already running.");
   const run = newRun({ trigger: "manual" });
   await patchRoutine(routineId, (r) => withRun(r, run));

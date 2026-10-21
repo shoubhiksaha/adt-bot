@@ -133,6 +133,7 @@ export const defaultSettings: Settings = {
   knowledge: [],
   sharedMemory: [],
   sync: { enabled: false, server: "", code: "", keys: false, device: "" },
+  server: { url: "", token: "" },
   semanticSearch: false,
   sendOnEnter: true,
   useProxy: true,
@@ -254,7 +255,7 @@ export const useStore = create<State>()(
       merge: (persisted, current) => {
         const saved = (persisted ?? {}) as Partial<Persisted>;
         const settings = { ...defaultSettings, ...saved.settings } as Settings;
-        for (const key of ["search", "image", "video", "voice", "modes", "brand", "agent", "sync"] as const) {
+        for (const key of ["search", "image", "video", "voice", "modes", "brand", "agent", "sync", "server"] as const) {
           settings[key] = { ...defaultSettings[key], ...saved.settings?.[key] } as never;
         }
         // Checked on every load: a bad colour saved from a kit or a backup can't break the app.

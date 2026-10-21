@@ -21,6 +21,7 @@ import {
 import { pendingEvents, runRoutineNow } from "./runner";
 import { describeTrigger, DESKTOP_TRIGGERS, newWebhookToken, type Trigger, validateTrigger } from "./triggers";
 import { useApps } from "../apps/api";
+import { serverConfigured, serverHookUrl } from "./server-routines";
 import {
   describeSchedule,
   formatWhen,
@@ -169,7 +170,8 @@ function RoutineCard({ routine: r, running, onEdit }: { routine: Routine; runnin
               </>
             )}
           </div>
-          {r.trigger?.type === "webhook" && <WebhookAddress token={r.trigger.token} />}
+          {r.where === "server" && <div className="small muted">Runs on your always-on server</div>}
+          {r.trigger?.type === "webhook" && (r.where === "server" ? r.serverHook && <WebhookAddress url={serverHookUrl(r)} /> : <WebhookAddress token={r.trigger.token} />)}
           {r.triggerState?.error && <div className="small routine-warn">Last check: {r.triggerState.error}</div>}
           <div className="routine-instruction small">{r.instruction}</div>
           {r.disabledReason && <div className="small routine-warn">{r.disabledReason}</div>}
@@ -234,7 +236,10 @@ function RoutineCard({ routine: r, running, onEdit }: { routine: Routine; runnin
   );
 }
 
-type Draft = { name: string; instruction: string; botId: string; schedule: Schedule; missedRunPolicy: Routine["missedRunPolicy"]; trigger?: Trigger };
+type Draft = { name: string; instruction: string; botId: string; schedule: Schedule; missedRunPolicy: Routine["missedRunPolicy"]; trigger?: Trigger; where?: Routine["where"] };
+
+/** Kinds of trigger the always-on server can watch. */
+const SERVER_TRIGGERS = new Set<Trigger["type"]>(["feed", "page", "webhook"]);
 
 const WEBHOOK_PORT = 17345;
 
@@ -243,8 +248,8 @@ function accountLabel(t: Trigger): string {
   return "account" in t ? (useApps.getState().accounts.find((a) => a.id === t.account)?.label ?? "") : "";
 }
 
-function WebhookAddress({ token }: { token: string }) {
-  const url = `http://127.0.0.1:${WEBHOOK_PORT}/hook/${token}`;
+function WebhookAddress({ token, url: given }: { token?: string; url?: string }) {
+  const url = given ?? `http://127.0.0.1:${WEBHOOK_PORT}/hook/${token}`;
   return (
     <div className="small routine-webhook">
       <code>{url}</code>
@@ -407,7 +412,7 @@ function RoutineEditor({ routine, onClose }: { routine: Routine | null; onClose:
   const activeBotId = useStore((s) => s.activeBotId);
   const [draft, setDraft] = useState<Draft>(() =>
     routine
-      ? { name: routine.name, instruction: routine.instruction, botId: routine.botId, schedule: routine.schedule, missedRunPolicy: routine.missedRunPolicy, trigger: routine.trigger }
+      ? { name: routine.name, instruction: routine.instruction, botId: routine.botId, schedule: routine.schedule, missedRunPolicy: routine.missedRunPolicy, trigger: routine.trigger, where: routine.where }
       : { name: "", instruction: "", botId: activeBotId ?? bots[0]?.id ?? "", schedule: emptySchedule(), missedRunPolicy: "run-once" },
   );
   const desktop = isDesktop();
@@ -429,7 +434,10 @@ function RoutineEditor({ routine, onClose }: { routine: Routine | null; onClose:
     setError("");
     setSaving(true);
     try {
-      const input: RoutineInput = { ...draft, trigger: draft.trigger };
+      if (draft.where === "server" && draft.trigger && !SERVER_TRIGGERS.has(draft.trigger.type)) {
+        throw new Error("On the server a routine can run on a schedule, a feed, a page change or a webhook.");
+      }
+      const input: RoutineInput = { ...draft, trigger: draft.trigger, where: draft.where ?? "device" };
       if (routine) await updateRoutine(routine.id, input);
       else await createRoutine(input);
       onClose();
@@ -491,13 +499,17 @@ function RoutineEditor({ routine, onClose }: { routine: Routine | null; onClose:
               value={draft.trigger.type}
               onChange={(e) => set({ trigger: emptyTrigger(e.target.value as Trigger["type"]) })}
             >
-              {TRIGGER_TYPES.filter((t) => desktop || !DESKTOP_TRIGGERS.has(t.type)).map((t) => (
+              {TRIGGER_TYPES.filter((t) => (draft.where === "server" ? SERVER_TRIGGERS.has(t.type) : desktop || !DESKTOP_TRIGGERS.has(t.type))).map((t) => (
                 <option key={t.type} value={t.type}>
                   {t.label}
                 </option>
               ))}
             </select>
-            <TriggerFields trigger={draft.trigger} onChange={(trigger) => set({ trigger })} />
+            {draft.where === "server" && draft.trigger.type === "webhook" ? (
+              <p className="small muted">The server gives this routine its own webhook address when you save; it's shown in the list. Unlike this computer's, it can be called from anywhere.</p>
+            ) : (
+              <TriggerFields trigger={draft.trigger} onChange={(trigger) => set({ trigger })} />
+            )}
             <div className={`small ${scheduleError ? "error-text" : "muted"}`}>{scheduleError ?? `${describeTrigger(draft.trigger, accountLabel(draft.trigger))}. At most 12 runs an hour; what arrives goes to the bot as outside content.`}</div>
           </div>
         ) : (
@@ -611,6 +623,26 @@ function RoutineEditor({ routine, onClose }: { routine: Routine | null; onClose:
         </>
         )}
 
+        {serverConfigured() && (
+          <label className="toggle" style={{ marginTop: 12 }}>
+            <input
+              type="checkbox"
+              checked={draft.where === "server"}
+              onChange={(e) => {
+                const where = e.target.checked ? "server" : "device";
+                set({ where, ...(where === "server" && draft.trigger && !SERVER_TRIGGERS.has(draft.trigger.type) ? { trigger: emptyTrigger("feed") } : {}) });
+              }}
+            />
+            <span>
+              <strong>Run on my always-on server</strong>
+              <br />
+              <span className="small muted">
+                Keeps running when this computer is off. The server gets this bot's instructions, memory, skills and its provider key (stored encrypted there).
+                It can search the web and read public pages, but not use this computer, your apps or your files.
+              </span>
+            </span>
+          </label>
+        )}
         {error && <div className="small error-text">{error}</div>}
         <div className="btn-row" style={{ justifyContent: "flex-end", marginTop: 8 }}>
           <button type="button" className="btn" onClick={onClose}>

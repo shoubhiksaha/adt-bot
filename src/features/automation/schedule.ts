@@ -62,6 +62,10 @@ export type Routine = {
   taintedBy?: string[];
   /** Runs when this happens instead of on its schedule (an email, a feed item, a webhook…). */
   trigger?: Trigger;
+  /** "server": runs on your always-on server (server/agent.mjs), not in this app. */
+  where?: "device" | "server";
+  /** The server's webhook secret for this routine, when it runs there on a webhook. */
+  serverHook?: string;
   triggerState?: TriggerState;
   history: RoutineRun[];
   createdAt: number;
@@ -292,8 +296,8 @@ export type DuePlan =
   | { action: "advance"; next: number | null };
 
 export function planDue(routine: Routine, now: number): DuePlan {
-  // Event routines run when their trigger fires (trigger-runner.ts), not on the clock.
-  if (routine.trigger || !routine.enabled || routine.nextRun === null || routine.nextRun > now) return { action: "none" };
+  // Event routines run when their trigger fires (trigger-runner.ts), not on the clock; server routines on the server.
+  if (routine.trigger || routine.where === "server" || !routine.enabled || routine.nextRun === null || routine.nextRun > now) return { action: "none" };
   const scheduledFor = routine.nextRun;
   const next = nextRunAfter(routine.schedule, now);
   if (routine.history.some((r) => r.scheduledFor === scheduledFor)) return { action: "advance", next };

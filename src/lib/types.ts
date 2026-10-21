@@ -322,6 +322,8 @@ export type Settings = {
   sharedMemory: string[];
   /** Sync between devices through your own ADT Bot server (src/lib/sync.ts). `code` is kept with the keys. */
   sync: { enabled: boolean; server: string; code: string; keys: boolean; device: string };
+  /** Your always-on ADT Bot server (ADT_AGENT_TOKEN on the server), for routines that run there. `token` is kept with the keys. */
+  server: { url: string; token: string };
   /** "Smarter memory search": also find memories and knowledge passages by meaning, with an on-device model. */
   semanticSearch: boolean;
   sendOnEnter: boolean;

@@ -70,6 +70,8 @@ export type RoutineInput = {
   taintedBy?: string[];
   /** Run when this happens instead of on the schedule. */
   trigger?: Trigger;
+  /** Run on the always-on server instead of in this app. */
+  where?: Routine["where"];
 };
 
 /** Checks a routine's fields; returns an error sentence or null. */
@@ -100,6 +102,7 @@ export async function createRoutine(input: RoutineInput, now = Date.now()): Prom
     missedRunPolicy: input.missedRunPolicy ?? "run-once",
     ...(input.taintedBy?.length ? { taintedBy: input.taintedBy } : {}),
     ...(input.trigger ? { trigger: input.trigger } : {}),
+    ...(input.where === "server" ? { where: "server" as const } : {}),
     nextRun,
     consecutiveFailures: 0,
     history: [],

@@ -4,6 +4,7 @@ import { Section } from "../../components/settings/controls";
 import { updateSettings, useStore } from "../../lib/store";
 import { newSyncCode, normaliseCode, syncCodeProblem } from "../../lib/sync";
 import { resetSync, syncNow, useSyncStatus } from "./engine";
+import { testServer } from "../automation/server-routines";
 
 const defaultDevice = () => {
   const ua = navigator.userAgent;
@@ -33,7 +34,7 @@ export function SyncSettings() {
     <div className="settings-pane">
       <Section
         title="Sync between your devices"
-        hint="Your bots, chats, skills, memories and profile, on every device where you use the same sync code. They travel through your own ADT Bot server (npm start, or the Docker image) end-to-end encrypted: the server only stores scrambled data and never sees the code. API keys stay on each device unless you choose to sync them too."
+        hint="Your bots, chats, skills, memories and profile, on every device where you use the same sync code. They travel through your own ADT Bot server (npm start with ADT_SYNC=1) end-to-end encrypted: the server only stores scrambled data and never sees the code. API keys stay on each device unless you choose to sync them too."
       >
         {sync.enabled ? (
           <>
@@ -103,6 +104,61 @@ export function SyncSettings() {
           </>
         )}
       </Section>
+      <AlwaysOnServer />
     </div>
+  );
+}
+
+/** The always-on server for routines (ADT_AGENT_TOKEN on the server). */
+function AlwaysOnServer() {
+  const server = useStore((s) => s.settings.server);
+  const syncServer = useStore((s) => s.settings.sync.server);
+  const [url, setUrl] = useState(server.url || syncServer);
+  const [token, setToken] = useState(server.token);
+  const [state, setState] = useState<{ busy?: boolean; ok?: string; error?: string }>({});
+  const save = async () => {
+    setState({ busy: true });
+    updateSettings({ server: { url: url.trim().replace(/\/+$/, ""), token: token.trim() } });
+    try {
+      const count = await testServer();
+      setState({ ok: `Connected. The server has ${count} routine${count === 1 ? "" : "s"}.` });
+    } catch (e) {
+      setState({ error: (e as Error).message });
+    }
+  };
+  return (
+    <Section
+      title="Always-on server"
+      hint="Your ADT Bot server can run routines while your computers are off: on a schedule, when a feed posts or a page changes, or when its webhook is called from anywhere. Start it with ADT_AGENT_TOKEN set (24+ random characters) and enter the same token here; then tick “Run on my always-on server” on a routine."
+    >
+      <div className="field">
+        <label htmlFor="agent-url">Server address</label>
+        <input id="agent-url" className="input" placeholder="https://adtbot.example.com" value={url} onChange={(e) => setUrl(e.target.value)} />
+      </div>
+      <div className="field">
+        <label htmlFor="agent-token">Server token (ADT_AGENT_TOKEN)</label>
+        <input id="agent-token" className="input" type="password" value={token} onChange={(e) => setToken(e.target.value)} />
+      </div>
+      {state.ok && <p className="small muted">{state.ok}</p>}
+      {state.error && <p className="small error-text">{state.error}</p>}
+      <div className="btn-row">
+        <button type="button" className="btn primary" disabled={state.busy || !url.trim() || token.trim().length < 24} onClick={() => void save()}>
+          {state.busy && <Loader2 size={14} className="spin" />} Save and test
+        </button>
+        {server.url && (
+          <button
+            type="button"
+            className="btn"
+            onClick={() => {
+              updateSettings({ server: { url: "", token: "" } });
+              setToken("");
+              setState({});
+            }}
+          >
+            Disconnect
+          </button>
+        )}
+      </div>
+    </Section>
   );
 }

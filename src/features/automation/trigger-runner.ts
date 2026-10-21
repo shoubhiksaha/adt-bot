@@ -91,7 +91,7 @@ export async function pollTriggers(now = Date.now()): Promise<void> {
   const desktop = isDesktop();
   for (const routine of useRoutines.getState().routines) {
     const t = routine.trigger;
-    if (!routine.enabled || !t || !POLL_MS[t.type] || checking.has(routine.id)) continue;
+    if (!routine.enabled || !t || routine.where === "server" || !POLL_MS[t.type] || checking.has(routine.id)) continue;
     if (DESKTOP_TRIGGERS.has(t.type) && !desktop) continue;
     if (now - (routine.triggerState?.checkedAt ?? 0) < POLL_MS[t.type]) continue;
     checking.add(routine.id);
@@ -112,7 +112,7 @@ export async function pollTriggers(now = Date.now()): Promise<void> {
 /** Tells the desktop app which webhooks and folders to watch. */
 async function syncDesktop(routines: Routine[]) {
   if (!isDesktop()) return;
-  const on = routines.filter((r) => r.enabled && r.trigger);
+  const on = routines.filter((r) => r.enabled && r.trigger && r.where !== "server");
   const webhooks = on.flatMap((r) => (r.trigger?.type === "webhook" ? [{ routineId: r.id, token: r.trigger.token }] : []));
   const folders = on.flatMap((r) => (r.trigger?.type === "folder" ? [{ routineId: r.id, path: r.trigger.path }] : []));
   try {
