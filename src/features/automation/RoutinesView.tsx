@@ -608,6 +608,7 @@ function RoutineEditor({ routine, onClose }: { routine: Routine | null; onClose:
           {scheduleError ?? `${describeSchedule(s)} · ${preview}`}
         </div>
 
+        {draft.where !== "server" && (
         <div className="field" style={{ marginTop: 14 }}>
           <label htmlFor="routine-missed">If the app was closed at run time</label>
           <select
@@ -620,6 +621,7 @@ function RoutineEditor({ routine, onClose }: { routine: Routine | null; onClose:
             <option value="skip">Skip it</option>
           </select>
         </div>
+        )}
         </>
         )}
 

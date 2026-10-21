@@ -25,7 +25,11 @@ database or server stack to run.
 | Skills | Reusable how-tos | Skills in the open SKILL.md format: bots save and reuse them, `/name` hands one over, import and export files |
 | Bots working together | Group chats of bots | Group chats of 2–6 bots (discussion, debate or panel) with a summary, bots handing tasks to bots, and bots starting discussions themselves |
 | Your apps | Gmail, Calendar, Drive, Outlook, Slack, X… | Gmail, Calendar, Drive, Outlook, OneDrive, any IMAP mail, Slack and X with your own app keys, plus any MCP server |
-| Runs on its own | Schedules, email and app triggers | Schedules and cron, or when an email arrives (plus-addresses too), a Slack or X message, a feed item, a page change, a webhook or a folder change |
+| Runs on its own | Schedules, email and app triggers, in xAI's cloud | Schedules and cron, or when an email arrives (plus-addresses too), a Slack or X message, a feed item, a page change, a webhook or a folder change; and on your own always-on server while your computers are off |
+| Your devices | Synced through xAI | Synced through your own server, end-to-end encrypted |
+| Teach by showing | Record a browser task | Record any Mac app task once; it becomes a recipe and a skill |
+| Video | Grok Imagine | Google Gemini Omni Flash or xAI Grok Imagine Video, with your key |
+| Live camera | Yes | Camera or screen sharing in voice mode, with any vision model or Gemini Live; an animated face or the bot's picture |
 | Deep research | DeepSearch | Research mode with any model: plans, reads many sources, fills gaps, writes a cited report |
 | Audit trail | Enterprise plans | Agent log of every action: why it was allowed, what it was given and what came back, with export |
 | Voice | Yes | Hands-free voice mode with wake word (“Hey <nickname>”), voice commands, interrupting, live captions, Gemini Live speech-to-speech, natural voices (OpenAI, ElevenLabs, Fish Audio, Cartesia, Deepgram, Sarvam, Google, Azure, self-hosted Kokoro, or any voice API you add) or free device voices, on every platform |
@@ -141,6 +145,12 @@ Bots can do things as well as talk. Turn it on or off, and choose what needs you
   item in an RSS/Atom feed (blogs, news, GitHub releases), a web page changes, a webhook is called
   (`http://127.0.0.1:17345/hook/<secret>`), or files change in a folder. What arrived goes to the bot as outside
   content; at most 12 runs an hour; mail the account sends itself never triggers. Bots can set these up too.
+- **Teach a task** (Mac, **Settings → Computer control → Recipes**): do a task once while ADT Bot records your
+  clicks, typing and keys, then save it as a recipe bots repeat on request (what you typed becomes a blank to fill
+  in) and as a skill. Password fields and ADT Bot itself are never recorded. macOS asks for Input Monitoring the
+  first time.
+- **Video** (`/video`, or ask a bot): a short clip with sound from a description, or from a picture you attach,
+  with Google's Gemini Omni Flash or xAI's Grok Imagine Video. Kept on your device and played in the chat.
 - **Deep research** (the Research button, or `/research`): with any model, it plans the sub-questions, searches
   several queries, reads the best pages from different sites, takes notes, looks for gaps and searches again, then
   writes a report with a bottom line, findings and disagreements, citing every claim. The steps show under the reply.
@@ -237,6 +247,11 @@ Click the **sound-wave button** next to the mic for a hands-free conversation:
 - **Wake word:** after a quiet spell it goes to standby. Say “Hey <nickname>” (each bot's nickname, set in bot
   settings) to continue. Turn on **Always listen** in Settings → Voice to wake it from anywhere in the app; this runs
   on your device and shows an indicator.
+- **Show it things**: the camera button shares your camera (front or back on phones), the screen button your
+  screen. With vision models each thing you say carries what it shows; with Gemini Live it sees about one frame
+  a second.
+- **Looks** (Settings → Voice): a glowing orb, a face that blinks, looks up while thinking and talks with the
+  voice, or the bot's own picture.
 - Live captions, a latency badge (hover it for the breakdown), mute (M), end (Esc).
 
 | | Listens with | Speaks with |
@@ -442,6 +457,10 @@ HOST=0.0.0.0 PORT=8787 npm start
 | `ADTBOT_PROXY_HOSTS` | Extra hosts the relay may reach, comma separated (e.g. `my-gateway.example.com,*.openai.azure.com`). |
 | `ADTBOT_PROXY_ALLOW_ALL=1` | Allow any host. Only do this on a trusted network. |
 | `NODE_EXTRA_CA_CERTS` | Trust a private CA, for model servers with self-signed or company certificates. |
+| `ADT_SYNC=1` | Let your devices sync through this server (Settings → Sync & server). It stores only encrypted copies; `ADT_SYNC_MAX_MB` (default 32) and `ADT_SYNC_MAX_VAULTS` (default 50) limit it. |
+| `ADT_AGENT_TOKEN` | Run routines here while your computers are off (24+ random characters; enter the same token in the app). |
+| `ADT_NTFY_URL` | With always-on routines: ping your phone through [ntfy](https://ntfy.sh) when a run has news, e.g. `https://ntfy.sh/<your-secret-topic>`. |
+| `ADT_DATA_DIR` | Where sync and routine data live (default `~/.adt-bot-server`). |
 
 When bound to `127.0.0.1` (the default), the relay may reach any host, but it only accepts requests from
 pages opened on `localhost`. Once you expose the server with `HOST=0.0.0.0`, only the cloud providers above
@@ -449,6 +468,17 @@ plus whatever you allow are reachable, so it can't be used as an open proxy into
 
 The relay never stores keys. They travel from the browser, through your server, to the provider on each
 request. Put HTTPS in front of the server if you expose it beyond your machine.
+
+**Always-on routines** (`ADT_AGENT_TOKEN`): tick "Run on my always-on server" on a routine and the server runs
+it on its schedule, when an RSS/Atom feed posts or a page changes, or when its webhook is called (from
+anywhere, unlike the desktop app's local webhook). The app sends the bot's instructions, memory, skills and
+model; that provider's key is stored on the server, encrypted. Runs can search the web, read public pages
+(never the server's own network or cloud metadata), use a calculator and the bot's skills; nothing else on
+the server. Results come back into the routine's chat when the app next opens.
+
+**Sync** (`ADT_SYNC=1`): your bots, chats, skills, memories and profile on every device with the same sync
+code, end-to-end encrypted. The code (20 random characters) makes the encryption key and the vault's address;
+the server never sees it, and API keys stay on each device unless you choose to sync them.
 
 ## How requests reach providers (CORS)
 
