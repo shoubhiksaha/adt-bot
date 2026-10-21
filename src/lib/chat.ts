@@ -20,6 +20,7 @@ import { invokedSkill, skillsFor, skillsPrompt, skillText } from "../features/sk
 import { markUntrusted } from "./agent/vendor/copilotkit/untrusted-content";
 import { groupPrompt, groupView, type GroupTurn, isPass, MAX_ROUNDS, stanceFor } from "./group";
 import { research } from "./research";
+import { generateVideo, resolveVideoModel, saveMedia } from "./video";
 
 export type SendOptions = {
   search?: boolean;
@@ -27,6 +28,8 @@ export type SendOptions = {
   imagine?: boolean;
   /** Deep research: plan, search, read, take notes, fill gaps, then a cited report. */
   research?: boolean;
+  /** Make a short video from the message (Google or xAI). */
+  video?: boolean;
   /** Spoken conversation: short answers, lighter reasoning, optional faster voice model. */
   voice?: boolean;
   /** The user spoke this message with the mic button (only then is the reply read aloud outside voice mode). */
@@ -147,12 +150,14 @@ export function buildSystemPrompt(bot: Bot, extras: PromptExtras = {}): string {
   return parts.filter(Boolean).join("\n\n");
 }
 
-/** Slash commands: /remember, /imagine (or /image), /search, /research. */
-function parseCommand(text: string): { command?: "remember" | "imagine" | "search" | "research"; rest: string } {
-  const match = /^\/(remember|imagine|image|search|research)\b\s*([\s\S]*)$/i.exec(text.trim());
+type Command = "remember" | "imagine" | "search" | "research" | "video";
+
+/** Slash commands: /remember, /imagine (or /image), /search, /research, /video. */
+function parseCommand(text: string): { command?: Command; rest: string } {
+  const match = /^\/(remember|imagine|image|search|research|video)\b\s*([\s\S]*)$/i.exec(text.trim());
   if (!match) return { rest: text.trim() };
   const name = match[1].toLowerCase();
-  return { command: name === "image" ? "imagine" : (name as "remember" | "imagine" | "search" | "research"), rest: match[2].trim() };
+  return { command: name === "image" ? "imagine" : (name as Command), rest: match[2].trim() };
 }
 
 /** Voice mode registers how to ask the user aloud, so tools that need an OK can still run there. */
@@ -177,6 +182,7 @@ export async function sendMessage(text: string, attachments: Attachment[] = [], 
     search: options.search || command === "search",
     imagine: options.imagine || command === "imagine",
     research: options.research || command === "research",
+    video: options.video || command === "video",
   };
 
   const conversationId = state.activeConversationId ?? newConversation(bot.id).id;
@@ -195,7 +201,7 @@ export async function sendMessage(text: string, attachments: Attachment[] = [], 
     updatedAt: Date.now(),
   }));
   // A group chat: every bot takes its turn (an image or research request goes to the first bot only).
-  if (group && !opts.imagine && !opts.research) await runGroup(conversationId, opts);
+  if (group && !opts.imagine && !opts.research && !opts.video) await runGroup(conversationId, opts);
   else await runAssistant(conversationId, bot.id, opts);
 }
 
@@ -319,6 +325,7 @@ export async function resendFrom(conversationId: string, messageId: string, newT
   if (replaced.role === "assistant") index -= 1;
   if (index < 0) return;
   const wasImage = replaced.role === "assistant" && replaced.attachments?.some((a) => a.kind === "image");
+  const wasVideo = replaced.role === "assistant" && replaced.attachments?.some((a) => a.kind === "video");
   const wasSearch = replaced.role === "assistant" && Boolean(replaced.sources?.length);
   const wasResearch = replaced.role === "assistant" && Boolean(replaced.reasoning?.startsWith("**Research steps**"));
 
@@ -330,6 +337,7 @@ export async function resendFrom(conversationId: string, messageId: string, newT
   const modes = state.settings.modes;
   await runAssistant(conversationId, conversation.botId, {
     imagine: wasImage,
+    video: wasVideo,
     research: wasResearch,
     search: wasSearch || modes.search,
     think: modes.think,
@@ -520,6 +528,10 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
   try {
     if (opts.imagine) {
       await runImagine(lastUser?.content ?? "", patchReply, signal);
+      return reply.id;
+    }
+    if (opts.video) {
+      await runVideo(lastUser?.content ?? "", lastUser?.attachments?.find((a) => a.kind === "image"), patchReply, signal);
       return reply.id;
     }
     if (!provider || !model) {
@@ -814,6 +826,33 @@ async function runImagine(prompt: string, patchReply: (patch: Partial<Message>) 
     attachments: images.map((dataUrl, i) => ({ kind: "image", dataUrl, name: `image-${i + 1}.png` })),
     stats: { ms: Math.round(performance.now() - started) },
   });
+}
+
+async function runVideo(prompt: string, image: Attachment | undefined, patchReply: (patch: Partial<Message>) => void, signal: AbortSignal) {
+  const { providers, settings } = useStore.getState();
+  const target = resolveVideoModel(providers, settings.video);
+  if (!target) {
+    patchReply({ error: "No video model is set up. Connect Google Gemini or xAI (Settings → Providers) to make videos." });
+    return;
+  }
+  if (!prompt.trim()) {
+    patchReply({ error: "Describe the video you want, e.g. /video a red fox running through snow at dawn, slow motion." });
+    return;
+  }
+  const started = performance.now();
+  patchReply({ status: `Creating a video with ${target.model}…`, model: target.model });
+  const portrait = /\b(portrait|vertical|9:16|story|reel|tiktok|shorts?)\b/i.test(prompt);
+  const { data, mime } = await generateVideo(
+    target.provider,
+    target.model,
+    prompt,
+    { aspect: portrait ? "9:16" : "16:9", seconds: 8, ...(image?.kind === "image" ? { image: image.dataUrl } : {}) },
+    settings.useProxy,
+    signal,
+    (text) => patchReply({ status: text }),
+  );
+  const mediaId = await saveMedia(data, mime);
+  patchReply({ status: undefined, attachments: [{ kind: "video", mediaId, name: `video-${Date.now()}.mp4`, mime }], stats: { ms: Math.round(performance.now() - started) } });
 }
 
 /** For follow-ups ("and tomorrow?") ask the model for a standalone query; first messages are used as-is. */

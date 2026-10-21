@@ -1,5 +1,6 @@
 import { Ban, Check, ChevronRight, Loader2, MessageSquare, ShieldAlert, Undo2, Wrench, X } from "lucide-react";
 import { askTitle, mainArg } from "../lib/agent/asks";
+import { VideoPlayer } from "./VideoPlayer";
 import { useEffect, useState } from "react";
 import { isPending, onApprovalsChanged } from "../lib/agent/approvals";
 import { describeRewind, type RewindResult, type TurnChanges } from "../lib/agent/rewind";
@@ -283,6 +284,7 @@ function ToolCallRow({ call }: { call: ToolCallRecord }) {
       )}
       {call.display?.kind === "terminal" && (details || call.status === "error") && <pre className="tool-terminal">{call.display.text}</pre>}
       {call.display?.kind === "conversation" && <ConversationLink display={call.display} />}
+      {call.display?.kind === "video" && <VideoPlayer mediaId={call.display.mediaId} name={call.display.name} />}
       {details && (
         <div className="tool-details">
           <div className="small muted">Input</div>

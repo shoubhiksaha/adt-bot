@@ -7,6 +7,7 @@ import { addMemory, addSharedMemory, useStore } from "../store";
 import { describeChanges, describeRewind, type RewindResult, type TurnChanges } from "./rewind";
 import { registerTool, registerToolGroup, str, type ToolRisk } from "./tools";
 import { readOutside, recallNotes, transcriptText } from "../learning";
+import { generateVideo, resolveVideoModel, saveMedia } from "../video";
 import { isDuplicate, screen } from "./vendor/openbot/memoryFilter";
 
 registerToolGroup({ id: "web", label: "Web", description: "Search the web and read pages." });
@@ -216,6 +217,28 @@ registerTool({
     const { images, text } = await generateImage(target.provider, target.model, str(args, "prompt"), ctx.settings.useProxy, ctx.signal);
     if (!images.length) throw new Error(text || "The model returned no image.");
     return { content: `Created ${images.length} image(s); they are shown to the user.${text ? ` Notes: ${text}` : ""}`, display: { kind: "image", src: images[0] } };
+  },
+});
+
+registerTool({
+  name: "create_video",
+  group: "create",
+  risk: "external",
+  description: "Make a short video with sound (about 8 seconds) from a description, with the configured video model (Google or xAI). It costs the user money: only when asked.",
+  parameters: {
+    type: "object",
+    properties: { prompt: { type: "string", description: "Detailed description: subject, action, camera, style, sound" }, portrait: { type: "boolean", description: "9:16 instead of 16:9" } },
+    required: ["prompt"],
+  },
+  available: ({ providers, settings }) => resolveVideoModel(providers, settings.video) !== null,
+  summary: (args) => `make a video: “${String(args.prompt ?? "").slice(0, 80)}”`,
+  timeoutMs: 11 * 60_000,
+  async run(args, ctx) {
+    const target = resolveVideoModel(ctx.providers, ctx.settings.video);
+    if (!target) throw new Error("No video model is set up.");
+    const { data, mime } = await generateVideo(target.provider, target.model, str(args, "prompt"), { aspect: args.portrait ? "9:16" : "16:9", seconds: 8 }, ctx.settings.useProxy, ctx.signal, ctx.progress);
+    const mediaId = await saveMedia(data, mime);
+    return { content: "Created the video; it's shown to the user.", display: { kind: "video", mediaId, mime, name: "video.mp4" } };
   },
 });
 

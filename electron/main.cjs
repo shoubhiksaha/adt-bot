@@ -184,6 +184,9 @@ async function relay(request) {
     // MCP connectors (Streamable HTTP) keep their session in this header.
     const mcpSession = upstream.headers.get("mcp-session-id");
     if (mcpSession) responseHeaders["mcp-session-id"] = mcpSession;
+    // Sync (server/sync.mjs) tells copies apart by this header.
+    const etag = upstream.headers.get("etag");
+    if (etag) responseHeaders.etag = etag;
     return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
   } catch (error) {
     const message = String(error?.message ?? error);

@@ -11,4 +11,5 @@ import "./memory";
 import "./skills";
 import "./activity";
 import "./templates";
+import "./sync";
 export {};

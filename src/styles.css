@@ -2432,3 +2432,24 @@ h2,
 .group-form .toggle.compact span .avatar {
   vertical-align: middle;
 }
+
+/* Videos made in the chat (kept on the device). */
+.video-player {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 8px 0;
+}
+.video-player video {
+  max-width: min(100%, 520px);
+  max-height: 60vh;
+  border-radius: var(--radius);
+  background: #000;
+}
+.video-player.loading {
+  width: min(100%, 520px);
+  aspect-ratio: 16 / 9;
+  border-radius: var(--radius);
+  background: var(--secondary);
+}

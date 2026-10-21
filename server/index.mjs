@@ -6,6 +6,7 @@ import { createServer } from "node:http";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createProxyHandler } from "./proxy.mjs";
+import { createSyncHandler, dataDir } from "./sync.mjs";
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -29,7 +30,7 @@ const ISOLATION_HEADERS = {
 };
 
 /**
- * @param {{ port?: number, host?: string, distDir?: string, proxy?: Parameters<typeof createProxyHandler>[0] }} options
+ * @param {{ port?: number, host?: string, distDir?: string, proxy?: Parameters<typeof createProxyHandler>[0], sync?: Parameters<typeof createSyncHandler>[0] | false, agent?: { handle: (req: any, res: any, next: () => void) => void } }} options
  * @returns {Promise<{ server: import("node:http").Server, url: string }>}
  */
 export function startServer(options = {}) {
@@ -65,8 +66,10 @@ export function startServer(options = {}) {
     createReadStream(file).pipe(res);
   };
 
+  const sync = options.sync ? createSyncHandler(options.sync) : (_req, _res, next) => next();
+  const agent = options.agent ? options.agent.handle : (_req, _res, next) => next();
   const server = createServer((req, res) => {
-    Promise.resolve(proxy(req, res, () => serveStatic(req, res))).catch(() => {
+    Promise.resolve(sync(req, res, () => agent(req, res, () => proxy(req, res, () => serveStatic(req, res))))).catch(() => {
       if (!res.headersSent) res.writeHead(500);
       res.end();
     });
@@ -97,8 +100,18 @@ if (isMain) {
       allowPrivate: process.env.ADTBOT_PROXY_PRIVATE === "1" || process.env.ADTBOT_PROXY_LOCAL === "1",
       extraHosts: (process.env.ADTBOT_PROXY_HOSTS ?? "").split(",").map((h) => h.trim()).filter(Boolean),
     },
+    // ADT_SYNC=1: devices sync through this server (encrypted; the server never sees the content).
+    sync:
+      process.env.ADT_SYNC === "1"
+        ? {
+            dir: join(dataDir(), "sync"),
+            maxBytes: Number(process.env.ADT_SYNC_MAX_MB || 32) * 1024 * 1024,
+            maxVaults: Number(process.env.ADT_SYNC_MAX_VAULTS || 50),
+          }
+        : false,
   });
   console.log(`ADT Bot running at ${url}`);
+  if (process.env.ADT_SYNC === "1") console.log(`Sync is on (data in ${join(dataDir(), "sync")}).`);
   // ROOMS=1: also open a LAN chat room (people only; bots in rooms need the desktop app).
   if (process.env.ROOMS === "1") {
     const { createRoomHub } = await import("./rooms.mjs");

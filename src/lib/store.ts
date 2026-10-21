@@ -20,6 +20,10 @@ export type State = {
   conversations: Record<string, Conversation>;
   /** Reusable how-tos every bot can use (src/features/skills). */
   skills: Skill[];
+  /** Deleted bots, chats, skills and providers (id → when), so a sync doesn't bring them back. */
+  tombstones: Record<string, number>;
+  /** When your name, "about", custom instructions or shared memory last changed (sync). */
+  profileUpdatedAt: number;
   activeBotId: string | null;
   activeConversationId: string | null;
   settings: Settings;
@@ -128,6 +132,7 @@ export const defaultSettings: Settings = {
   about: "",
   knowledge: [],
   sharedMemory: [],
+  sync: { enabled: false, server: "", code: "", keys: false, device: "" },
   semanticSearch: false,
   sendOnEnter: true,
   useProxy: true,
@@ -136,6 +141,7 @@ export const defaultSettings: Settings = {
   autoSpeak: false,
   search: { engine: "duckduckgo", apiKey: "", url: "", readPages: true, native: true },
   image: { providerId: "", model: "" },
+  video: { providerId: "", model: "" },
   voice: {
     engine: "auto",
     providerId: "",
@@ -201,6 +207,8 @@ export const useStore = create<State>()(
       bots: BOT_PRESETS.map((preset) => makeBot(preset)),
       conversations: {},
       skills: [],
+      tombstones: {},
+      profileUpdatedAt: 0,
       activeBotId: null,
       activeConversationId: null,
       settings: defaultSettings,
@@ -246,7 +254,7 @@ export const useStore = create<State>()(
       merge: (persisted, current) => {
         const saved = (persisted ?? {}) as Partial<Persisted>;
         const settings = { ...defaultSettings, ...saved.settings } as Settings;
-        for (const key of ["search", "image", "voice", "modes", "brand", "agent"] as const) {
+        for (const key of ["search", "image", "video", "voice", "modes", "brand", "agent", "sync"] as const) {
           settings[key] = { ...defaultSettings[key], ...saved.settings?.[key] } as never;
         }
         // Checked on every load: a bad colour saved from a kit or a backup can't break the app.
@@ -256,7 +264,13 @@ export const useStore = create<State>()(
         settings.voice.cloudTts = Object.fromEntries(
           Object.entries(defaultSettings.voice.cloudTts).map(([id, d]) => [id, { ...d, ...savedCloud?.[id as keyof typeof savedCloud] }]),
         ) as Settings["voice"]["cloudTts"];
-        return { ...current, ...saved, skills: Array.isArray(saved.skills) ? saved.skills : current.skills, settings };
+        return {
+          ...current,
+          ...saved,
+          skills: Array.isArray(saved.skills) ? saved.skills : current.skills,
+          tombstones: saved.tombstones && typeof saved.tombstones === "object" ? saved.tombstones : {},
+          settings,
+        };
       },
       onRehydrateStorage: () => () => useStore.setState({ hydrated: true }),
     },
@@ -286,6 +300,7 @@ export function addProvider(
     apiKey: apiKey.trim(),
     models: [],
     headers,
+    updatedAt: Date.now(),
   };
   const defaultModel = model?.trim() || preset.defaultModel || "";
   // Fill the model list from the bundled catalog unless the caller already fetched the live list.
@@ -306,11 +321,11 @@ export function addProvider(
 }
 
 export function updateProvider(id: string, patch: Partial<ProviderConfig>) {
-  setState((s) => ({ providers: s.providers.map((p) => (p.id === id ? { ...p, ...patch } : p)) }));
+  setState((s) => ({ providers: s.providers.map((p) => (p.id === id ? { ...p, ...patch, updatedAt: Date.now() } : p)) }));
 }
 
 export function removeProvider(id: string) {
-  setState((s) => ({ providers: s.providers.filter((p) => p.id !== id) }));
+  setState((s) => ({ providers: s.providers.filter((p) => p.id !== id), tombstones: { ...s.tombstones, [id]: Date.now() } }));
 }
 
 // Bots --------------------------------------------------------------------
@@ -325,7 +340,7 @@ export function createBot(presetIndex = 1): Bot {
 }
 
 export function updateBot(id: string, patch: Partial<Bot>) {
-  setState((s) => ({ bots: s.bots.map((b) => (b.id === id ? { ...b, ...patch } : b)) }));
+  setState((s) => ({ bots: s.bots.map((b) => (b.id === id ? { ...b, ...patch, updatedAt: Date.now() } : b)) }));
 }
 
 export function setBotModel(botId: string, providerId: string, model: string) {
@@ -338,9 +353,12 @@ export function setBotModel(botId: string, providerId: string, model: string) {
 
 export function deleteBot(id: string) {
   setState((s) => {
+    const now = Date.now();
+    const gone = Object.values(s.conversations).filter((c) => c.botId === id);
     const conversations = Object.fromEntries(Object.entries(s.conversations).filter(([, c]) => c.botId !== id));
     const bots = s.bots.filter((b) => b.id !== id);
-    return { bots, conversations, activeBotId: bots[0]?.id ?? null, activeConversationId: null };
+    const tombstones = { ...s.tombstones, [id]: now, ...Object.fromEntries(gone.map((c) => [c.id, now])) };
+    return { bots, conversations, tombstones, activeBotId: bots[0]?.id ?? null, activeConversationId: null };
   });
 }
 
@@ -348,7 +366,10 @@ export function deleteBot(id: string) {
 export function addSharedMemory(facts: string[]) {
   const clean = facts.map((f) => f.trim()).filter(Boolean);
   if (!clean.length) return;
-  setState((s) => ({ settings: { ...s.settings, sharedMemory: [...(s.settings.sharedMemory ?? []), ...clean.filter((f) => !(s.settings.sharedMemory ?? []).includes(f))] } }));
+  setState((s) => ({
+    settings: { ...s.settings, sharedMemory: [...(s.settings.sharedMemory ?? []), ...clean.filter((f) => !(s.settings.sharedMemory ?? []).includes(f))] },
+    profileUpdatedAt: Date.now(),
+  }));
 }
 
 export function addMemory(botId: string, facts: string[]) {
@@ -356,7 +377,7 @@ export function addMemory(botId: string, facts: string[]) {
   if (!clean.length) return;
   setState((s) => ({
     bots: s.bots.map((b) =>
-      b.id === botId ? { ...b, memory: [...b.memory, ...clean.filter((f) => !b.memory.includes(f))] } : b,
+      b.id === botId ? { ...b, memory: [...b.memory, ...clean.filter((f) => !b.memory.includes(f))], updatedAt: Date.now() } : b,
     ),
   }));
 }
@@ -419,7 +440,7 @@ export function startNewChat(botId: string) {
 export function updateConversation(id: string, update: (c: Conversation) => Conversation) {
   setState((s) => {
     const current = s.conversations[id];
-    return current ? { conversations: { ...s.conversations, [id]: update(current) } } : {};
+    return current ? { conversations: { ...s.conversations, [id]: { ...update(current), rev: Date.now() } } } : {};
   });
 }
 
@@ -432,13 +453,20 @@ export function deleteConversation(id: string) {
   setState((s) => {
     const { [id]: removed, ...rest } = s.conversations;
     // The bot's note on a deleted chat goes with it.
-    const bots = removed ? s.bots.map((b) => (b.journal?.some((e) => e.conversationId === id) ? { ...b, journal: b.journal.filter((e) => e.conversationId !== id) } : b)) : s.bots;
-    return { conversations: rest, bots, activeConversationId: s.activeConversationId === id ? null : s.activeConversationId };
+    const bots = removed
+      ? s.bots.map((b) => (b.journal?.some((e) => e.conversationId === id) ? { ...b, journal: b.journal.filter((e) => e.conversationId !== id), updatedAt: Date.now() } : b))
+      : s.bots;
+    const tombstones = removed && !removed.temporary ? { ...s.tombstones, [id]: Date.now() } : s.tombstones;
+    return { conversations: rest, bots, tombstones, activeConversationId: s.activeConversationId === id ? null : s.activeConversationId };
   });
 }
 
+/** Settings that follow you to your other devices (Settings → Sync). */
+const PROFILE_KEYS = ["userName", "about", "customInstructions", "sharedMemory"] as const;
+
 export function updateSettings(patch: Partial<Settings>) {
-  setState((s) => ({ settings: { ...s.settings, ...patch } }));
+  const profile = PROFILE_KEYS.some((k) => k in patch);
+  setState((s) => ({ settings: { ...s.settings, ...patch }, ...(profile ? { profileUpdatedAt: Date.now() } : {}) }));
 }
 
 // Backup ------------------------------------------------------------------

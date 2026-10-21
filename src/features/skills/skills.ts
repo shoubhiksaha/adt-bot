@@ -189,5 +189,5 @@ export function updateSkill(id: string, patch: Partial<SkillInput>, now = Date.n
 }
 
 export function deleteSkill(id: string) {
-  useStore.setState((s) => ({ skills: s.skills.filter((x) => x.id !== id) }));
+  useStore.setState((s) => ({ skills: s.skills.filter((x) => x.id !== id), tombstones: { ...s.tombstones, [id]: Date.now() } }));
 }

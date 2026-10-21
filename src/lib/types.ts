@@ -19,6 +19,8 @@ export type ProviderConfig = {
   models: ModelInfo[];
   /** Extra request headers, e.g. for a private server behind a login. */
   headers?: Record<string, string>;
+  /** Last change (sync). */
+  updatedAt?: number;
 };
 
 export type ModelInfo = {
@@ -58,6 +60,8 @@ export type Bot = {
   /** Notes on past conversations, one per chat, recalled in later chats when relevant. */
   journal?: JournalEntry[];
   createdAt: number;
+  /** Last change (sync). */
+  updatedAt?: number;
 };
 
 /**
@@ -118,7 +122,9 @@ export type ToolDisplay =
   | { kind: "markdown"; text: string }
   | { kind: "visualization"; spec: VisualizationSpec }
   /** A link to another chat (e.g. the one a delegated bot worked in). */
-  | { kind: "conversation"; conversationId: string; label: string; text?: string };
+  | { kind: "conversation"; conversationId: string; label: string; text?: string }
+  /** A video kept on this device (src/lib/video.ts). */
+  | { kind: "video"; mediaId: string; mime: string; name: string };
 
 /** Agent settings: tools and the approval gate. */
 export type AgentSettings = {
@@ -145,7 +151,9 @@ export type AgentSettings = {
 
 export type Attachment =
   | { kind: "image"; dataUrl: string; name: string }
-  | { kind: "file"; name: string; text: string; size: number; truncated?: boolean };
+  | { kind: "file"; name: string; text: string; size: number; truncated?: boolean }
+  /** A video kept on this device (in IndexedDB, by id): too big to live in the chat itself. */
+  | { kind: "video"; mediaId: string; name: string; mime: string };
 
 export type Source = { title: string; url: string; snippet: string; content?: string };
 
@@ -202,6 +210,8 @@ export type Conversation = {
   /** Group chat: its bots in speaking order (2–6; botId is the first). */
   members?: string[];
   group?: GroupSettings;
+  /** Last change of any kind (sync; updatedAt only moves when a reply starts or ends). */
+  rev?: number;
 };
 
 /**
@@ -310,6 +320,8 @@ export type Settings = {
   knowledge: KnowledgeRef[];
   /** Facts every bot knows about the user (Memory screen); each bot also has its own. */
   sharedMemory: string[];
+  /** Sync between devices through your own ADT Bot server (src/lib/sync.ts). `code` is kept with the keys. */
+  sync: { enabled: boolean; server: string; code: string; keys: boolean; device: string };
   /** "Smarter memory search": also find memories and knowledge passages by meaning, with an on-device model. */
   semanticSearch: boolean;
   sendOnEnter: boolean;
@@ -324,6 +336,8 @@ export type Settings = {
   search: { engine: SearchEngine; apiKey: string; url: string; readPages: boolean; native: boolean };
   /** Provider + model used for "Imagine". Empty = pick automatically. */
   image: { providerId: string; model: string };
+  /** Provider + model used for /video. Empty = pick automatically (Google or xAI). */
+  video: { providerId: string; model: string };
   voice: VoiceSettings;
   /** Composer toggles, remembered between messages. */
   modes: { search: boolean; think: boolean };

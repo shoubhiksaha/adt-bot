@@ -249,6 +249,9 @@ export function createProxyHandler(options = {}) {
       // MCP connectors (Streamable HTTP) keep their session in this header.
       const mcpSession = upstream.headers.get("mcp-session-id");
       if (mcpSession) responseHeaders["mcp-session-id"] = mcpSession;
+      // Sync (server/sync.mjs) tells copies apart by this header.
+      const etag = upstream.headers.get("etag");
+      if (etag) responseHeaders.etag = etag;
       res.writeHead(upstream.status, responseHeaders);
       if (!upstream.body) return res.end();
       // Forward chunks as they arrive so streamed replies stay streamed.

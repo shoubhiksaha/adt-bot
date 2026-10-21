@@ -9,6 +9,7 @@ import { canSpeak, speak } from "../lib/voice";
 import { Avatar } from "./Avatar";
 import { CopyButton } from "./CopyButton";
 import { ToolCalls } from "./ToolCalls";
+import { VideoPlayer } from "./VideoPlayer";
 
 const Markdown = lazy(() => import("./Markdown"));
 
@@ -233,6 +234,7 @@ export const MessageItem = memo(function MessageItem({
             ))}
           </div>
         )}
+        {(message.attachments ?? []).map((a) => (a.kind === "video" ? <VideoPlayer key={a.mediaId} mediaId={a.mediaId} name={a.name} /> : null))}
         {message.error && (
           <div className="msg-error">
             <div>{message.error}</div>

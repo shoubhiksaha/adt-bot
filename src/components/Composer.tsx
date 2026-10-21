@@ -14,6 +14,7 @@ const COMMANDS = [
   { name: "imagine", description: "Create an image" },
   { name: "search", description: "Answer with live web search" },
   { name: "research", description: "Deep research: many sources, a cited report" },
+  { name: "video", description: "Make a short video (Google or xAI)" },
   { name: "remember", description: "Save a fact about you" },
 ];
 
@@ -194,7 +195,7 @@ export function Composer({
                   <div className="attachment-file" title={a.name}>
                     <FileText size={18} />
                     <span className="file-name">{a.name}</span>
-                    <span className="muted">{formatBytes(a.size)}</span>
+                    {a.kind === "file" && <span className="muted">{formatBytes(a.size)}</span>}
                   </div>
                 )}
                 <button

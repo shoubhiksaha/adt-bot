@@ -237,6 +237,7 @@ type AppSecretsShape = { providers?: ProviderConfig[]; settings?: Settings };
 function splitSettings(settings: Settings, secrets: SecretMap): Settings {
   const out = { ...settings };
   if (settings.search) out.search = take(settings.search, "apiKey", ["search", "apiKey"], secrets);
+  if (settings.sync) out.sync = take(settings.sync, "code", ["sync", "code"], secrets);
   const voice = settings.voice;
   if (voice) {
     let next = take(voice, "elevenKey", ["voice", "elevenKey"], secrets);
@@ -271,6 +272,7 @@ function splitSettings(settings: Settings, secrets: SecretMap): Settings {
 function joinSettings(settings: Settings, secrets: SecretMap): Settings {
   const out = { ...settings };
   if (settings.search) out.search = put(settings.search, "apiKey", ["search", "apiKey"], secrets);
+  if (settings.sync) out.sync = put(settings.sync, "code", ["sync", "code"], secrets);
   const voice = settings.voice;
   if (voice) {
     let next = put(voice, "elevenKey", ["voice", "elevenKey"], secrets);
