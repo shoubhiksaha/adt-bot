@@ -149,6 +149,19 @@ export function tokenize(text: string): string[] {
   return tokens;
 }
 
+/** Greetings and fillers (as tokenize leaves them): they don't make a message about anything. */
+const SMALL_TALK = new Set(
+  "hello hey hiya hii thank thanks thx okay yes yeah yep nope sure cool great good nice fine morn even night afternoon bye goodbye sup whats wassup lol hmm haha".split(" "),
+);
+
+/**
+ * The words of a message that say what it's about: no greetings, fillers or tiny words. Empty for
+ * "Hello, what's up?", so small talk doesn't recall old notes or memories by a shared "up".
+ */
+export function subjectWords(text: string): string {
+  return (text.match(/[\p{L}\p{M}\p{N}]+/gu) ?? []).filter((w) => tokenize(w).some((t) => (t.length >= 3 || CJK.test(t)) && !SMALL_TALK.has(t))).join(" ");
+}
+
 /** BM25 ranking of passages against the question. */
 export function rank<T extends { text: string }>(chunks: T[], query: string): T[] {
   const terms = [...new Set(tokenize(query))];

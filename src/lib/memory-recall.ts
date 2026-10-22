@@ -1,5 +1,5 @@
 import { hybridRank } from "./hybrid";
-import { rank } from "./knowledge";
+import { rank, subjectWords } from "./knowledge";
 import type { Bot } from "./types";
 
 /**
@@ -57,7 +57,7 @@ export type MemoryContext = {
 
 export async function memoryContext(bot: Pick<Bot, "id" | "memory">, question: string): Promise<MemoryContext> {
   const { pinned, rest } = splitMemory(bot.memory);
-  if (!rest.length || !question.trim()) return { pinned, recalled: [] };
+  if (!rest.length || !subjectWords(question)) return { pinned, recalled: [] };
   return { pinned, recalled: await searchMemory(bot, rest, question) };
 }
 

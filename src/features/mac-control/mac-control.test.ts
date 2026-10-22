@@ -154,6 +154,19 @@ describe("renderer tools", () => {
     expect(useMacControl.getState().active).toBe(0);
   });
 
+  it("mac_open_app says where a page really opened", async () => {
+    const { macTools } = await import("./tools");
+    const open = macTools.find((t) => t.name === "mac_open_app")!;
+    // The main process opens a page in the app asked for on a Mac; elsewhere it can only use the default browser.
+    invoke.mockImplementation(async (channel: string, payload: { url: string; app?: string }) =>
+      channel === "adt:mac:openUrl" ? { ok: true, url: payload.url, ...(payload.app === "Google Chrome" ? { app: payload.app } : {}) } : null,
+    );
+    expect(await open.run({ app: "Google Chrome", url: "https://youtube.com" }, {} as never)).toBe("Opened https://youtube.com in Google Chrome.");
+    expect(invoke).toHaveBeenLastCalledWith("adt:mac:openUrl", { url: "https://youtube.com", app: "Google Chrome" });
+    expect(await open.run({ app: "Chrome", url: "https://youtube.com" }, {} as never)).toBe("Opened https://youtube.com in the default browser (Chrome can't be chosen here).");
+    expect(await open.run({ url: "https://youtube.com" }, {} as never)).toBe("Opened https://youtube.com in the default browser.");
+  });
+
   it("passes clean errors through from the main process", async () => {
     const { macTools } = await import("./tools");
     invoke.mockRejectedValueOnce(new Error("Error invoking remote method 'adt:mac:key': Error: Unknown key \"zz\"."));
@@ -321,6 +334,48 @@ describe("web pages in the browser", () => {
     t = setup(true);
     await expect(mac.allowPageAccess("Safari", t.opts)).rejects.toThrow(/Settings → Developer/);
     expect(t.presses).toEqual([]);
+  });
+
+  it("opens a page in the browser asked for, starting it when it isn't open", async () => {
+    const launched: string[][] = [];
+    const launch = async (args: string[]) => void launched.push(args);
+    const failing = (error: Error) => async () => {
+      throw error;
+    };
+    // Running: a new tab there, nothing launched.
+    expect(await mac.openPage("Google Chrome", "open", "https://youtube.com", { run: async () => "ok", launch })).toEqual({ browser: "Google Chrome", ok: true, url: "https://youtube.com" });
+    expect(launched).toEqual([]);
+    // Not running, or no window: started with the page (not left for the bot to open some other way).
+    for (const code of ["ADT_NOT_RUNNING", "ADT_NO_WINDOW"]) {
+      const run = failing(mac.browserError("Google Chrome", "chromium", new Error(code)));
+      expect(await mac.openPage("Google Chrome", "open", "https://youtube.com", { run, launch })).toEqual({ browser: "Google Chrome", ok: true, url: "https://youtube.com", started: true });
+    }
+    expect(launched).toEqual([
+      ["-a", "Google Chrome", "https://youtube.com"],
+      ["-a", "Google Chrome", "https://youtube.com"],
+    ]);
+    // Not installed: said plainly. Anything else passes through.
+    const notRunning = failing(mac.browserError("Arc", "chromium", new Error("ADT_NOT_RUNNING")));
+    await expect(mac.openPage("Arc", "open", "https://a.b", { run: notRunning, launch: failing(new Error("Unable to find application named 'Arc'")) })).rejects.toThrow("Arc isn't installed on this Mac.");
+    await expect(mac.openPage("Arc", "open", "https://a.b", { run: failing(new Error("boom")), launch })).rejects.toThrow("boom");
+  });
+
+  it("opens a web page in the app asked for; app links open in their own app", async () => {
+    const opened: string[] = [];
+    const shell = { openExternal: async (url: string) => void opened.push(url) };
+    const launched: string[][] = [];
+    const launch = async (args: string[]) => void launched.push(args);
+    const failing = (error: Error) => async () => {
+      throw error;
+    };
+    expect(await mac.openUrl(shell, { url: "https://youtube.com/x", app: "Google Chrome" }, launch)).toEqual({ ok: true, url: "https://youtube.com/x", app: "Google Chrome" });
+    expect(launched).toEqual([["-a", "Google Chrome", "https://youtube.com/x"]]);
+    expect(await mac.openUrl(shell, { url: "whatsapp://send?phone=1", app: "Google Chrome" }, launch)).toEqual({ ok: true, url: "whatsapp://send?phone=1" });
+    expect(await mac.openUrl(shell, { url: "https://a.b" }, launch)).toEqual({ ok: true, url: "https://a.b" });
+    expect(opened).toEqual(["whatsapp://send?phone=1", "https://a.b"]);
+    await expect(mac.openUrl(shell, { url: "https://a.b", app: "/Users/x/evil.app" }, launch)).rejects.toThrow(/not a path/);
+    await expect(mac.openUrl(shell, { url: "https://a.b", app: "Nope" }, failing(new Error("Unable to find application named 'Nope'")))).rejects.toThrow('No app named "Nope" is installed.');
+    expect(launched).toHaveLength(1);
   });
 
   it("formats pages compactly and pages through long text", async () => {

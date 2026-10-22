@@ -1,6 +1,6 @@
 import { desktopInvoke, isDesktop } from "../desktop";
 import { generateImage, resolveImageModel } from "../imagine";
-import { knowledgeContext } from "../knowledge";
+import { knowledgeContext, subjectWords } from "../knowledge";
 import { memoryIsLarge, searchMemory } from "../memory-recall";
 import { readPage, webSearch } from "../search";
 import { addMemory, addSharedMemory, useStore } from "../store";
@@ -186,7 +186,8 @@ registerTool({
   async run(args, ctx) {
     const query = str(args, "query").trim();
     const journal = ctx.bot.journal ?? [];
-    const notes = query ? await recallNotes({ ...ctx.bot, journal }, query, ctx.conversationId) : journal.filter((e) => e.conversationId !== ctx.conversationId).slice(-8).reverse();
+    // A query with nothing to match on ("what did we do") lists the most recent chats, as an empty one does.
+    const notes = subjectWords(query) ? await recallNotes({ ...ctx.bot, journal }, query, ctx.conversationId) : journal.filter((e) => e.conversationId !== ctx.conversationId).slice(-8).reverse();
     if (!notes.length) return "No notes match. (Notes are written once a chat has been quiet for a while.)";
     const lines = notes.map((n) => `- ${new Date(n.at).toISOString().slice(0, 10)} "${n.title}" (chat id ${n.conversationId}): ${n.summary}`);
     const text = `Notes on earlier chats:\n${lines.join("\n")}`;

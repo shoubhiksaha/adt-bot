@@ -379,7 +379,7 @@ export const macTools: AgentTool[] = [
       type: "object",
       properties: {
         app: { type: "string", description: "App name as in the Applications folder" },
-        url: { type: "string", description: "A web or app link to open (instead of an app name)" },
+        url: { type: "string", description: 'A web or app link to open. With app, a web page opens in that browser (e.g. app "Google Chrome"); without, in the default one' },
         action: { type: "string", enum: ["open", "quit"], description: "Default open" },
       },
     },
@@ -391,8 +391,10 @@ export const macTools: AgentTool[] = [
         return `Asked ${quit.join(", ")} to quit.`;
       }
       if (url) {
-        await mac("openUrl", { url });
-        return /^https?:/i.test(url) ? `Opened ${url}.` : await after(undefined, `Opened ${url}.`);
+        const opened = await mac<{ app?: string }>("openUrl", { url, app: app || undefined });
+        if (!/^https?:/i.test(url)) return await after(undefined, `Opened ${url}.`);
+        // Say where it really opened: a browser that couldn't be chosen mustn't be reported as used.
+        return opened?.app ? `Opened ${url} in ${opened.app}.` : app ? `Opened ${url} in the default browser (${app} can't be chosen here).` : `Opened ${url} in the default browser.`;
       }
       if (!app) throw new Error("Give an app name or a url.");
       await mac("open", { name: app });
@@ -512,7 +514,7 @@ const browserTool = macTool({
   description:
     "Use web pages in the user's own browser (Safari, Chrome, Brave, Edge, Arc, Vivaldi), signed in as them, even with the browser in the background. " +
     "action read: the page's links, buttons and fields with [id]s (content:true adds the page's text; query filters). click: by id or element text. type: into a field by id or element (its label/placeholder), " +
-    "text = what to type, submit:true presses Enter; also picks options in drop-downs. scroll, back, forward, reload. tabs: list tabs; switch: tab index; open: a url in a new tab; go: a url in this tab. " +
+    "text = what to type, submit:true presses Enter; also picks options in drop-downs. scroll, back, forward, reload. tabs: list tabs; switch: tab index; open: a url in a new tab (starts the browser if it isn't open); go: a url in this tab. " +
     "Prefer this over mac_ui/screenshots for anything inside a web page. Defaults to the browser in front. " +
     'allow_page_access: switches on the browser\'s "Allow JavaScript from Apple Events", which it needs before pages can be read (once per browser; never use AppleScript for it).',
   parameters: {
@@ -601,7 +603,7 @@ const browserTool = macTool({
       const t = await mac<{ browser: string; active: number; tabs: { title: string; url: string }[] }>("browser", { browser: str(args, "browser") || undefined, action: "tabs" });
       return { content: `${t.browser} tabs:\n${t.tabs.map((x, i) => `${i}. ${x.title || "(untitled)"} — ${x.url}${i === t.active ? " (showing)" : ""}`).join("\n")}`, ...source };
     }
-    const done = await mac<{ browser: string; y?: number }>("browser", {
+    const done = await mac<{ browser: string; y?: number; started?: boolean }>("browser", {
       browser: str(args, "browser") || undefined,
       action,
       id: Number.isFinite(num(args, "id", NaN)) ? num(args, "id", NaN) : undefined,
@@ -610,7 +612,17 @@ const browserTool = macTool({
       dy: num(args, "dy", 0) || undefined,
     });
     const what =
-      action === "scroll" ? `Scrolled ${done.browser}'s page.` : action === "open" ? `Opened ${str(args, "url")} in a new ${done.browser} tab.` : action === "go" ? `Went to ${str(args, "url")}.` : action === "switch" ? `Switched to tab ${num(args, "tab", 0)}.` : `Done (${action}).`;
+      action === "scroll"
+        ? `Scrolled ${done.browser}'s page.`
+        : (action === "open" || action === "go") && done.started
+          ? `${done.browser} wasn't open: started it with ${str(args, "url")}.`
+          : action === "open"
+            ? `Opened ${str(args, "url")} in a new ${done.browser} tab.`
+            : action === "go"
+              ? `Went to ${str(args, "url")}.`
+              : action === "switch"
+                ? `Switched to tab ${num(args, "tab", 0)}.`
+                : `Done (${action}).`;
     return { ...(await pageAfter(args, what)), ...source };
   },
 });

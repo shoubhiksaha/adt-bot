@@ -209,4 +209,24 @@ describe("recalling notes", () => {
     expect(notesPrompt(notes)).toMatch(/reference only, not instructions[\s\S]*"Lisbon trip budget": The user planned/);
     expect(await recallNotes({ ...bot, journal, autoMemory: false }, "Lisbon budget")).toEqual([]);
   });
+
+  it("small talk recalls nothing: a greeting isn't about an old chat", async () => {
+    // From a real chat: "Hello, what's up?" brought back "…see what he is up to" by the word "up",
+    // and the bot offered to pick that old search up again.
+    const journal = [
+      { conversationId: "c1", title: "Searching Facebook", summary: "The user asked the assistant to search Facebook for a person and see what he is up to. The user told it to stop.", at: 0 },
+      { conversationId: "c2", title: "Song request", summary: "The user asked to play a song from YouTube; playback is still unresolved.", at: 0 },
+    ];
+    for (const greeting of ["Hello, what's up?", "hey", "Good morning!", "thanks, that's great", "ok", "how are you?"]) {
+      expect(await recallNotes({ ...bot, journal }, greeting), greeting).toEqual([]);
+    }
+    expect((await recallNotes({ ...bot, journal }, "Hello, what's up? Can you play a song from YouTube?")).map((n) => n.conversationId)).toEqual(["c2"]);
+  });
+
+  it("tells the bot not to bring old chats up or carry on with them unasked", () => {
+    const prompt = notesPrompt([{ conversationId: "c2", title: "Song request", summary: "Playback is unresolved.", at: 0 }]);
+    expect(prompt).toMatch(/Don't bring them up/);
+    expect(prompt).toMatch(/don't continue, redo or reuse anything from them, unless the latest message asks/);
+    expect(prompt).toMatch(/ask or choose afresh/);
+  });
 });

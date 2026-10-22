@@ -864,10 +864,19 @@ async function quitApp({ name } = {}) {
 /** Links that open in an app: web, mail, calls and messages, and apps' own links (e.g. whatsapp://send?phone=…&text=…). */
 const APP_LINK = /^(https?:\/\/|mailto:|tel:|sms:|facetime:|facetime-audio:|imessage:|whatsapp:|tg:|slack:|msteams:|zoommtg:|zoomus:|spotify:|music:|maps:|x-apple\.systempreferences:|notion:|discord:)/i;
 
-async function openUrl(shell, { url } = {}) {
+async function openUrl(shell, { url, app } = {}, launch = (args, what) => exec(OPEN, args, { what })) {
   const value = String(url ?? "").trim();
   if (!APP_LINK.test(value) || value.length > 4000 || /[\0\r\n]/.test(value)) {
     throw new Error("Only web, mail, phone and messaging links, and links for apps like WhatsApp, Slack, Spotify, Zoom or Maps can be opened.");
+  }
+  // A web page in the browser asked for ("open YouTube in Chrome"), not the default one. App links
+  // (whatsapp:, mailto:…) already say which app opens them.
+  if (app && /^https?:\/\//i.test(value)) {
+    const name = appName(app);
+    await launch(["-a", name, value], `Opening ${name}`).catch((error) => {
+      throw /unable to find application/i.test(error.message) ? new Error(`No app named "${name}" is installed.`) : error;
+    });
+    return { ok: true, url: value, app: name };
   }
   await shell.openExternal(value);
   return { ok: true, url: value };
@@ -1220,6 +1229,20 @@ async function page(name, req) {
   return parsed.result;
 }
 
+/** Opens a page in this browser. One that isn't running, or has no window, is started with the page. */
+async function openPage(name, action, address, { run = browserRun, launch = (args) => exec(OPEN, args, { what: `Opening ${name}` }) } = {}) {
+  try {
+    await run(name, action, address);
+    return { browser: name, ok: true, url: address };
+  } catch (error) {
+    if (!/isn't open|has no open window/.test(String(error?.message ?? error))) throw error;
+  }
+  await launch(["-a", name, address]).catch((error) => {
+    throw /unable to find application/i.test(error.message) ? new Error(`${name} isn't installed on this Mac.`) : error;
+  });
+  return { browser: name, ok: true, url: address, started: true };
+}
+
 /** The address of the page an element id was read from (checked again before acting on it). */
 const pageAddress = (value) => (typeof value === "string" && value.length <= 4000 ? value : undefined);
 
@@ -1258,8 +1281,7 @@ async function browser({ browser: wanted, action = "read", id, text, submit, app
       return { ...base, ok: true };
     case "open":
     case "go":
-      await browserRun(name, action, address);
-      return { ...base, ok: true, url: address };
+      return openPage(name, action, address);
     case "allow_page_access":
       return allowPageAccess(name);
     default:
@@ -1366,6 +1388,8 @@ exports.stopHelper = stopHelper;
 
 exports._test = {
   allowPageAccess,
+  openPage,
+  openUrl,
   SUPPORTED,
   PANES,
   osascriptArgs,
