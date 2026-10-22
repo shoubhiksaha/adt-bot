@@ -22,3 +22,10 @@ update-signing-key*
 
 # Built by `npm run build` (vite.headless.config.ts)
 server/headless/
+
+# Server secrets (deploy/.env.example is the template)
+deploy/.env
+
+# Research notes and reports (deep research runs)
+research_notes/
+reports/

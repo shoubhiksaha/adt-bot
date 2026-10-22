@@ -30,7 +30,7 @@ const ISOLATION_HEADERS = {
 };
 
 /**
- * @param {{ port?: number, host?: string, distDir?: string, proxy?: Parameters<typeof createProxyHandler>[0], sync?: Parameters<typeof createSyncHandler>[0] | false, agent?: { handle: (req: any, res: any, next: () => void) => void } }} options
+ * @param {{ port?: number, host?: string, distDir?: string, proxy?: Parameters<typeof createProxyHandler>[0], sync?: Parameters<typeof createSyncHandler>[0] | false, agent?: { handle: (req: any, res: any, next: () => void) => void }, speech?: { handle: (req: any, res: any, next: () => void) => void } }} options
  * @returns {Promise<{ server: import("node:http").Server, url: string }>}
  */
 export function startServer(options = {}) {
@@ -68,6 +68,7 @@ export function startServer(options = {}) {
 
   const sync = options.sync ? createSyncHandler(options.sync) : (_req, _res, next) => next();
   const agent = options.agent ? options.agent.handle : (_req, _res, next) => next();
+  const speech = options.speech ? options.speech.handle : (_req, _res, next) => next();
   const server = createServer((req, res) => {
     const fail = () => {
       if (!res.headersSent) res.writeHead(500);
@@ -75,7 +76,7 @@ export function startServer(options = {}) {
     };
     // A handler that throws (synchronously or not) answers 500 instead of taking the server down.
     try {
-      Promise.resolve(sync(req, res, () => agent(req, res, () => proxy(req, res, () => serveStatic(req, res))))).catch(fail);
+      Promise.resolve(sync(req, res, () => agent(req, res, () => speech(req, res, () => proxy(req, res, () => serveStatic(req, res)))))).catch(fail);
     } catch {
       fail();
     }
@@ -106,6 +107,19 @@ if (isMain) {
     if (browser) console.log(`Always-on routines can use a browser (${executable}).`);
     agent.start();
   }
+  // ADT_SPEECH_URL: voice mode's speech-to-text and natural voice run here (server/speech.mjs).
+  let speech;
+  if (process.env.ADT_SPEECH_URL) {
+    const { createSpeechRelay } = await import("./speech.mjs");
+    speech = createSpeechRelay({
+      upstream: process.env.ADT_SPEECH_URL,
+      token: process.env.ADT_SPEECH_TOKEN || process.env.ADT_AGENT_TOKEN || "",
+      stt: process.env.ADT_SPEECH_STT_MODEL || undefined,
+      tts: process.env.ADT_SPEECH_TTS_MODEL || undefined,
+      voice: process.env.ADT_SPEECH_VOICE || undefined,
+    });
+    void speech.prepare();
+  }
   const loopback = host === "127.0.0.1" || host === "localhost" || host === "::1";
   const { url } = await startServer({
     host,
@@ -130,10 +144,12 @@ if (isMain) {
           }
         : false,
     agent,
+    speech,
   });
   console.log(`ADT Bot running at ${url}`);
   if (process.env.ADT_SYNC === "1") console.log(`Sync is on (data in ${join(dataDir(), "sync")}).`);
   if (agent) console.log(`Always-on routines are on (data in ${join(dataDir(), "agent")}).`);
+  if (speech) console.log(`Voice mode's speech runs here (${process.env.ADT_SPEECH_URL}).`);
   // ROOMS=1: also open a LAN chat room (people only; bots in rooms need the desktop app).
   if (process.env.ROOMS === "1") {
     const { createRoomHub } = await import("./rooms.mjs");

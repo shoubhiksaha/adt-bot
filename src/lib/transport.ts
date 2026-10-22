@@ -48,6 +48,15 @@ export function detectEnv(): Promise<Env> {
 
 export class NetworkError extends Error {}
 
+function sameOrigin(url: string): boolean {
+  if (typeof location === "undefined" || !/^https?:$/.test(location.protocol)) return false;
+  try {
+    return new URL(url, location.href).origin === location.origin;
+  } catch {
+    return false;
+  }
+}
+
 export type FetchInit = Omit<RequestInit, "headers"> & { headers: Record<string, string> };
 
 export async function providerFetch(
@@ -57,7 +66,9 @@ export async function providerFetch(
 ): Promise<Response> {
   const env = await detectEnv();
 
-  if (env.proxy && useProxy) {
+  // The page's own server (the self-hosted web app calling its own API): same origin, no relay needed.
+  // The relay only reaches model providers, so it would refuse it.
+  if (env.proxy && useProxy && !sameOrigin(url)) {
     const headers: Record<string, string> = { ...init.headers, "x-adtbot-target": url };
     if (env.proxyToken) headers["x-adtbot-token"] = env.proxyToken;
     return fetch("./api/proxy", { ...init, headers });

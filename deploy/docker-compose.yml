@@ -1,0 +1,52 @@
+# ADT Bot on your own always-on server (any Linux machine with Docker, e.g. Oracle Cloud's free Arm
+# VM): the web app, sync between your devices, routines that run while your computers are off, and
+# voice mode's speech (Whisper speech-to-text and the Kokoro voice), so your laptop and phone don't
+# run those models. See deploy/README.md.
+#   cp .env.example .env     # then set ADT_TOKEN
+#   docker compose up -d --build
+services:
+  adt-bot:
+    build:
+      context: ..
+      args:
+        # 1: include Chromium, so routines can use a real browser (about 400 MB more).
+        BROWSER: ${ADT_BROWSER:-0}
+    restart: unless-stopped
+    ports:
+      # Keep this port closed to the internet (Oracle's firewall does by default): reach the server
+      # over Tailscale, or put HTTPS in front of it (deploy/README.md).
+      - "${ADT_PORT:-8787}:8787"
+    environment:
+      ADT_SYNC: "1"
+      ADT_AGENT_TOKEN: ${ADT_TOKEN:?Set ADT_TOKEN in deploy/.env (24 or more random characters)}
+      ADT_SPEECH_URL: http://speech:8000
+      ADT_SPEECH_STT_MODEL: ${ADT_SPEECH_STT_MODEL:-Systran/faster-whisper-base}
+      ADT_SPEECH_TTS_MODEL: ${ADT_SPEECH_TTS_MODEL:-speaches-ai/Kokoro-82M-v1.0-ONNX}
+      ADT_SPEECH_VOICE: ${ADT_SPEECH_VOICE:-af_heart}
+      ADT_NTFY_URL: ${ADT_NTFY_URL:-}
+      ADT_DATA_DIR: /data
+    volumes:
+      - adt-data:/data
+    depends_on:
+      - speech
+
+  # Speech-to-text and text-to-speech (speaches: faster-whisper + Kokoro, OpenAI-compatible, CPU).
+  # No published port: only ADT Bot talks to it, after checking your token.
+  speech:
+    image: ghcr.io/speaches-ai/speaches:latest-cpu
+    restart: unless-stopped
+    environment:
+      # Keep the models loaded: reloading one takes 10-15 s, which would land on your next sentence.
+      STT_MODEL_TTL: "-1"
+      TTS_MODEL_TTL: "-1"
+    volumes:
+      - speech-models:/home/ubuntu/.cache/huggingface/hub
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  adt-data:
+  speech-models:

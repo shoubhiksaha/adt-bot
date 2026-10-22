@@ -3,3 +3,7 @@ dist
 release
 android
 ios
+deploy/.env
+research_notes
+reports
+.git

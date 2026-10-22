@@ -20,6 +20,7 @@ import { isMoonshine } from "../../lib/speech-models";
 import { CAPTION_MB } from "../../lib/moonshine-streaming";
 import { localSpeechModel, onSpeechNotice, onWhisperProgress, preloadWhisper, SPEECH_MODELS, type SpeechModel, whisperDownloaded } from "../../lib/whisper";
 import { LIVE_MODELS, LIVE_VOICES } from "../../lib/gemini-live";
+import { switchToDeviceVoice, switchToServerVoice, usingServerVoice } from "../../lib/server-voice";
 import { ModelInput, Section, Toggle } from "./controls";
 
 /** Whose system voice settings to point to (null on phones). */
@@ -40,6 +41,9 @@ export function VoiceSettings() {
   const autoSpeak = useStore((s) => s.settings.autoSpeak);
   const useProxy = useStore((s) => s.settings.useProxy);
   const bots = useStore((s) => s.bots);
+  const server = useStore((s) => s.settings.server);
+  const [serverNote, setServerNote] = useState<{ text: string; error?: boolean } | null>(null);
+  const [serverBusy, setServerBusy] = useState(false);
   /** The system's voices (null while they load). */
   const [voices, setVoices] = useState<DeviceVoice[] | null>(null);
   const [autoVoice, setAutoVoice] = useState<string>("");
@@ -101,6 +105,43 @@ export function VoiceSettings() {
             <option value="picture">The bot's picture</option>
           </select>
         </div>
+      </Section>
+
+      <Section title="Speech on your server" hint="Speech recognition and a natural voice run on your always-on server instead of this device: less load here, same voice mode.">
+        <div className="btn-row">
+          {usingServerVoice() ? (
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                switchToDeviceVoice();
+                setServerNote({ text: "Speech runs on this device again." });
+              }}
+            >
+              Use this device again
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn primary"
+              disabled={!server.url || !server.token || serverBusy}
+              onClick={() => {
+                setServerBusy(true);
+                setServerNote(null);
+                switchToServerVoice()
+                  .then(({ ready }) =>
+                    setServerNote({ text: ready ? "Voice mode now uses your server's speech." : "Set up. Your server is still downloading its speech models: give it a few minutes before voice mode." }),
+                  )
+                  .catch((error: Error) => setServerNote({ text: error.message, error: true }))
+                  .finally(() => setServerBusy(false));
+              }}
+            >
+              {serverBusy ? "Connecting…" : "Use my server for voice"}
+            </button>
+          )}
+          {!server.url && <span className="small muted">Connect your always-on server in Settings → Sync & server first.</span>}
+        </div>
+        {serverNote && <span className={`small ${serverNote.error ? "error-text" : "muted"}`}>{serverNote.text}</span>}
       </Section>
 
       <Section title="Voice mode conversation" hint="Who hears you and answers in voice mode.">
