@@ -136,7 +136,10 @@ export function App() {
     const open = (e: Event) => setSettingsTab(((e as CustomEvent).detail as SettingsTab) ?? "general");
     const close = () => setSettingsTab(null);
     const group = () => setNewGroup(true);
+    // An error's "Bot settings" button (a bot with no model yet).
+    const editBot = (e: Event) => setEditingBot({ id: (e as CustomEvent).detail as string });
     window.addEventListener("adt:open-settings", open);
+    window.addEventListener("adt:edit-bot", editBot);
     window.addEventListener("adt:close-settings", close);
     window.addEventListener("adt:new-group", group);
     // Clicking the "update available" notification (desktop).
@@ -145,6 +148,7 @@ export function App() {
       window.removeEventListener("adt:open-settings", open);
       window.removeEventListener("adt:close-settings", close);
       window.removeEventListener("adt:new-group", group);
+      window.removeEventListener("adt:edit-bot", editBot);
       offUpdates();
     };
   }, []);

@@ -149,6 +149,13 @@ let muted = false;
 const segmenter = new Segmenter({ endSilenceMs: 700 });
 let speculative: { version: number; text: Promise<string | null> } | null = null;
 let partialBusy = false;
+/**
+ * While the bot talks or thinks: a sound too short to start a turn is transcribed anyway, since a
+ * quick "stop" often is (the reply's echo makes the detector strict then). Only a stop counts.
+ */
+let catchShortWords = false;
+let shortBusy = false;
+let shortAt = 0;
 /** When the last caption finished, and how much audio it covered. */
 let partialAt = 0;
 let partialSamples = 0;
@@ -243,7 +250,18 @@ function handle(event: SegmentEvent) {
       utterance++;
       captionSent = 0;
     }
-    if (event.type === "discard") captioner?.postMessage({ type: "reset" });
+    if (event.type === "discard") {
+      captioner?.postMessage({ type: "reset" });
+      // One at a time, not often, and never ahead of a real transcription.
+      if (catchShortWords && mode === "local" && !shortBusy && !partialBusy && !speculative && performance.now() - shortAt > 1500) {
+        shortBusy = true;
+        shortAt = performance.now();
+        transcribe(event.audio, "partial")
+          .then((text) => text && catchShortWords && live({ type: "short", text }))
+          .catch(() => undefined)
+          .finally(() => (shortBusy = false));
+      }
+    }
     live({ type: event.type });
   } else if (event.type === "pause" && mode === "local") {
     // Start transcribing as soon as the speaker pauses; if they carry on, this is discarded.
@@ -348,6 +366,7 @@ self.onmessage = async (event: MessageEvent) => {
       language = data.language ?? language;
       partials = Boolean(data.partials);
       early = Boolean(data.early);
+      catchShortWords = false;
       const endSilenceMs = data.endSilenceMs ?? 700;
       segmenter.configure({ endSilenceMs, patientEndMs: patientFor(endSilenceMs), lullMs: lullFor(endSilenceMs), startThreshold: 0.6 });
       segmenter.reset();
@@ -373,6 +392,7 @@ self.onmessage = async (event: MessageEvent) => {
       // Settings from a listener that no longer owns the microphone (e.g. closing late) don't apply.
       if (data.listener !== undefined && data.listener !== owner) return;
       if (data.startThreshold !== undefined) segmenter.configure({ startThreshold: data.startThreshold });
+      if (data.catchShortWords !== undefined) catchShortWords = data.catchShortWords;
       if (data.endSilenceMs !== undefined) {
         segmenter.configure({ endSilenceMs: data.endSilenceMs, patientEndMs: patientFor(data.endSilenceMs), lullMs: lullFor(data.endSilenceMs) });
       }

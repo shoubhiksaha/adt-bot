@@ -17,6 +17,12 @@ export function openSettings(tab?: string) {
   window.dispatchEvent(new CustomEvent("adt:open-settings", { detail: tab }));
 }
 
+function editBot(botId: string) {
+  window.dispatchEvent(new CustomEvent("adt:edit-bot", { detail: botId }));
+}
+
+const TAB_NAMES: Record<string, string> = { images: "Image settings", providers: "Providers" };
+
 async function saveImage(dataUrl: string, name: string) {
   try {
     const blob = await (await fetch(dataUrl)).blob();
@@ -259,14 +265,33 @@ export const MessageItem = memo(function MessageItem({
         {message.error && (
           <div className="msg-error">
             <div>{message.error}</div>
-            {!busy && (
+            {/* A request that needs rewording: the pencil on it is the way on, not Retry. */}
+            {!busy && message.fix?.kind !== "prompt" && (
               <div className="btn-row" style={{ marginTop: 8 }}>
-                <button type="button" className="btn" onClick={() => void resendFrom(conversationId, message.id)}>
-                  <RotateCcw size={14} /> Retry
-                </button>
-                <button type="button" className="btn" onClick={() => openSettings("providers")}>
-                  <Settings2 size={14} /> Settings
-                </button>
+                {message.fix ? (
+                  // Set it up first; Retry is for after.
+                  <>
+                    <button
+                      type="button"
+                      className="btn primary"
+                      onClick={() => (message.fix?.kind === "bot" ? editBot(message.fix.botId) : openSettings(message.fix?.kind === "settings" ? message.fix.tab : undefined))}
+                    >
+                      <Settings2 size={14} /> {message.fix.kind === "bot" ? "Bot settings" : (TAB_NAMES[message.fix.tab] ?? "Settings")}
+                    </button>
+                    <button type="button" className="btn" onClick={() => void resendFrom(conversationId, message.id)}>
+                      <RotateCcw size={14} /> Try again
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button type="button" className="btn" onClick={() => void resendFrom(conversationId, message.id)}>
+                      <RotateCcw size={14} /> Retry
+                    </button>
+                    <button type="button" className="btn" onClick={() => openSettings("providers")}>
+                      <Settings2 size={14} /> Settings
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>

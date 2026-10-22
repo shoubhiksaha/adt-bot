@@ -40,6 +40,7 @@ vi.mock("./tts", async () => {
     duckSpeech: () => undefined,
     outputDb: () => null,
     warmDeviceVoice: () => undefined,
+    speechReference: () => null,
     createSpeaker: (_context: unknown, hooks: { onSentence?: (s: string) => void } = {}) => {
       let spoken = "";
       return {

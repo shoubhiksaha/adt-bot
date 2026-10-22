@@ -325,8 +325,8 @@ export async function resendFrom(conversationId: string, messageId: string, newT
   // Regenerating an assistant reply means resending the user turn before it.
   if (replaced.role === "assistant") index -= 1;
   if (index < 0) return;
-  const wasImage = replaced.role === "assistant" && replaced.attachments?.some((a) => a.kind === "image");
-  const wasVideo = replaced.role === "assistant" && replaced.attachments?.some((a) => a.kind === "video");
+  const wasImage = replaced.role === "assistant" && (replaced.command === "imagine" || replaced.attachments?.some((a) => a.kind === "image"));
+  const wasVideo = replaced.role === "assistant" && (replaced.command === "video" || replaced.attachments?.some((a) => a.kind === "video"));
   const wasSearch = replaced.role === "assistant" && Boolean(replaced.sources?.length);
   const wasResearch = replaced.role === "assistant" && Boolean(replaced.reasoning?.startsWith("**Research steps**"));
 
@@ -536,7 +536,10 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
       return reply.id;
     }
     if (!provider || !model) {
-      patchReply({ error: `${group ? bot.name : "This bot"} has no provider or model yet. Open the bot settings and pick one.` });
+      patchReply({
+        error: `${group ? bot.name : "This bot"} has no provider or model yet. Open the bot settings and pick one.`,
+        fix: { kind: "bot", botId: bot.id },
+      });
       return reply.id;
     }
 
@@ -816,24 +819,30 @@ async function runAssistant(conversationId: string | null, botId: string, opts: 
 }
 
 async function runImagine(prompt: string, patchReply: (patch: Partial<Message>) => void, signal: AbortSignal) {
+  patchReply({ command: "imagine" });
   const { providers, settings } = useStore.getState();
   const target = resolveImageModel(providers, settings.image);
   if (!target) {
     patchReply({
       error:
         "No image model is set up. Connect OpenRouter, OpenAI, xAI or Google Gemini, or choose one in Settings → Images.",
+      fix: { kind: "settings", tab: "images" },
     });
     return;
   }
   if (!prompt.trim()) {
-    patchReply({ error: "Describe the image you want, e.g. /imagine a fox astronaut, watercolor." });
+    patchReply({ error: "Describe the image you want, e.g. /imagine a fox astronaut, watercolor.", fix: { kind: "prompt" } });
     return;
   }
   const started = performance.now();
   patchReply({ status: `Creating image with ${target.model}…`, model: target.model });
   const { images, text } = await generateImage(target.provider, target.model, prompt, settings.useProxy, signal);
   if (!images.length) {
-    patchReply({ status: undefined, error: text || "The model returned no image. Try another image model in Settings → Images." });
+    patchReply({
+      status: undefined,
+      error: text || "The model returned no image. Try another image model in Settings → Images.",
+      fix: { kind: "settings", tab: "images" },
+    });
     return;
   }
   patchReply({
@@ -845,14 +854,21 @@ async function runImagine(prompt: string, patchReply: (patch: Partial<Message>) 
 }
 
 async function runVideo(prompt: string, image: Attachment | undefined, patchReply: (patch: Partial<Message>) => void, signal: AbortSignal) {
+  patchReply({ command: "video" });
   const { providers, settings } = useStore.getState();
   const target = resolveVideoModel(providers, settings.video);
   if (!target) {
-    patchReply({ error: "No video model is set up. Connect Google Gemini or xAI (Settings → Providers) to make videos." });
+    patchReply({
+      error: "No video model is set up. Connect Google Gemini or xAI (Settings → Providers) to make videos.",
+      fix: { kind: "settings", tab: "providers" },
+    });
     return;
   }
   if (!prompt.trim()) {
-    patchReply({ error: "Describe the video you want, e.g. /video a red fox running through snow at dawn, slow motion." });
+    patchReply({
+      error: "Describe the video you want, e.g. /video a red fox running through snow at dawn, slow motion.",
+      fix: { kind: "prompt" },
+    });
     return;
   }
   const started = performance.now();

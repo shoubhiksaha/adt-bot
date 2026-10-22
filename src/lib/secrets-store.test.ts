@@ -107,6 +107,35 @@ describe("backups", () => {
     await expect(store.unlockBackup(JSON.stringify(data), "correct horse battery")).rejects.toThrow(/Wrong password/);
   });
 
+  it("a backup without keys, brought back here, keeps this device's keys, but not for a new address", () => {
+    const json = store.exportData();
+    expect(store.importChanges(json)).toEqual([]);
+    store.importData(json);
+    let { providers, settings } = store.useStore.getState();
+    expect(providers[0].apiKey).toBe("sk-new");
+    expect(providers[0].headers).toEqual({ "CF-Access-Client-Secret": "cf-legacy" });
+    expect(settings.search.apiKey).toBe("brave-legacy");
+    expect(settings.voice.cloudTts.fish.key).toBe("fish-legacy");
+
+    // A backup that points the provider somewhere else doesn't take its key there.
+    const moved = JSON.parse(json);
+    moved.providers[0].baseUrl = "https://elsewhere.example/v1";
+    expect(store.importChanges(JSON.stringify(moved))).toHaveLength(1);
+    store.importData(JSON.stringify(moved));
+    ({ providers, settings } = store.useStore.getState());
+    expect(providers[0].apiKey).toBe("");
+    expect(providers[0].headers).toEqual({ "CF-Access-Client-Secret": "" });
+    expect(settings.voice.cloudTts.fish.key).toBe("fish-legacy");
+  });
+
+  it("a search key isn't kept for a different search service", () => {
+    store.updateSettings({ search: { ...store.useStore.getState().settings.search, apiKey: "brave-key" } });
+    const other = JSON.parse(store.exportData());
+    other.settings.search.engine = "tavily";
+    store.importData(JSON.stringify(other));
+    expect(store.useStore.getState().settings.search.apiKey).toBe("");
+  });
+
   it("asks for a usable password", () => {
     expect(backupPasswordProblem("", "")).toMatch(/Choose/);
     expect(backupPasswordProblem("short", "short")).toMatch(/8 characters/);

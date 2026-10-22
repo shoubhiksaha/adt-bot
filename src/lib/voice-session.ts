@@ -5,7 +5,7 @@ import { activityFor } from "./agent/asks";
 import { splitThink } from "./llm";
 import { selectBot, startNewChat, updateSettings, useStore } from "./store";
 import { localChoice, localVoiceReady } from "./local-tts";
-import { chime, createSpeaker, duckSpeech, outputDb, type Speaker, takeSentences, warmDeviceVoice } from "./tts";
+import { chime, createSpeaker, duckSpeech, outputDb, type Speaker, speechReference, takeSentences, warmDeviceVoice } from "./tts";
 import { END_SILENCE_MS, type Engine, ENGINE_LABELS, listen, type ListenSession, resolveEngine, stopReadAloud, transcribe } from "./voice";
 import {
   echoesLastWords,
@@ -67,6 +67,14 @@ const CUT_IN_MS = 450;
 const ECHO_TICK_MS = 50;
 /** After the first CUT_IN_MS, the latest CUT_IN_MS of readings is judged again this often (a short "stop" can straddle two fixed windows). */
 const CUT_IN_RECHECK_MS = 100;
+/** Readings this long before the sound was detected count too (detection lags the sound's start). */
+const CUT_IN_PREROLL_MS = 200;
+/**
+ * With the echo canceller in use, someone cutting in by words alone (not "stop") must also have been
+ * at least this much louder than what's left of the echo, for a moment (dB): the leftover echo can
+ * come back as garbled words unlike anything the bot said ("The gender was far").
+ */
+const WORDS_OVER_ECHO_DB = 3;
 /** The echo arrives this much after the sound that made it (speaker, room, output buffers). */
 const ECHO_DELAY_MS = 350;
 /**
@@ -171,6 +179,15 @@ export class VoiceSession {
   private quietLevels: number[] = [];
   /** Microphone and output readings since the current sound began (a possible cut-in). */
   private cutInWindow: { mic: number; out: number }[] = [];
+  /** Echo readings waiting CUT_IN_PREROLL_MS before they're learned: sound recognised meanwhile may have been the user. */
+  private pendingGaps: { at: number; gap: number }[] = [];
+  /** The current stretch of sound: how far above the echo it has been at its loudest (three readings), and its last margins. */
+  private segmentPeak = -Infinity;
+  private segmentMargins: number[] = [];
+  /** How many of cutInWindow's readings have already ended a judged stretch. */
+  private cutInJudged = 0;
+  /** The last second of readings, so a cut-in is judged from when the sound began, not from when it was recognised as speech. */
+  private recentReadings: { at: number; mic: number; out: number }[] = [];
   private echoTimer: ReturnType<typeof setInterval> | null = null;
   /** The detector is in the middle of a stretch of speech. */
   private segmentActive = false;
@@ -267,6 +284,7 @@ export class VoiceSession {
           endSilenceMs: END_SILENCE_MS[voice.endSilence],
           partials: true,
           early: voice.earlyReply,
+          echoCancel: true,
           onEvent: (event) => void this.onListenerEvent(event),
         });
         // Closed while getting ready: don't leave the microphone on.
@@ -321,10 +339,13 @@ export class VoiceSession {
     // What was learned about the echo carries over from reply to reply: the room and speakers stay the same.
     if (this.echoTimer || !this.listener) return;
     this.outHistory = [];
+    this.recentReadings = [];
     this.echoTimer = setInterval(() => {
       const listener = this.listener;
       const level = listener?.level?.();
       if (!listener || level === null || level === undefined) return;
+      // The bot's voice for the microphone's echo canceller (the page's voice starts with the first sentence).
+      listener.setEchoReference?.(speechReference());
       // Between sentences the page's voice is silent (and the user easiest to hear); a device voice can't be measured.
       const out = outputDb() ?? (this.speaker?.inPageAudio ? SILENT_DB : null);
       if (out === null) return;
@@ -339,6 +360,9 @@ export class VoiceSession {
       // hasn't arrived yet, and the echo would seem quieter than it is.
       const oldest = this.outHistory[0];
       const steady = now - oldest.at >= delay - ECHO_TICK_MS && oldest.db > -50;
+      this.recentReadings.push({ at: now, mic, out: recentOut });
+      while (this.recentReadings.length && now - this.recentReadings[0].at > 1000) this.recentReadings.shift();
+      if (this.segmentActive) this.noteMargin(mic, recentOut);
       if (this.cutInTimer) {
         this.cutInWindow.push({ mic, out: recentOut });
         // Without an echo canceller the echo itself can start a stretch of "speech" before anything
@@ -353,13 +377,30 @@ export class VoiceSession {
       // The bot clearly audible: how loud its echo is next to it (in its quiet syllables the
       // microphone only hears the room, which says nothing about the echo). Quiet: the room's level.
       if (recentOut > -30 && steady) {
-        this.echoGaps.push(mic - recentOut);
-        if (this.echoGaps.length > ECHO_GAPS) this.echoGaps.shift();
+        this.pendingGaps.push({ at: now, gap: mic - recentOut });
+        while (this.pendingGaps.length && now - this.pendingGaps[0].at > CUT_IN_PREROLL_MS) {
+          this.echoGaps.push(this.pendingGaps.shift()!.gap);
+          if (this.echoGaps.length > ECHO_GAPS) this.echoGaps.shift();
+        }
       } else if (recentOut < -50) {
         this.quietLevels.push(mic);
         if (this.quietLevels.length > ECHO_GAPS) this.quietLevels.shift();
       }
     }, ECHO_TICK_MS);
+  }
+
+  /** How far a reading is above the echo its output explains (see heardOverEcho), for segmentPeak. */
+  private noteMargin(mic: number, out: number) {
+    if (this.echoGaps.length < ECHO_GAPS_NEEDED) return;
+    const noise = this.quietLevels.length ? percentile(this.quietLevels, 0.5) : -60;
+    this.segmentMargins.push(mic - Math.max(out + percentile(this.echoGaps, 0.9), noise));
+    if (this.segmentMargins.length > 3) this.segmentMargins.shift();
+    if (this.segmentMargins.length === 3) this.segmentPeak = Math.max(this.segmentPeak, this.segmentMargins.reduce((a, b) => a + b, 0) / 3);
+  }
+
+  /** The words of the current stretch may be the leftover echo: the canceller is in use, and it was never clearly louder. */
+  private quieterThanEcho(): boolean {
+    return this.listener?.echoReduction?.() != null && this.segmentPeak > -Infinity && this.segmentPeak < WORDS_OVER_ECHO_DB;
   }
 
   private stopWatchingEcho() {
@@ -375,24 +416,37 @@ export class VoiceSession {
    */
   private startCutInCheck() {
     this.stopCutInCheck();
-    this.cutInWindow = [];
-    this.armCutInCheck(CUT_IN_MS);
+    // Speech is recognised a quarter second in, and a short "stop" is nearly over by then: judge
+    // the sound from its start.
+    const from = this.segmentStartedAt - CUT_IN_PREROLL_MS;
+    this.cutInWindow = this.recentReadings.filter((r) => r.at >= from).map(({ mic, out }) => ({ mic, out }));
+    this.cutInJudged = 0;
+    this.armCutInCheck(Math.max(CUT_IN_RECHECK_MS, CUT_IN_MS - (performance.now() - this.segmentStartedAt)));
   }
 
   private armCutInCheck(ms: number) {
     this.cutInTimer = setTimeout(() => {
       this.cutInTimer = null;
-      // The latest CUT_IN_MS of readings (the window rolls on while the stretch of sound goes on).
-      const window = this.cutInWindow.slice(-Math.round(CUT_IN_MS / ECHO_TICK_MS));
-      this.cutInWindow = window;
       if (this.state.phase !== "speaking" || !this.ducked || !this.segmentActive || this.approval) return;
       const noise = this.quietLevels.length ? percentile(this.quietLevels, 0.5) : -60;
-      const over = heardOverEcho(window, this.echoGaps, noise);
+      // Every CUT_IN_MS stretch not judged yet, from just before the sound was recognised on (a
+      // short "stop" can be over before then); the window rolls on while the sound goes on.
+      const size = Math.round(CUT_IN_MS / ECHO_TICK_MS);
+      const readings = this.cutInWindow;
+      let window = readings.slice(-size);
+      let over = false;
+      for (let end = Math.min(readings.length, Math.max(size, this.cutInJudged + 1)); end <= readings.length && !over; end++) {
+        window = readings.slice(Math.max(0, end - size), end);
+        over = heardOverEcho(window, this.echoGaps, noise);
+      }
+      this.cutInWindow = readings.slice(-(size - 1));
+      this.cutInJudged = this.cutInWindow.length;
       debugVoice(
         "cut-in check",
         over ? "STOP" : "keep talking",
         JSON.stringify({
           echoGap: this.echoGaps.length ? Math.round(percentile(this.echoGaps, 0.9)) : null,
+          cancelled: Math.round(this.listener?.echoReduction?.() ?? 0),
           gaps: this.echoGaps.length,
           noise: Math.round(noise),
           mic: window.map((w) => Math.round(w.mic)).join(" "),
@@ -420,16 +474,20 @@ export class VoiceSession {
     return `${this.lastSpoken} ${this.speaker?.spoken ?? ""}`.slice(-900);
   }
 
+  private isStop(text: string): boolean {
+    return parseVoiceCommand(text, useStore.getState().bots)?.type === "stop" || endsWithStop(text);
+  }
+
   /**
    * Live caption heard while the bot talks: is it the user cutting in (a command like "stop", or
    * two or more real words that aren't the bot's own voice coming back)?
    */
   private isCutIn(caption: string): boolean {
     if (this.approval || this.bargeMode() === "off") return false;
-    if (parseVoiceCommand(caption, useStore.getState().bots)?.type === "stop" || endsWithStop(caption)) return true;
+    if (this.isStop(caption)) return true;
     // "Thank you for watching", "foreign foreign": what speech models make of noise and faint echo.
     if (isLikelyHallucination(caption)) return false;
-    return soundsLikeUser(caption, this.recentSpeech());
+    return soundsLikeUser(caption, this.recentSpeech()) && !this.quieterThanEcho();
   }
 
   /**
@@ -553,6 +611,11 @@ export class VoiceSession {
       this.clearIdle();
       this.segmentActive = true;
       this.segmentStartedAt = performance.now();
+      // The detector notices sound a little late: the readings just before may be the user, not echo.
+      this.pendingGaps = this.pendingGaps.filter((g) => g.at < this.segmentStartedAt - CUT_IN_PREROLL_MS);
+      this.segmentPeak = -Infinity;
+      this.segmentMargins = [];
+      for (const r of this.recentReadings) if (r.at >= this.segmentStartedAt - CUT_IN_PREROLL_MS) this.noteMargin(r.mic, r.out);
       this.segmentDuringSpeech = phase === "speaking" || phase === "thinking" || performance.now() - this.speechEndedAt < ECHO_TAIL_MS;
       if (phase === "listening") this.set({ phase: "hearing", partial: "" });
       return;
@@ -593,6 +656,18 @@ export class VoiceSession {
     }
     if (event.type === "silent") {
       this.fail(event.message);
+      return;
+    }
+    if (event.type === "short") {
+      // Too short to start a turn, said while the bot talks or thinks: only a stop counts (a cough, a
+      // stray word or its own echo doesn't).
+      const now = this.state.phase;
+      const echo = ` ${normalize(this.recentSpeech())} `.includes(` ${normalize(event.text)} `);
+      if ((now === "speaking" || now === "thinking") && !this.approval && this.bargeMode() !== "off" && this.isStop(event.text) && !echo) {
+        debugVoice("stopped by a short word", event.text);
+        this.interrupt();
+        this.enterListening();
+      }
       return;
     }
     if (event.type === "partial") {
@@ -740,7 +815,8 @@ export class VoiceSession {
     if (duringSpeech && !command) {
       // Began while the bot was talking: its own voice, or the user (maybe both, echo first).
       const own = userPart(text, this.recentSpeech());
-      if (own === null) {
+      if (own === null || (phase === "speaking" && this.quieterThanEcho())) {
+        if (own !== null) debugVoice("words, but never louder than the leftover echo", text, Math.round(this.segmentPeak));
         early?.discard();
         this.unduck();
         if (phase === "hearing") this.enterListening();

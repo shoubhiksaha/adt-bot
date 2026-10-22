@@ -38,6 +38,9 @@ export async function listVoices(): Promise<DeviceVoice[]> {
   return voices.map((v) => ({ name: v.name, lang: v.lang, local: v.localService }));
 }
 
+export const NO_DEVICE_VOICES =
+  "This computer has no system voices. Choose a natural voice in Settings → Voice, or install them (on Linux: speech-dispatcher and espeak-ng).";
+
 /** macOS/iOS novelty and legacy voices that sound robotic. */
 const ROBOTIC = /\b(albert|bad news|bahh|bells|boing|bubbles|cellos|deranged|good news|hysterical|jester|organ|superstar|trinoids|whisper|wobble|zarvox|fred|junior|ralph|kathy|grandma|grandpa|rocko|shelley|sandy|flo|reed|eddy|compact)\b/i;
 
@@ -147,6 +150,8 @@ export function speechLevel(): number {
 }
 
 let duck: GainNode | null = null;
+/** A copy of what goes to the speakers, for voice mode's echo canceller (src/lib/pcm-worklet.js). */
+let reference: MediaStreamAudioDestinationNode | null = null;
 
 /**
  * How loud the bot's voice is coming out right now, in dB, after it's turned down for a cut-in;
@@ -164,9 +169,20 @@ function outputNode(ctx: AudioContext): AudioNode {
     analyser.fftSize = 1024;
     duck = ctx.createGain();
     analyser.connect(duck).connect(ctx.destination);
+    reference = ctx.createMediaStreamDestination();
+    reference.channelCount = 1;
+    duck.connect(reference);
     samples = new Float32Array(analyser.fftSize);
   }
   return analyser;
+}
+
+/**
+ * The page's voice as it goes to the speakers (after it's turned down for a cut-in), live: voice
+ * mode's microphone subtracts its echo. Null until the page has spoken.
+ */
+export function speechReference(): MediaStream | null {
+  return reference?.stream ?? null;
 }
 
 /**
@@ -380,6 +396,9 @@ export function createSpeaker(context: TtsContext, hooks: SpeakerHooks = {}): Sp
       const finish = () => {
         clearTimeout(watchdog);
         if (ticker) clearInterval(ticker);
+        // No system voices listed and nothing was spoken (Linux without speech-dispatcher): say why,
+        // rather than staying silent. (Voices can be listed late, so it's tried anyway.)
+        if (!started && !stopped && !chosen && !speechSynthesis.getVoices().length) hooks.onError?.(NO_DEVICE_VOICES);
         if (activeUtterance === utterance) activeUtterance = null;
         deviceSpeaking = false;
         hooks.onProgress?.(text.length);

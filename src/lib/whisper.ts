@@ -136,6 +136,8 @@ export type ListenerEvent =
   | { type: "speech" }
   /** The sound that started a turn was too short to be speech. */
   | { type: "discard" }
+  /** What a sound too short to start a turn said, while the bot talks or thinks (a quick "stop"). */
+  | { type: "short"; text: string }
   | { type: "partial"; text: string }
   /** The speaker has probably finished (not certain yet): what they said, to start the reply early. */
   | { type: "tentative"; text: string }
@@ -149,6 +151,9 @@ export type ListenerEvent =
   | { type: "silent"; message: string }
   /** The turn model judged a pause: probability that the speaker had finished, how long it took, and where. */
   | { type: "turn"; probability: number; ms?: number; gpu?: boolean };
+
+/** Echo turned down this far (dB) by the canceller lets the detector be less strict while the bot talks. */
+const ECHO_CANCELLED_DB = 18;
 
 /** About 3 s of level reports (one per 64 ms) at exactly zero, right after the microphone opened. */
 const SILENT_REPORTS = 48;
@@ -171,6 +176,8 @@ export type ListenerOptions = {
   partials: boolean;
   /** Report probable ends of turn ("tentative"), for early replies in voice mode. */
   early?: boolean;
+  /** Voice mode: take the bot's own voice out of the microphone (setEchoReference). */
+  echoCancel?: boolean;
   onEvent: (event: ListenerEvent) => void;
 };
 
@@ -183,6 +190,10 @@ export class Listener {
   private stream: MediaStream | null = null;
   private context: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
+  /** The bot's voice going to the speakers, whose echo the worklet takes out (setEchoReference). */
+  private reference: MediaStream | null = null;
+  private referenceSource: MediaStreamAudioSourceNode | null = null;
+  private echoReductionDb: number | null = null;
   /** The microphone's loudness, read on the page every frame (the orb), not via the worker. */
   private analyser: AnalyserNode | null = null;
   private levelSamples: Float32Array<ArrayBuffer> | null = null;
@@ -261,15 +272,31 @@ export class Listener {
     this.context = new AudioContext({ sampleRate: 16000 });
     await this.context.audioWorklet.addModule(workletUrl);
     const source = this.context.createMediaStreamSource(this.stream);
-    this.node = new AudioWorkletNode(this.context, "pcm-frames");
+    // The second input is the bot's voice, for cancelling its echo; the output is the microphone
+    // with it taken out (what the speech worker gets, too).
+    this.node = new AudioWorkletNode(this.context, "pcm-frames", {
+      numberOfInputs: 2,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+      processorOptions: { echoCancel: Boolean(options.echoCancel) },
+    });
+    this.echoReductionDb = null;
+    this.node.port.onmessage = (e: MessageEvent<{ echoReduction?: number | null }>) => {
+      if (e.data?.echoReduction === undefined) return;
+      // null: the canceller stopped (it failed), so the echo is as loud as ever again.
+      this.echoReductionDb = e.data.echoReduction;
+      this.applySensitivity();
+    };
     // Keep the node pulled by the audio graph without making any sound.
     const silent = this.context.createGain();
     silent.gain.value = 0;
-    source.connect(this.node).connect(silent).connect(this.context.destination);
+    source.connect(this.node, 0, 0);
+    this.node.connect(silent).connect(this.context.destination);
     this.analyser = this.context.createAnalyser();
     this.analyser.fftSize = 512;
     this.levelSamples = new Float32Array(this.analyser.fftSize);
-    source.connect(this.analyser);
+    this.node.connect(this.analyser);
+    this.attachReference();
     if (this.context.state === "suspended") await this.context.resume();
 
     const channel = new MessageChannel();
@@ -312,6 +339,9 @@ export class Listener {
     );
     await ready;
     this.lastFrameAt = performance.now();
+    // A fresh start resets the detector: apply this listener's strictness again (after a reopen).
+    this.appliedThreshold = 0;
+    this.applySensitivity();
   }
 
   private suspend() {
@@ -327,7 +357,33 @@ export class Listener {
   }
 
   /** Stops this listener's microphone and audio graph (the worker keeps running). */
+  private attachReference() {
+    this.referenceSource?.disconnect();
+    this.referenceSource = null;
+    if (!this.context || !this.node || !this.reference) return;
+    try {
+      this.referenceSource = this.context.createMediaStreamSource(this.reference);
+      this.referenceSource.connect(this.node, 0, 1);
+    } catch {
+      // No echo cancelling: voice mode still compares the microphone with the bot's output.
+    }
+  }
+
+  /** What the bot's voice sends to the speakers (see speechReference in tts.ts): its echo is taken out of the microphone. */
+  setEchoReference(stream: MediaStream | null) {
+    if (stream === this.reference) return;
+    this.reference = stream;
+    this.attachReference();
+  }
+
+  /** How far the echo canceller turns the bot's echo down while it talks (dB); null before it has worked. */
+  echoReduction(): number | null {
+    return this.echoReductionDb;
+  }
+
   private release() {
+    this.referenceSource?.disconnect();
+    this.referenceSource = null;
     this.node?.disconnect();
     this.node = null;
     this.analyser?.disconnect();
@@ -343,8 +399,25 @@ export class Listener {
   }
 
   /** While the bot talks, require clearer speech to start a turn (ignores most echo). */
+  private strict = false;
+  private appliedThreshold = 0;
+
   setSensitivity(level: "normal" | "strict") {
-    this.configure({ startThreshold: level === "strict" ? 0.85 : 0.6 });
+    this.strict = level === "strict";
+    this.appliedThreshold = 0;
+    this.applySensitivity();
+  }
+
+  /**
+   * Strict while the bot talks or thinks, so its echo doesn't start turns; less so once the echo
+   * canceller has the echo well down (a quiet "stop" then still starts one). A word too short to
+   * start a turn is still checked for "stop" meanwhile.
+   */
+  private applySensitivity() {
+    const startThreshold = !this.strict ? 0.6 : (this.echoReductionDb ?? 0) >= ECHO_CANCELLED_DB ? 0.7 : 0.85;
+    if (startThreshold === this.appliedThreshold) return;
+    this.appliedThreshold = startThreshold;
+    this.configure({ startThreshold, catchShortWords: this.strict });
   }
 
   setMuted(muted: boolean) {
@@ -377,7 +450,9 @@ export class Listener {
 
   /** Finish the current utterance now. */
   flush() {
-    getWorker().postMessage({ type: "flush", listener: this.id });
+    // The worklet still holds the last moment of sound (its echo-cancelling delay, a part frame).
+    this.node?.port.postMessage({ drain: true });
+    setTimeout(() => getWorker().postMessage({ type: "flush", listener: this.id }), 50);
   }
 
   close() {

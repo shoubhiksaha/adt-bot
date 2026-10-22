@@ -34,8 +34,8 @@ export type SegmentEvent =
   | { type: "start" }
   /** The utterance has passed `minSpeechMs` of speech, so it isn't a cough or click. Once per utterance. */
   | { type: "speech" }
-  /** The utterance ended too short to count as speech and was dropped. */
-  | { type: "discard" }
+  /** The utterance ended too short to count as speech and was dropped (its audio: a short word may still matter). */
+  | { type: "discard"; audio: Float32Array }
   /** Silence just began: a good moment to start transcribing speculatively. */
   | { type: "pause"; audio: Float32Array; version: number }
   /** `lullMs` of silence: the speaker has probably finished, though the turn isn't over yet. Once per pause. */
@@ -188,7 +188,7 @@ export class Segmenter {
       const version = this.version;
       const silenceMs = ended ? Math.round(this.silence * FRAME_MS) : 0;
       this.reset();
-      events.push(long ? { type: "end", audio, version, silenceMs } : { type: "discard" });
+      events.push(long ? { type: "end", audio, version, silenceMs } : { type: "discard", audio });
     }
     return events;
   }

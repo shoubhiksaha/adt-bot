@@ -10,7 +10,7 @@ import { VoiceSession } from "./voice-session";
 vi.mock("./transport", () => ({ providerFetch: (url: string, init: RequestInit) => fetch(url, init), detectEnv: async () => ({ platform: "web", proxy: false }) }));
 
 // The microphone side: a stand-in listener whose events each test sends.
-const mic = vi.hoisted(() => ({ emit: (_event: Record<string, unknown>) => undefined as unknown, early: false as boolean | undefined, level: 0.1 }));
+const mic = vi.hoisted(() => ({ emit: (_event: Record<string, unknown>) => undefined as unknown, early: false as boolean | undefined, level: 0.1, cancelled: null as number | null }));
 vi.mock("./whisper", async () => {
   const models = await vi.importActual<typeof import("./speech-models")>("./speech-models");
   return {
@@ -22,7 +22,7 @@ vi.mock("./whisper", async () => {
       open: async (options: { early?: boolean; onEvent: (event: Record<string, unknown>) => void }) => {
         mic.emit = options.onEvent;
         mic.early = options.early;
-        return { setPartials: () => undefined, setSensitivity: () => undefined, setMuted: () => undefined, flush: () => undefined, close: () => undefined, level: () => mic.level };
+        return { setPartials: () => undefined, setSensitivity: () => undefined, setMuted: () => undefined, flush: () => undefined, close: () => undefined, level: () => mic.level, echoReduction: () => mic.cancelled };
       },
     },
   };
@@ -38,6 +38,7 @@ vi.mock("./tts", async () => {
     duckSpeech: () => undefined,
     outputDb: () => out.db,
     warmDeviceVoice: () => undefined,
+    speechReference: () => null,
     createSpeaker: (_context: unknown, hooks: { onSentence?: (s: string) => void } = {}) => {
       let spoken = "";
       return {
@@ -247,6 +248,40 @@ describe("talking over it", () => {
     expect(s.state.phase).toBe("hearing");
     out.speaking = false;
   });
+
+  it("a \"stop\" too short to start a turn still stops it; a cough or its own echo doesn't", async () => {
+    const s = await open();
+    out.speaking = true;
+    plans = [{ chunks: ["Rome began as a small settlement. ", "It grew into an empire. ", "Then it fell."], gap: 400 }];
+    mic.emit({ type: "start" });
+    mic.emit({ type: "utterance", text: "Tell me about Rome", ms: 3, waitMs: 300 });
+    await until(() => s.state.phase === "speaking");
+    for (const heard of ["Thank you.", "Rome began", "a small"]) {
+      mic.emit({ type: "start" });
+      mic.emit({ type: "discard" });
+      mic.emit({ type: "short", text: heard });
+      expect(s.state.phase).toBe("speaking");
+    }
+    mic.emit({ type: "start" });
+    mic.emit({ type: "discard" });
+    mic.emit({ type: "short", text: "Stop." });
+    expect(s.state.phase).toBe("listening");
+    out.speaking = false;
+  });
+
+  it("its own \"wait\" coming back as a short sound doesn't stop it", async () => {
+    const s = await open();
+    out.speaking = true;
+    plans = [{ chunks: ["Now wait for it. ", "The ball drops. ", "Then it bounces."], gap: 400 }];
+    mic.emit({ type: "start" });
+    mic.emit({ type: "utterance", text: "Show me a trick", ms: 3, waitMs: 300 });
+    await until(() => s.state.phase === "speaking" && said().includes("wait for it"));
+    mic.emit({ type: "start" });
+    mic.emit({ type: "discard" });
+    mic.emit({ type: "short", text: "Wait." });
+    expect(s.state.phase).toBe("speaking");
+    out.speaking = false;
+  });
 });
 
 describe("talking over it, before the words are known", () => {
@@ -286,6 +321,55 @@ describe("talking over it, before the words are known", () => {
     mic.emit({ type: "speech" });
     await until(() => s.state.phase === "hearing", 900);
     out.speaking = false;
+  });
+
+  it("a short \"stop\", loudest before the detector is sure it's speech, still stops it", async () => {
+    out.db = -12;
+    const s = await speakingWithEcho(0);
+    mic.emit({ type: "start" });
+    mic.level = 0.6;
+    await sleep(250);
+    // Already over by the time it's recognised as speech.
+    mic.level = 0;
+    mic.emit({ type: "speech" });
+    await until(() => s.state.phase === "hearing", 900);
+    out.speaking = false;
+  });
+
+  it("a \"stop\" loudest just before the detector noticed it still stops it", async () => {
+    out.db = -12;
+    const s = await speakingWithEcho(0);
+    mic.level = 0.6;
+    await sleep(150);
+    mic.emit({ type: "start" });
+    mic.level = 0;
+    await sleep(250);
+    mic.emit({ type: "speech" });
+    await until(() => s.state.phase === "hearing", 900);
+    out.speaking = false;
+  });
+
+  it("with the echo cancelled, garbled leftover echo isn't taken for the user; a voice over it is", async () => {
+    mic.cancelled = 20;
+    try {
+      const s = await speakingWithEcho(0.15);
+      // Words unlike anything the bot said, but no louder than the leftover echo: its echo.
+      mic.emit({ type: "start" });
+      await sleep(300);
+      mic.emit({ type: "utterance", text: "The gender was far away from here", ms: 3, waitMs: 300 });
+      await sleep(100);
+      expect(s.state.phase).toBe("speaking");
+      // The same words clearly over it: the user.
+      mic.emit({ type: "start" });
+      mic.level = 0.7;
+      await sleep(300);
+      mic.emit({ type: "utterance", text: "actually tell me about Rome instead", ms: 3, waitMs: 300 });
+      await until(() => requests.length === 2);
+      expect(userWords(1)).toBe("actually tell me about Rome instead");
+      out.speaking = false;
+    } finally {
+      mic.cancelled = null;
+    }
   });
 
   it("doesn't stop for its own voice coming back, however loud", async () => {
@@ -448,6 +532,17 @@ describe("numbers and stray words around the user's words", () => {
     const rome = "Here's Rome in six sentences. According to legend, Rome was founded in seven fifty-three BC by Romulus, and it was ruled by kings until about 509 BC.";
     expect(userPart("Here's Rome in six sentences, according to legend Rome was founded in 1784. Tell me about Paris instead.", rome)).toBe("Tell me about Paris instead.");
     expect(userPart("According to legend, Rome was founded in September. Wait, stop. Tell me about Paris instead.", rome)).toBe("Wait, stop. Tell me about Paris instead.");
+  });
+
+  it("knows its echo when it starts word for word and only the last words are misheard (seen live)", async () => {
+    const { soundsLikeUser, userPart } = await import("./voice-commands");
+    const spoken = "Rome began as a small settlement of shepherds on the Palatine Hill, close to the Tiber river.";
+    expect(userPart("Rome began as a song set.", spoken)).toBeNull();
+    expect(soundsLikeUser("Rome began as a song set.", spoken)).toBe(false);
+    // The user's own sentence after the echo still counts, even a short one.
+    expect(userPart("Rome began as a small. Tell me about Paris instead.", spoken)).toBe("Tell me about Paris instead.");
+    expect(userPart("Rome began as a small settlement no wait go back", spoken)).not.toBeNull();
+    expect(userPart("Rome began as a small settlement explain that", spoken)).not.toBeNull();
   });
 });
 

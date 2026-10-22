@@ -22,13 +22,26 @@ import { localSpeechModel, onSpeechNotice, onWhisperProgress, preloadWhisper, SP
 import { LIVE_MODELS, LIVE_VOICES } from "../../lib/gemini-live";
 import { ModelInput, Section, Toggle } from "./controls";
 
+/** Whose system voice settings to point to (null on phones). */
+const DESKTOP_OS =
+  typeof navigator === "undefined" || /Android|iPhone|iPad/.test(navigator.userAgent)
+    ? null
+    : /Mac/.test(navigator.platform)
+      ? "mac"
+      : /Win/.test(navigator.platform)
+        ? "windows"
+        : /Linux/.test(navigator.platform)
+          ? "linux"
+          : null;
+
 export function VoiceSettings() {
   const providers = useStore((s) => s.providers);
   const voice = useStore((s) => s.settings.voice);
   const autoSpeak = useStore((s) => s.settings.autoSpeak);
   const useProxy = useStore((s) => s.settings.useProxy);
   const bots = useStore((s) => s.bots);
-  const [voices, setVoices] = useState<DeviceVoice[]>([]);
+  /** The system's voices (null while they load). */
+  const [voices, setVoices] = useState<DeviceVoice[] | null>(null);
   const [autoVoice, setAutoVoice] = useState<string>("");
   const [downloaded, setDownloaded] = useState<boolean | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
@@ -41,8 +54,15 @@ export function VoiceSettings() {
   const wakeName = bots[0]?.nickname?.trim() || bots[0]?.name || "ADT";
 
   useEffect(() => {
-    void listVoices().then(setVoices).catch(() => setVoices([]));
-    void bestVoice("").then((v) => setAutoVoice(v?.name ?? ""));
+    const load = () => {
+      void listVoices().then(setVoices).catch(() => setVoices([]));
+      void bestVoice("").then((v) => setAutoVoice(v?.name ?? ""));
+    };
+    load();
+    // Some systems list their voices late.
+    if (typeof speechSynthesis === "undefined") return;
+    speechSynthesis.addEventListener("voiceschanged", load);
+    return () => speechSynthesis.removeEventListener("voiceschanged", load);
   }, []);
   useEffect(() => {
     void whisperDownloaded(voice.localModel).then((yes) => setDownloaded(yes));
@@ -53,7 +73,7 @@ export function VoiceSettings() {
   const speechModel = localSpeechModel(voice.localModel);
   const systemLanguage = typeof navigator === "undefined" ? "en" : navigator.language || "en";
 
-  const sortedVoices = [...voices].sort((a, b) => rankVoice(b) - rankVoice(a) || a.name.localeCompare(b.name));
+  const sortedVoices = [...(voices ?? [])].sort((a, b) => rankVoice(b) - rankVoice(a) || a.name.localeCompare(b.name));
   const [testError, setTestError] = useState("");
   const test = () => {
     setTestError("");
@@ -184,10 +204,19 @@ export function VoiceSettings() {
                 </option>
               ))}
             </select>
-            <span className="small muted">
-              On a Mac, nicer voices are free: System Settings → Accessibility → Spoken Content → System voice → Manage voices, then add a
-              “Premium” or “Enhanced” voice. It's picked automatically.
-            </span>
+            {voices?.length === 0 ? (
+              <span className="small error-text">
+                This computer has no system voices. Choose “Natural, on this device” above, or install them
+                {DESKTOP_OS === "linux" ? " (for example: sudo apt install speech-dispatcher espeak-ng) and restart ADT Bot" : ""}.
+              </span>
+            ) : DESKTOP_OS === "mac" ? (
+              <span className="small muted">
+                On a Mac, nicer voices are free: System Settings → Accessibility → Spoken Content → System voice → Manage voices, then add a
+                “Premium” or “Enhanced” voice. It's picked automatically.
+              </span>
+            ) : DESKTOP_OS === "windows" ? (
+              <span className="small muted">On Windows, more voices are free: Settings → Time & language → Speech → Add voices. The best one is picked automatically.</span>
+            ) : null}
           </div>
         )}
 

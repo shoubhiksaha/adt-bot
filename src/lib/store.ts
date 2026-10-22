@@ -525,6 +525,12 @@ export async function unlockBackup(json: string, password: string): Promise<stri
   return JSON.stringify({ ...rest, providers: joined.providers, settings: joined.settings });
 }
 
+/** Different request headers, not counting values a backup made without keys left blank (they stay as they are). */
+function headersDiffer(mine: Record<string, string> = {}, theirs: Record<string, string> = {}) {
+  const names = new Set([...Object.keys(mine), ...Object.keys(theirs)]);
+  return [...names].some((n) => !(n in mine) || !(n in theirs) || (theirs[n] !== "" && theirs[n] !== mine[n]));
+}
+
 /**
  * Providers in a backup that would send your chats somewhere new: a provider you already have whose
  * address changed, or a new one with a key or address filled in. Shown before importing.
@@ -536,7 +542,7 @@ export function importChanges(json: string): string[] {
   for (const p of (data?.providers ?? []) as ProviderConfig[]) {
     const mine = current.get(p.id);
     if (mine && (mine.baseUrl ?? "") !== (p.baseUrl ?? "")) changes.push(`${p.name || p.id}: ${mine.baseUrl || "(default)"} → ${p.baseUrl || "(default)"}`);
-    else if (mine && JSON.stringify(mine.headers ?? {}) !== JSON.stringify(p.headers ?? {})) changes.push(`${p.name || p.id}: different request headers`);
+    else if (mine && headersDiffer(mine.headers, p.headers)) changes.push(`${p.name || p.id}: different request headers`);
     else if (!mine && p.baseUrl) changes.push(`${p.name || p.id} (new): ${p.baseUrl}`);
   }
   // Other places a key is sent: voice services you added, and your own search server.
@@ -552,14 +558,50 @@ export function importChanges(json: string): string[] {
   return changes;
 }
 
+/**
+ * This device's keys that a backup left blank (made without keys), for the same service at the same
+ * address: importing your own backup shouldn't wipe them, and a key never goes anywhere it didn't
+ * go before.
+ */
+function keysToKeep(providers: ProviderConfig[], settings: Settings): Record<string, string> {
+  const codec = appSecretsCodec<{ providers: ProviderConfig[]; settings: Settings }>();
+  const now = getState();
+  const local = codec.split({ providers: now.providers, settings: now.settings }).secrets;
+  const carried = codec.split({ providers, settings }).secrets;
+  const theirs = new Map(providers.map((p) => [p.id, p]));
+  const sameAddress = ([kind, id, item]: string[]) => {
+    if (kind === "provider") {
+      const mine = now.providers.find((p) => p.id === id);
+      const other = theirs.get(id);
+      return Boolean(mine && other && (mine.baseUrl ?? "") === (other.baseUrl ?? ""));
+    }
+    if (kind === "search") return now.settings.search?.engine === settings.search?.engine && (now.settings.search?.url ?? "") === (settings.search?.url ?? "");
+    if (kind === "sync") return (now.settings.sync?.server ?? "") === (settings.sync?.server ?? "");
+    if (kind === "server") return (now.settings.server?.url ?? "") === (settings.server?.url ?? "");
+    if (kind === "voice" && id === "custom") {
+      const mine = now.settings.voice.customVoices?.find((v) => v.id === item);
+      const other = settings.voice?.customVoices?.find((v) => v.id === item);
+      return Boolean(mine && other && (mine.url ?? "") === (other.url ?? ""));
+    }
+    // The cloud voices' keys only ever go to their own service.
+    return kind === "voice";
+  };
+  return Object.fromEntries(Object.entries(local).filter(([k]) => !(k in carried) && sameAddress(JSON.parse(k) as string[])));
+}
+
 export function importData(json: string) {
   const data = JSON.parse(json);
   if (data?.app !== "adt-bot" && data?.app !== "grokbot") throw new Error("This file is not an ADT Bot backup.");
   // A backup file may come from someone else: it can't loosen what bots may do without asking.
   const { agent } = getState().settings;
-  const imported = { ...defaultSettings, ...data.settings };
+  // A backup made without keys, brought back here, keeps this device's keys where it left them blank.
+  const joined = appSecretsCodec<{ providers: ProviderConfig[]; settings: Settings }>().join(
+    { providers: data.providers ?? [], settings: { ...defaultSettings, ...data.settings } },
+    keysToKeep(data.providers ?? [], { ...defaultSettings, ...data.settings }),
+  );
+  const imported = joined.settings;
   setState({
-    providers: data.providers ?? [],
+    providers: joined.providers,
     bots: data.bots ?? [],
     conversations: data.conversations ?? {},
     skills: Array.isArray(data.skills) ? data.skills : getState().skills,

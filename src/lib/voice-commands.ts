@@ -193,6 +193,28 @@ function alignedFlags(heard: string[], spoken: string[]): boolean[] {
   return flags;
 }
 
+/**
+ * The bot's words, word for word (four or more), then one or two misheard ones that start like its
+ * next word ("Rome began as a song set" for "Rome began as a small settlement"): its echo, garbled
+ * at the end. A short cut-in after the echo ("…small settlement, no wait go back") isn't.
+ */
+function garbledEchoTail(heard: string, spoken: string): boolean {
+  const h = normalize(heard).split(" ").filter(Boolean);
+  const s = normalize(spoken).split(" ").filter(Boolean).slice(-200);
+  let lead = 0;
+  let next = "";
+  for (let j = 0; j < s.length; j++) {
+    let k = 0;
+    while (k < h.length && j + k < s.length && h[k] === s[j + k]) k++;
+    if (k > lead) {
+      lead = k;
+      next = s[j + k] ?? "";
+    }
+  }
+  const tail = h.slice(lead);
+  return lead >= 4 && tail.length > 0 && tail.length <= 2 && Boolean(next) && tail[0][0] === next[0] && !parseVoiceCommand(tail.join(" "), []);
+}
+
 /** What the bot said lately, as content words (enough for any echo still in the room). */
 const spokenWords = (spoken: string) => content(spoken).slice(-160);
 
@@ -210,6 +232,7 @@ export function newWords(heard: string, spoken: string): string[] {
  * about Paris") gives back the user's part.
  */
 export function userPart(heard: string, spoken: string): string | null {
+  if (garbledEchoTail(heard, spoken)) return null;
   const own = withoutTrailingEcho(withoutLeadingEcho(heard, spoken), spoken);
   const words = content(own);
   if (!words.length) return null;

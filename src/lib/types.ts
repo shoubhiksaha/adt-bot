@@ -190,6 +190,10 @@ export type Message = {
   narrationEnd?: number;
   model?: string;
   error?: string;
+  /** What fixes `error` when trying again as it is won't: a settings page, the bot's own settings, or a clearer request. */
+  fix?: { kind: "settings"; tab: string } | { kind: "bot"; botId: string } | { kind: "prompt" };
+  /** Made by /imagine or /video (so trying again after an error makes one, not a text answer). */
+  command?: "imagine" | "video";
   /** Transient progress line, e.g. "Searching the web…". */
   status?: string;
   /** Total time and time to first token, in milliseconds. */

@@ -312,12 +312,18 @@ export const guestJs = `"use strict";
     if (!value) return;
     $("send-btn").disabled = true;
     setError("send-error", "");
+    // Cleared now, so the next message can be typed while this one sends; put back if it fails.
+    text.value = "";
+    text.style.height = "auto";
+    const restore = () => { if (!text.value) text.value = value; };
     try {
       const { ok, status: code, data } = await post("/send", { text: value });
-      if (ok) { text.value = ""; text.style.height = "auto"; }
-      else if (code === 401) { saveToken(""); show("join-view"); setError("join-error", "Please join again."); }
+      if (ok) return;
+      restore();
+      if (code === 401) { saveToken(""); show("join-view"); setError("join-error", "Please join again."); }
       else setError("send-error", data.error || "Not sent.");
     } catch {
+      restore();
       setError("send-error", "Not sent: the room can't be reached.");
     } finally {
       $("send-btn").disabled = false;
