@@ -1,0 +1,13 @@
+# Smoke test only (deploy/test/smoke.sh): the real ADT Bot image and settings, a localhost-only
+# port, and a small stand-in for the speech service instead of the 2 GB speaches image.
+services:
+  adt-bot:
+    ports: !override
+      - "127.0.0.1:18787:8787"
+  speech:
+    image: node:22-alpine
+    command: ["node", "/mock/mock-speech.mjs"]
+    volumes: !override
+      - ./test:/mock:ro
+    environment: !reset {}
+    healthcheck: !reset {}

@@ -4,7 +4,9 @@ FROM node:24-alpine AS build
 WORKDIR /app
 ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
 COPY package.json package-lock.json ./
-RUN npm ci --ignore-scripts
+# Not `npm ci`: newer npm (11.19+) refuses a lock without the optional Windows-signing packages of
+# electron-winstaller, which npm on macOS leaves out. `npm install` keeps every locked version.
+RUN npm install --ignore-scripts --no-audit --no-fund
 COPY . .
 RUN npm run build
 

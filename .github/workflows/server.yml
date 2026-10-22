@@ -1,0 +1,40 @@
+# The self-hosted server (deploy/): builds and starts it as a fresh server would, and builds the
+# image for Arm (Oracle's free VM). Runs when the server, its image or its dependencies change.
+name: Server
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - package.json
+      - package-lock.json
+      - server/**
+      - deploy/**
+      - .github/workflows/server.yml
+
+jobs:
+  smoke:
+    name: Start it and check it (x86)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Smoke test
+        run: sh deploy/test/smoke.sh
+
+  arm64:
+    name: Build the image for Arm
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build linux/arm64
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: false
