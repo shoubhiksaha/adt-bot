@@ -154,6 +154,8 @@ export type ListenerEvent =
 
 /** Echo turned down this far (dB) by the canceller lets the detector be less strict while the bot talks. */
 const ECHO_CANCELLED_DB = 18;
+/** The detector's threshold for a moment after a sudden sound over the bot: a short "stop" scores low. */
+const EAGER_THRESHOLD = 0.3;
 
 /** About 3 s of level reports (one per 64 ms) at exactly zero, right after the microphone opened. */
 const SILENT_REPORTS = 48;
@@ -381,6 +383,20 @@ export class Listener {
     return this.echoReductionDb;
   }
 
+  /** For a moment after a sudden sound over the bot (voice mode): take even a short word as speech. */
+  setEager(eager: boolean) {
+    if (eager === this.eager) return;
+    this.eager = eager;
+    this.applySensitivity();
+  }
+
+  /** The system's own echo cancelling already leaves next to no echo in the microphone (voice mode measures it). */
+  setEchoRemoved(removed: boolean) {
+    if (removed === this.echoRemoved) return;
+    this.echoRemoved = removed;
+    this.applySensitivity();
+  }
+
   private release() {
     this.referenceSource?.disconnect();
     this.referenceSource = null;
@@ -401,6 +417,8 @@ export class Listener {
   /** While the bot talks, require clearer speech to start a turn (ignores most echo). */
   private strict = false;
   private appliedThreshold = 0;
+  private echoRemoved = false;
+  private eager = false;
 
   setSensitivity(level: "normal" | "strict") {
     this.strict = level === "strict";
@@ -409,12 +427,12 @@ export class Listener {
   }
 
   /**
-   * Strict while the bot talks or thinks, so its echo doesn't start turns; less so once the echo
-   * canceller has the echo well down (a quiet "stop" then still starts one). A word too short to
-   * start a turn is still checked for "stop" meanwhile.
+   * Strict while the bot talks or thinks, so its echo doesn't start turns; less so once the echo is
+   * well down, by our canceller or the system's (a quiet "stop" then still starts one). A word too
+   * short to start a turn is still checked for "stop" meanwhile.
    */
   private applySensitivity() {
-    const startThreshold = !this.strict ? 0.6 : (this.echoReductionDb ?? 0) >= ECHO_CANCELLED_DB ? 0.7 : 0.85;
+    const startThreshold = this.eager ? EAGER_THRESHOLD : !this.strict ? 0.6 : this.echoRemoved || (this.echoReductionDb ?? 0) >= ECHO_CANCELLED_DB ? 0.7 : 0.85;
     if (startThreshold === this.appliedThreshold) return;
     this.appliedThreshold = startThreshold;
     this.configure({ startThreshold, catchShortWords: this.strict });

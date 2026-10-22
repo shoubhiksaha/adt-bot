@@ -10,7 +10,7 @@ import { VoiceSession } from "./voice-session";
 vi.mock("./transport", () => ({ providerFetch: (url: string, init: RequestInit) => fetch(url, init), detectEnv: async () => ({ platform: "web", proxy: false }) }));
 
 // The microphone side: a stand-in listener whose events each test sends.
-const mic = vi.hoisted(() => ({ emit: (_event: Record<string, unknown>) => undefined as unknown, early: false as boolean | undefined, level: 0.1, cancelled: null as number | null }));
+const mic = vi.hoisted(() => ({ emit: (_event: Record<string, unknown>) => undefined as unknown, early: false as boolean | undefined, level: 0.1, cancelled: null as number | null, removed: false }));
 vi.mock("./whisper", async () => {
   const models = await vi.importActual<typeof import("./speech-models")>("./speech-models");
   return {
@@ -22,20 +22,29 @@ vi.mock("./whisper", async () => {
       open: async (options: { early?: boolean; onEvent: (event: Record<string, unknown>) => void }) => {
         mic.emit = options.onEvent;
         mic.early = options.early;
-        return { setPartials: () => undefined, setSensitivity: () => undefined, setMuted: () => undefined, flush: () => undefined, close: () => undefined, level: () => mic.level, echoReduction: () => mic.cancelled };
+        return {
+          setPartials: () => undefined,
+          setSensitivity: () => undefined,
+          setMuted: () => undefined,
+          flush: () => undefined,
+          close: () => undefined,
+          level: () => mic.level,
+          echoReduction: () => mic.cancelled,
+          setEchoRemoved: (removed: boolean) => (mic.removed = removed),
+        };
       },
     },
   };
 });
 
 // The bot's voice: records what it says; every sentence "plays" instantly.
-const out = vi.hoisted(() => ({ said: [] as string[], speaking: false, db: -20 }));
+const out = vi.hoisted(() => ({ said: [] as string[], speaking: false, db: -20, ducked: false }));
 vi.mock("./tts", async () => {
   const { takeSentences } = await vi.importActual<typeof import("./tts")>("./tts");
   return {
     takeSentences,
     chime: () => undefined,
-    duckSpeech: () => undefined,
+    duckSpeech: (on: boolean) => (out.ducked = on),
     outputDb: () => out.db,
     warmDeviceVoice: () => undefined,
     speechReference: () => null,
@@ -154,7 +163,9 @@ beforeEach(() => {
   out.said = [];
   out.speaking = false;
   out.db = -20;
+  out.ducked = false;
   mic.level = 0.1;
+  mic.removed = false;
   const provider: ProviderConfig = { id: "p", presetId: "custom", name: "P", kind: "openai", baseUrl: base, apiKey: "k", models: [] };
   useStore.setState({
     hydrated: true,
@@ -346,6 +357,40 @@ describe("talking over it, before the words are known", () => {
     await sleep(250);
     mic.emit({ type: "speech" });
     await until(() => s.state.phase === "hearing", 900);
+    out.speaking = false;
+  });
+
+  it("with the system's echo cancelling muting the mic, a voice's first tenth of a second turns it down at once", async () => {
+    // Seen live (MacBook Air, full volume): the mic is near silent while the bot talks, and only the
+    // first ~0.1 s of a "stop" gets through, too little for the speech detector.
+    out.db = -12;
+    const s = await speakingWithEcho(0);
+    await until(() => mic.removed, 2000);
+    mic.level = 0.6;
+    await until(() => out.ducked, 200);
+    // Muted again and no speech follows (a knock): back up, still talking.
+    mic.level = 0;
+    await until(() => !out.ducked, 1200);
+    expect(s.state.phase).toBe("speaking");
+    // A voice: turned down, the rest of it gets through, the detector hears speech, and it stops.
+    mic.level = 0.6;
+    await until(() => out.ducked, 200);
+    mic.emit({ type: "start" });
+    await sleep(200);
+    mic.emit({ type: "speech" });
+    await until(() => s.state.phase === "hearing", 900);
+    out.speaking = false;
+  });
+
+  it("doesn't turn down for its own echo rising and falling, or before the echo is known", async () => {
+    out.db = -12;
+    // Loud echo (no system echo cancelling): a louder syllable isn't a sudden voice.
+    const s = await speakingWithEcho(0.4);
+    expect(mic.removed).toBe(false);
+    mic.level = 0.7;
+    await sleep(300);
+    expect(out.ducked).toBe(false);
+    expect(s.state.phase).toBe("speaking");
     out.speaking = false;
   });
 
