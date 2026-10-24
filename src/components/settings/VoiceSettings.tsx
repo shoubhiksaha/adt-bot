@@ -355,6 +355,14 @@ export function VoiceSettings() {
           />
         )}
         <Toggle checked={voice.concise} onChange={(v) => set({ concise: v })} title="Short spoken answers" hint="Bots answer in a sentence or two, like a phone call, and skip formatting." />
+        {window.adtbotDesktop && (
+          <Toggle
+            checked={Boolean(voice.diagnostics)}
+            onChange={(v) => set({ diagnostics: v })}
+            title="Voice diagnostics"
+            hint="For troubleshooting: saves what voice mode heard and why it stopped or kept talking to voice-debug.log in ADT Bot's folder on this computer. It includes what was said. Turn it off when you're done."
+          />
+        )}
         <div className="field">
           <label htmlFor="voice-model">Model for voice conversations</label>
           <select

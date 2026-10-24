@@ -109,7 +109,12 @@ export function App() {
   useEffect(() => {
     const open = () => setVoice({});
     window.addEventListener("adt:voice-mode", open);
-    return () => window.removeEventListener("adt:voice-mode", open);
+    // ⌥⇧Space from any app (desktop): opens voice mode, or closes it if it's open.
+    const offToggle = desktopOn("adt:voice:toggle", () => setVoice((current) => (current ? null : {})));
+    return () => {
+      window.removeEventListener("adt:voice-mode", open);
+      offToggle();
+    };
   }, []);
 
   const bot = bots.find((b) => b.id === activeBotId);

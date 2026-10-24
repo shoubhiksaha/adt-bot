@@ -36,7 +36,7 @@ export function parseVoiceCommand(text: string, bots: { id: string; name: string
   // Cutting in is often a few words together: "wait, stop", "okay okay stop", "no, hold on".
   const STOPS = "stop|stop talking|stop it|be quiet|quiet|shut up|enough|cancel|never ?mind|hold on|hang on|wait|wait a (?:second|sec|minute)";
   if (new RegExp(`^${PLEASE}(?:(?:ok|okay|no|hey|oh|um|uh|wait|sorry|actually) )*(?:${STOPS})(?: (?:${STOPS}|please|now|thanks|thank you))*$`).test(t)) return { type: "stop" };
-  if (test("goodbye|good bye|bye|bye bye|end voice mode|exit voice mode|close voice mode|stop listening|that's all|that is all|i'm done|we're done")) {
+  if (test("goodbye|good bye|bye|bye bye|end voice mode|exit voice mode|close voice mode|stop listening|that's all|that is all|i'm done|we're done") || endsVoiceMode(t)) {
     return { type: "end" };
   }
   if (test("go to sleep|sleep|standby|stand by|pause listening")) return { type: "standby" };
@@ -89,6 +89,16 @@ export function matchWakeWord(text: string, names: string[]): { woke: boolean; r
     }
   }
   return { woke: false, rest: "" };
+}
+
+/**
+ * Closing voice mode in the user's own words, said anywhere in a short sentence: "you are done for
+ * now, now you can exit the voice mode", "close voice", "turn off voice mode". A question about it
+ * ("how do I exit voice mode?") isn't a request to close it.
+ */
+function endsVoiceMode(t: string): boolean {
+  if (t.split(" ").length > 14 || /^(how|what|why|when|where|can i|does|do i|is it)\b/.test(t)) return false;
+  return /\b(exit|close|end|quit|leave|stop|turn off|switch off|shut down|finish)\b(?: the| this)? voice(?: mode| chat| conversation)?\b/.test(t);
 }
 
 /** Maps the normalized remainder back to the original wording when possible. */
@@ -374,7 +384,12 @@ export function isSubstantial(text: string): boolean {
   return normalize(text).split(" ").filter((w) => w.length > 2).length >= 3;
 }
 
-const YES = /^(yes|yeah|yea|yep|yup|sure|ok|okay|alright|go ahead|do it|allow( it)?|please do|of course|haan?|ha|hya|ji( haan)?|theek hai|thik ache|thik ase|korো|kor)\b/;
+const YES =
+  /^(yes|yeah|yea|yep|yup|sure|ok|okay|alright|all right|go ahead|go for it|do it|just do it|do (?:all of )?(?:it|that|this|them|everything|all)|allow( it)?|approved?|confirm(ed)?|proceed|carry on|please do|of course|absolutely|definitely|you can|you may|haan?|ha|hya|ji( haan)?|theek hai|thik ache|thik ase|korো|kor)\b/;
+/** "Don't ask me again", "no need to ask": a go-ahead, not a no. */
+const DONT_ASK = /\b(?:don'?t|do not|no need to|stop) (?:ask|asking|check|checking)(?: me)?(?:(?: to)? (?:approve|confirm)| for (?:approval|permission))?(?: (?:anything|everything|again))?\b/g;
+/** A long answer that starts with a yes is still a yes, unless it hesitates or says no anywhere. */
+const HESITANT = /\?|\b(but|wait|hold on|hang on|not yet|later|first|before|unless|maybe|don'?t|do not|not|no|nope|stop|cancel|never ?mind|nahi|nahin)\b/;
 const NO = /^(no|nope|nah|don'?t|do not|stop|cancel|deny|never ?mind|nahi|nahin|na|naa|mat( karo)?|thak|dorkar nei)\b/;
 
 /**
@@ -396,6 +411,30 @@ export function yesOrNo(text: string): "allow" | "deny" | null {
   const mixed = (yes && /\b(no|not|don'?t|nahi|nahin)\b/.test(t)) || (no && /\b(yes|yeah|sure|okay|ok|haan)\b/.test(t));
   if (mixed || yes === no) return null;
   return yes ? "allow" : "deny";
+}
+
+/**
+ * The answer to a spoken "Can I …?" in the user's own words: a clear short yes or no (yesOrNo), or a
+ * longer sentence that opens with a yes and never hesitates ("Yes, you can clear it and also see if
+ * there's more to free up"; "do all of it and don't ask me to approve anything"). `rest` is what
+ * they asked for on top, to do once this step is done.
+ */
+export function approvalAnswer(text: string): { answer: "allow" | "deny" | null; rest: string } {
+  const short = yesOrNo(text);
+  if (short) return { answer: short, rest: "" };
+  const raw = text.toLowerCase().replace(DONT_ASK, " ");
+  const t = raw.replace(/[^\p{L}\p{N}' ]+/gu, " ").replace(/\s+/g, " ").trim();
+  const yes = YES.exec(t);
+  if (!yes || HESITANT.test(raw.replace(/[^\p{L}\p{N}'? ]+/gu, " "))) return { answer: null, rest: "" };
+  // What follows the opening yes ("Yes, you can clear it and also…"), from the original wording.
+  const after = text
+    .replace(/^[^\p{L}\p{N}]*/u, "")
+    .slice(yes[0].length)
+    .replace(new RegExp(DONT_ASK.source, "gi"), " ")
+    .replace(/^[\s,.;:!-]+(?:and |also |then |plus )*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return { answer: "allow", rest: isSubstantial(after) ? after : "" };
 }
 
 /** "…and it started as a small kingdom. Stop": a stop said at the end of what was heard, after an echo. */

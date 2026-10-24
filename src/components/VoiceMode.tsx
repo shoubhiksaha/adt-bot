@@ -304,8 +304,13 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
           ? "Talk naturally, and talk over it any time. Say “goodbye” to end."
           : phase === "standby"
             ? `Hands-free: say “Hey ${callName}, …” anytime.`
-            : `Talk naturally and pause when done. Say “stop”, “new chat”, “switch to …”, “search for …”, “slower”, or “goodbye”.`}
-        <span className="hide-touch"> · Space = {tapLabel.toLowerCase()} · M = mute · Esc = end</span>
+            : state.otherAudio
+              ? `Something else is playing sound, so start with “Hey ${callName}, …”. “Stop” and “goodbye” work as usual.`
+              : `Talk naturally and pause when done. Say “stop”, “new chat”, “switch to …”, “search for …”, “slower”, or “goodbye”.`}
+        <span className="hide-touch">
+          {" "}
+          · Space = {tapLabel.toLowerCase()} · M = mute · Esc = end{window.adtbotDesktop?.platform === "darwin" ? " · ⌥⇧Space opens and closes voice mode from any app" : ""}
+        </span>
       </div>
 
       {feed && (

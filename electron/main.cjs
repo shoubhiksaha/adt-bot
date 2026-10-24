@@ -259,8 +259,20 @@ let mainWindow = null;
 // coding agent and screen action the desktop side is running.
 
 const STOP_SHORTCUT = process.platform === "darwin" ? "Command+Shift+Escape" : "Control+Alt+Shift+Escape";
+/** Opens or closes voice mode from any app (the window doesn't come forward: talk while you work). */
+const VOICE_SHORTCUT = "Alt+Shift+Space";
 const STOP_LABEL = process.platform === "darwin" ? "⌘⇧⎋" : "Ctrl+Alt+Shift+Esc";
 const stopAllHandlers = new Set();
+
+/** ⌥⇧Space: voice mode opens or closes in the window, which stays where it is (opened if it was closed). */
+function toggleVoiceMode() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("adt:voice:toggle", {});
+    return;
+  }
+  createWindow();
+  mainWindow?.webContents.once("did-finish-load", () => setTimeout(() => mainWindow?.webContents.send("adt:voice:toggle", {}), 1500));
+}
 
 function stopAllBots(source = "shortcut") {
   for (const handler of stopAllHandlers) {
@@ -421,7 +433,10 @@ app.whenReady().then(() => {
 
   const botsMenu = {
     label: "Bots",
-    submenu: [{ label: `Stop All Bots (${STOP_LABEL} from any app)`, accelerator: STOP_SHORTCUT, click: () => stopAllBots("menu") }],
+    submenu: [
+      { label: "Voice Mode (from any app)", accelerator: VOICE_SHORTCUT, click: () => toggleVoiceMode() },
+      { label: `Stop All Bots (${STOP_LABEL} from any app)`, accelerator: STOP_SHORTCUT, click: () => stopAllBots("menu") },
+    ],
   };
   if (process.platform === "darwin") {
     Menu.setApplicationMenu(
@@ -431,7 +446,22 @@ app.whenReady().then(() => {
     Menu.setApplicationMenu(Menu.buildFromTemplate([{ role: "editMenu" }, { role: "viewMenu" }, botsMenu]));
   }
   if (!globalShortcut.register(STOP_SHORTCUT, () => stopAllBots("shortcut"))) console.warn(`Couldn't register ${STOP_SHORTCUT} (used by another app).`);
+  if (!globalShortcut.register(VOICE_SHORTCUT, () => toggleVoiceMode())) console.warn(`Couldn't register ${VOICE_SHORTCUT} (used by another app).`);
   // Voice mode keeps its timers and audio at full speed while the bot works in other apps.
+  // Settings → Voice → Voice diagnostics: what voice mode heard and decided, kept under 2 MB.
+  ipcMain.handle("adt:voice:log", (event, payload) => {
+    if (!trustedUrl(event.senderFrame?.url ?? "")) throw new Error("Blocked adt:voice:log from an untrusted page");
+    const lines = Array.isArray(payload?.lines) ? payload.lines.filter((l) => typeof l === "string").map((l) => l.slice(0, 2000)).slice(0, 500) : [];
+    if (!lines.length) return true;
+    const file = path.join(app.getPath("userData"), "voice-debug.log");
+    try {
+      if (fs.existsSync(file) && fs.statSync(file).size > 2 * 1024 * 1024) fs.renameSync(file, `${file}.old`);
+      fs.appendFileSync(file, `${lines.join("\n")}\n`);
+    } catch (error) {
+      console.warn("Voice log:", error.message);
+    }
+    return true;
+  });
   ipcMain.handle("adt:voice:active", (event, payload) => {
     if (!trustedUrl(event.senderFrame?.url ?? "")) throw new Error("Blocked adt:voice:active from an untrusted page");
     event.sender.setBackgroundThrottling(!payload?.active);

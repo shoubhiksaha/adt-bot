@@ -169,6 +169,7 @@ export const defaultSettings: Settings = {
     endSilence: "normal",
     bargeIn: "auto",
     earlyReply: true,
+    diagnostics: false,
     concise: true,
     voiceProviderId: "",
     voiceModel: "",

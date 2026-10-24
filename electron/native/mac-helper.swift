@@ -11,6 +11,7 @@
 // Started by electron/features/70-mac-control.cjs; macOS attributes its permissions to ADT Bot.
 import AppKit
 import ApplicationServices
+import CoreAudio
 import Foundation
 import Vision
 
@@ -403,6 +404,38 @@ func userIdleSeconds() -> Double {
   let lastEvent = now.addingTimeInterval(-CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: ANY_INPUT))
   if lastEvent > lastPosted.addingTimeInterval(0.3) { lastUser = max(lastUser, lastEvent) }
   return now.timeIntervalSince(lastUser)
+}
+
+/** One Core Audio property of an audio object, or nil. */
+func audioProperty<T>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector, _ initial: T) -> T? {
+  var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+  var value = initial
+  var size = UInt32(MemoryLayout<T>.size)
+  let status = withUnsafeMutablePointer(to: &value) { AudioObjectGetPropertyData(object, &address, 0, nil, &size, $0) }
+  return status == noErr ? value : nil
+}
+
+/**
+ * The apps playing sound right now (Core Audio's process objects, macOS 14.2+; no permission
+ * needed to list them). Voice mode uses it to tell a video or music on this Mac from the user.
+ */
+func audioOutputs() -> [String: Any] {
+  guard #available(macOS 14.2, *) else { return ["supported": false, "apps": [[String: Any]]()] }
+  let system = AudioObjectID(kAudioObjectSystemObject)
+  var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+  var size: UInt32 = 0
+  guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr, size > 0 else { return ["supported": true, "apps": [[String: Any]]()] }
+  var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+  guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &ids) == noErr else { return ["supported": true, "apps": [[String: Any]]()] }
+  var apps: [[String: Any]] = []
+  for id in ids {
+    guard let running: UInt32 = audioProperty(id, kAudioProcessPropertyIsRunningOutput, UInt32(0)), running != 0 else { continue }
+    let pid: pid_t = audioProperty(id, kAudioProcessPropertyPID, pid_t(0)) ?? 0
+    let bundle: CFString = audioProperty(id, kAudioProcessPropertyBundleID, "" as CFString) ?? ("" as CFString)
+    let name = NSRunningApplication(processIdentifier: pid)?.localizedName ?? ""
+    apps.append(["pid": Int(pid), "bundleId": bundle as String, "name": name])
+  }
+  return ["supported": true, "apps": apps]
 }
 
 /**
@@ -1202,6 +1235,7 @@ func handle(_ req: [String: Any]) throws -> Any {
   case "type": return try typeCommand(req)
   case "key": return try keyCommand(req)
   case "idle": return ["idle": userIdleSeconds()]
+  case "audioOutputs": return audioOutputs()
   case "click": return try click(req)
   case "ocr": return try ocr(req)
   case "front":

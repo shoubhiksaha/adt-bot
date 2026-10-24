@@ -76,6 +76,14 @@ export function askAloudDetail(call: Call): string {
 export function askAloudText(call: Call): string {
   const summary = toolSummary(call)?.replace(/[“”"`]/g, "");
   if (summary) return `Can I ${summary}? Say yes or no.`;
+  // A command read out symbol by symbol ("rm dash rf tilde slash…") is long and means little:
+  // say what it's for, and leave the command itself on the screen.
+  if (call.name === "run_command") {
+    const purpose = typeof call.args.purpose === "string" ? call.args.purpose.replace(/[“”"`]/g, "").replace(/\s+/g, " ").trim().slice(0, SPOKEN_CHARS) : "";
+    const command = String(call.args.command ?? "").trim();
+    if (purpose) return `Can I run a command to ${purpose.replace(/^to /i, "").replace(/[.?!]+$/, "")}? It's on your screen. Say yes or no.`;
+    if (command.length > 40 || /[|;&><$`\\~*]/.test(command)) return "Can I run the command on your screen? Say yes or no.";
+  }
   const what = ASKS[call.name] ?? (call.name === "update_routine" ? "change a routine" : `use ${call.name.replace(/^mcp_/, "").replace(/[_-]+/g, " ")}`);
   const main = askAloudDetail(call).replace(/[“”"`]/g, "").replace(/\s+/g, " ").trim();
   const long = main.length > SPOKEN_CHARS;

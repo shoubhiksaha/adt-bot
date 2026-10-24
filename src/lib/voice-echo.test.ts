@@ -147,6 +147,30 @@ const lookup: AgentTool = {
   },
 };
 registerTool(lookup);
+// A step that needs the user's OK, and a slow one (to talk over while it runs).
+let saves = 0;
+registerTool({ ...lookup, name: "early_save", risk: "write", description: "Saves something", async run() { saves++; return "Saved."; } });
+// Another one: an approval is remembered for the app session ("ask the first time"), so each test asks about its own.
+registerTool({ ...lookup, name: "early_store", risk: "write", description: "Stores something", async run() { saves++; return "Stored."; } });
+let slowDone = 0;
+let slowAborted = 0;
+registerTool({
+  ...lookup,
+  name: "early_slow",
+  description: "Looks something up slowly",
+  async run(_args, ctx) {
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 700);
+      ctx.signal?.addEventListener("abort", () => {
+        clearTimeout(timer);
+        slowAborted++;
+        resolve();
+      });
+    });
+    if (!ctx.signal?.aborted) slowDone++;
+    return "Found it.";
+  },
+});
 
 const bot: Bot = {
   id: "b1", name: "ADT", avatar: "⚡", description: "", systemPrompt: "", providerId: "p", model: "m",
@@ -484,6 +508,92 @@ describe("after talking over it", () => {
     mic.level = 0.85;
     await until(() => s.state.phase === "hearing", 900);
     out.speaking = false;
+  });
+});
+
+describe("asking, steps and closing, by voice", () => {
+  /** Says something as a finished turn. */
+  const say = (text: string) => {
+    mic.emit({ type: "start" });
+    mic.emit({ type: "utterance", text, ms: 3, waitMs: 300 });
+  };
+
+  it("a yes in the user's own words runs the step, and what they added comes next", async () => {
+    saves = 0;
+    const s = await open();
+    plans = [{ tool: "early_save" }, { chunks: ["Saved."] }, { chunks: ["The downloads folder is tidy too."] }];
+    say("Save my note");
+    await until(() => s.state.approval !== null && s.state.phase === "listening");
+    say("Yes, go ahead and also check the downloads folder too");
+    await until(() => requests.length === 3, 5000);
+    expect(saves).toBe(1);
+    expect(userWords(2)).toBe("go ahead and also check the downloads folder too");
+  });
+
+  it("an answer that isn't a yes or no asks again, briefly", async () => {
+    saves = 0;
+    const s = await open();
+    plans = [{ tool: "early_store" }, { chunks: ["Stored."] }];
+    say("Store my note");
+    await until(() => s.state.approval !== null && s.state.phase === "listening");
+    say("hmm what exactly will that store for me");
+    await until(() => out.said.includes("Should I go ahead? Say yes or no."));
+    expect(saves).toBe(0);
+    say("yes");
+    await until(() => saves === 1);
+  });
+
+  it("talking while a step runs doesn't cut it off: the request comes next", async () => {
+    slowDone = 0;
+    slowAborted = 0;
+    const s = await open();
+    plans = [{ tool: "early_slow" }, { chunks: ["Found it."] }, { chunks: ["It's sunny."] }];
+    say("Look it up for me");
+    await until(() => s.state.activity !== "");
+    // Their live caption shows it's them, mid-sentence: still not a reason to cut the step off.
+    mic.emit({ type: "start" });
+    mic.emit({ type: "partial", text: "and what is the weather" });
+    await sleep(50);
+    expect(slowAborted).toBe(0);
+    say("and what is the weather like today");
+    await until(() => requests.length === 3, 5000);
+    expect(slowDone).toBe(1);
+    expect(slowAborted).toBe(0);
+    expect(userWords(2)).toBe("and what is the weather like today");
+  });
+
+  it("while something else plays sound, only what's addressed to it counts", async () => {
+    const s = await open();
+    (s as unknown as { otherAudio: boolean }).otherAudio = true;
+    // Seen live: a video's audio became the user's message.
+    say("was actually discussed during that call between the White House and the Kremlin");
+    await sleep(150);
+    expect(requests).toHaveLength(0);
+    expect(s.state.phase).toBe("listening");
+    say("Hey ADT, what's the time in Delhi");
+    await until(() => requests.length === 1);
+    expect(userWords(0)).toBe("what's the time in Delhi");
+  });
+
+  it("closes when asked in a sentence", async () => {
+    let closed = false;
+    session = new VoiceSession({ onState: () => undefined, onClose: () => (closed = true) });
+    await session.start();
+    say("You are done for now, now you can exit the voice mode.");
+    await until(() => closed);
+    expect(requests).toHaveLength(0);
+  });
+
+  it("closes when the bot uses end_voice_mode, after its goodbye", async () => {
+    useStore.setState({ bots: [{ ...bot, toolGroups: ["early-test", "utility"] }] });
+    let closed = false;
+    session = new VoiceSession({ onState: () => undefined, onClose: () => (closed = true) });
+    await session.start();
+    plans = [{ tool: "end_voice_mode" }, { chunks: ["Bye for now."] }];
+    say("thanks, I'm heading out now, you can go");
+    await until(() => closed, 5000);
+    expect(said()).toMatch(/Bye for now/);
+    expect(requests[0].body.tools.map((t: any) => t.function.name)).toContain("end_voice_mode");
   });
 });
 

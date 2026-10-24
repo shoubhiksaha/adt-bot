@@ -1246,6 +1246,10 @@ async function openPage(name, action, address, { run = browserRun, launch = (arg
 /** The address of the page an element id was read from (checked again before acting on it). */
 const pageAddress = (value) => (typeof value === "string" && value.length <= 4000 ? value : undefined);
 
+/** ADT Bot's own sound (its voice) and macOS's short system sounds don't count as "something else is playing". */
+const OWN_AUDIO = /^app\.adtbot\.desktop/i;
+const SYSTEM_SOUNDS = /^com\.apple\.(systemsoundserverd|coreaudiod|audio\.|CoreSpeech|speech\.|accessibility\.|NotificationCenter|controlcenter|siri)/i;
+
 /** Web addresses only: a file:// page would let the browser read this Mac's files to the bot. */
 const URL_OK = /^https?:\/\/[^\s]/i;
 
@@ -1361,6 +1365,13 @@ exports.register = ({ app, ipcMain, shell, access, onStopAll }) => {
   handle("recordStop", () => helperCall("recordStop", {}, { what: "Recording" }));
   handle("recordStatus", () => (hasHelper() && helper ? helperCall("recordStatus", {}, { what: "Recording", timeoutMs: 5_000 }) : { recording: false, steps: 0 }));
   handle("screenshot", screenshot);
+  // Which other apps are playing sound (a video, music, a call), for voice mode. No permission needed.
+  handle("audioOutputs", async () => {
+    if (!hasHelper()) return { supported: false, apps: [] };
+    const found = await helperCall("audioOutputs", {}, { what: "Checking for other sound", timeoutMs: 3_000 });
+    const apps = (found.apps ?? []).filter((a) => !OWN_AUDIO.test(String(a.bundleId ?? "")) && !SYSTEM_SOUNDS.test(String(a.bundleId ?? "")) && a.pid !== process.pid);
+    return { supported: found.supported === true, apps };
+  });
   handle("cursor", cursor);
   act("move", move);
   act("click", click);

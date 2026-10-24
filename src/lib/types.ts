@@ -289,6 +289,8 @@ export type VoiceSettings = {
    * speech recognition). Nothing is shown, saved or run until the turn is over; dropped if you carry on.
    */
   earlyReply: boolean;
+  /** Save what voice mode heard and decided to voice-debug.log on this computer (troubleshooting; off by default). */
+  diagnostics?: boolean;
   /** Short, spoken-style answers in voice mode. */
   concise: boolean;
   /** Optional faster model just for voice conversations ("" = the bot's own model). */

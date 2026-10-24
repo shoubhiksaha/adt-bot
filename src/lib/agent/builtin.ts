@@ -4,6 +4,7 @@ import { knowledgeContext, subjectWords } from "../knowledge";
 import { memoryIsLarge, searchMemory } from "../memory-recall";
 import { readPage, webSearch } from "../search";
 import { addMemory, addSharedMemory, useStore } from "../store";
+import { voiceCloser } from "../voice-hooks";
 import { describeChanges, describeRewind, type RewindResult, type TurnChanges } from "./rewind";
 import { registerTool, registerToolGroup, str, type ToolRisk } from "./tools";
 import { readOutside, recallNotes, transcriptText } from "../learning";
@@ -251,6 +252,24 @@ registerTool({
 });
 
 registerTool({
+  name: "end_voice_mode",
+  group: "utility",
+  risk: "read",
+  description:
+    "Close voice mode (the hands-free conversation) when the user wants it closed: they ask you to exit, close or stop voice mode, " +
+    "say they're done or that you can go. Say a short goodbye in the same reply; voice mode closes once it has been spoken. " +
+    "Only exists while voice mode is open.",
+  parameters: { type: "object", properties: {} },
+  available: () => voiceCloser() !== null,
+  async run() {
+    const close = voiceCloser();
+    if (!close) return "Voice mode isn't open.";
+    close();
+    return "Voice mode will close once this reply has been spoken.";
+  },
+});
+
+registerTool({
   name: "current_time",
   group: "utility",
   risk: "read",
@@ -306,7 +325,11 @@ registerTool({
     "Run a shell command on the user's computer and return its output. Runs in the ADT Bot Workspace folder unless cwd is given. The user approves commands.",
   parameters: {
     type: "object",
-    properties: { command: { type: "string" }, cwd: { type: "string", description: "Working folder (relative to the workspace, or absolute)" } },
+    properties: {
+      command: { type: "string" },
+      cwd: { type: "string", description: "Working folder (relative to the workspace, or absolute)" },
+      purpose: { type: "string", description: 'What it does, in a few plain words, e.g. "clear app caches" (read out when the user is asked aloud)' },
+    },
     required: ["command"],
   },
   riskFor: (args): ToolRisk => (isDangerous(String(args.command ?? "")) ? "destructive" : "write"),

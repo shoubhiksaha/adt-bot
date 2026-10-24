@@ -6,7 +6,7 @@ import { useStore } from "../store";
 import type { Bot, ProviderConfig, ToolCallRecord } from "../types";
 import { askAloudDetail, askAloudText } from "./asks";
 import { runToolLoop } from "./loop";
-import { yesOrNo } from "../voice-commands";
+import { approvalAnswer, parseVoiceCommand, yesOrNo } from "../voice-commands";
 import { type AgentTool, registerTool } from "./tools";
 
 vi.mock("../transport", () => ({ providerFetch: (url: string, init: RequestInit) => fetch(url, init), detectEnv: async () => ({ platform: "web", proxy: false }) }));
@@ -137,6 +137,16 @@ describe("approvals in voice mode", () => {
     expect(bodies[1].messages.find((m: any) => m.role === "tool").content).toMatch(/declined/);
   });
 
+  it("no answer in time isn't the user saying no: the model is told it heard nothing", async () => {
+    calls([{ name: "save_note", q: "z" }]);
+    const records = await run([write], undefined, { unattended: true, askAloud: async () => "timeout" });
+    expect(runs["save_note:z"]).toBeUndefined();
+    expect(records[0]).toMatchObject({ status: "denied", result: "No answer in time" });
+    const told = bodies[1].messages.find((m: any) => m.role === "tool").content;
+    expect(told).toMatch(/heard no answer in time/);
+    expect(told).not.toMatch(/declined/);
+  });
+
   it("still refuses when nobody can be asked (routines, bot-to-bot)", async () => {
     calls([{ name: "save_note", q: "y" }]);
     const records = await run([write], undefined, { unattended: true });
@@ -152,16 +162,42 @@ describe("spoken answers and questions", () => {
     for (const neither of ["what is the weather", "", "yes no", "tell me more about the routine before I decide anything at all please"]) expect(yesOrNo(neither), neither).toBeNull();
   });
 
+  it("takes a yes in the user's own words, and what they asked for on top", () => {
+    // Seen live: both were treated as no answer, and a minute later as a "no".
+    expect(approvalAnswer("Yes, you can clear it and also see if there is more way to free up more space.")).toEqual({
+      answer: "allow",
+      rest: "you can clear it and also see if there is more way to free up more space.",
+    });
+    expect(approvalAnswer("Do all of it and don't ask me to approve anything clear everything.")).toEqual({ answer: "allow", rest: "" });
+    expect(approvalAnswer("Yes, do it.")).toEqual({ answer: "allow", rest: "" });
+    // Hesitant, a question, or a no anywhere: not a yes.
+    for (const unsure of ["yes but first tell me what it deletes", "yes, and can you also check downloads?", "sure, wait a second", "yes, no, don't"]) {
+      expect(approvalAnswer(unsure).answer, unsure).not.toBe("allow");
+    }
+    // A video in the background.
+    expect(approvalAnswer("was actually discussed during that call between White House and the Gremlin")).toEqual({ answer: null, rest: "" });
+  });
+
+  it("closes voice mode when asked in a sentence, not when asked how", () => {
+    for (const end of ["You are done for now, now you can exit the voice mode.", "close voice mode", "please turn off the voice", "okay stop voice mode now"]) {
+      expect(parseVoiceCommand(end, [])?.type, end).toBe("end");
+    }
+    for (const not of ["how do I exit voice mode?", "what does voice mode do", "the voice in that video was great"]) expect(parseVoiceCommand(not, [])?.type, not).not.toBe("end");
+  });
+
   it("words the question to be spoken", () => {
     // A routine is asked about by what it will do on every run, not only its name.
     expect(askAloudText({ name: "create_routine", args: { name: "Morning AI news", instruction: "summarise AI news" } })).toBe(
       "Can I create a routine: Morning AI news, which will: summarise AI news? Say yes or no.",
     );
     expect(askAloudText({ name: "run_command", args: { command: "npm test" } })).toBe("Can I run a command: npm test? Say yes or no.");
-    // A long command isn't cut off silently: the rest is pointed to on screen, where it's shown in full.
+    // A long command isn't read out symbol by symbol ("rm dash rf tilde slash…"): it points to the
+    // screen, where it's shown in full, or says what it's for when the bot gave a purpose.
     const long = `echo checking your calendar and then tidying up the downloads folder for you right away; ${"x ".repeat(40)}rm -rf ~/Documents`;
-    const spoken = askAloudText({ name: "run_command", args: { command: long } });
-    expect(spoken).toMatch(/The rest is on your screen\. Say yes or no\.$/);
+    expect(askAloudText({ name: "run_command", args: { command: long } })).toBe("Can I run the command on your screen? Say yes or no.");
+    expect(askAloudText({ name: "run_command", args: { command: "rm -rf ~/Library/Caches/*", purpose: "clear app caches." } })).toBe(
+      "Can I run a command to clear app caches? It's on your screen. Say yes or no.",
+    );
     expect(askAloudDetail({ name: "run_command", args: { command: long } })).toContain("rm -rf ~/Documents");
   });
 });

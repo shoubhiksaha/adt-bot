@@ -464,6 +464,7 @@ export function createToolRunner(options: {
       return { id: call.id, name: call.name, content, isError: true };
     }
     let decision: Decision | undefined;
+    let unanswered = false;
     if (verdict.outcome === "ask") {
       update(call.id, {
         status: "awaiting",
@@ -475,12 +476,24 @@ export function createToolRunner(options: {
         const fromCard = waitForDecision(call.id, settle.signal);
         const aloud = context
           .askAloud({ summary: askAloudText(call), detail: askAloudDetail(call), reason: verdict.reason, signal: settle.signal })
-          .then((answer): Decision => (answer === "allow" ? "once" : "deny"));
+          .then((answer): Decision => {
+            unanswered = answer === "timeout";
+            return answer === "allow" ? "once" : "deny";
+          });
         decision = await Promise.race([fromCard, aloud, abortedAsDeny(context.signal)]);
         if (isPending(call.id)) decide(tool, call, decision);
         settle.abort();
       } else {
         decision = await waitForDecision(call.id, context.signal);
+      }
+      if (decision === "deny" && unanswered) {
+        // Asked aloud and nobody answered: not the user saying no, so don't tell them they did.
+        const content =
+          "Not run: you asked the user aloud and heard no answer in time (silence isn't a yes). Say in a few words that you didn't do it " +
+          "because you didn't hear a yes, and that they can say yes to try again.";
+        update(call.id, { status: "denied", result: "No answer in time", approval: undefined });
+        log("denied", verdict.summary, { decision: `asked aloud (${verdict.reason}); no answer in time` });
+        return { id: call.id, name: call.name, content, isError: true };
       }
       if (decision === "deny") {
         const content = "The user declined this action. Don't retry it; tell them what you were trying to do or suggest another way.";
