@@ -96,6 +96,10 @@
         }
       ]
     },
+    "toolsets": {
+      "nsis": "1.2.1",
+      "appimage": "1.0.3"
+    },
     "nsis": {
       "artifactName": "ADT-Bot-Setup-${version}-windows.${ext}"
     },
