@@ -380,3 +380,61 @@ describe("tools in Gemini Live", () => {
     expect(sent("tool")).toHaveLength(0);
   });
 });
+
+describe("closing Gemini Live, and what it plays", () => {
+  it("closes when told to, even when Gemini doesn't answer (seen live: it didn't close)", async () => {
+    await open();
+    last().emit({ type: "input", text: "Okay, that's all." }, { type: "input", text: " Close the voice mode now." });
+    await until(() => closedByUser === 1, 4000);
+    expect(last().closed).toBe(true);
+  });
+
+  it("lets a goodbye play out first", async () => {
+    await open();
+    last().emit({ type: "input", text: "You can exit voice mode now." }, { type: "audio", data: "AAAA", rate: 24000 }, { type: "output", text: "Okay, bye!" });
+    await sleep(2500);
+    expect(closedByUser).toBe(0);
+    finishPlaying();
+    last().emit({ type: "turnComplete" });
+    await until(() => closedByUser === 1, 1500);
+  });
+
+  it("doesn't wait for a long reply that keeps going", async () => {
+    await open();
+    last().emit({ type: "input", text: "Turn off voice mode." }, { type: "audio", data: "AAAA", rate: 24000 }, { type: "output", text: "Sure, but first let me tell you" });
+    await until(() => closedByUser === 1, 8000);
+    expect(flushes).toBeGreaterThan(0);
+  }, 10_000);
+
+  it("a question about closing it isn't closing it", async () => {
+    await open();
+    last().emit({ type: "input", text: "How do I close voice mode?" });
+    await sleep(1500);
+    last().emit({ type: "turnComplete" });
+    await sleep(300);
+    expect(closedByUser).toBe(0);
+  });
+
+  it("the bot can close it (end_voice_mode), after its goodbye", async () => {
+    useStore.setState({ bots: [{ ...bot, toolGroups: ["live-test", "utility"] }] });
+    await open();
+    expect(last().options.setup.tools.map((t) => t.name)).toContain("end_voice_mode");
+    last().emit({ type: "input", text: "Thanks, I'm heading out, you can go." }, { type: "toolCall", calls: [{ id: "e1", name: "end_voice_mode", args: {} }] });
+    await until(() => sent("tool").length === 1);
+    last().emit({ type: "audio", data: "AAAA", rate: 24000 }, { type: "output", text: "Bye for now!" });
+    await sleep(2500);
+    expect(closedByUser).toBe(0);
+    finishPlaying();
+    last().emit({ type: "turnComplete" });
+    await until(() => closedByUser === 1, 1500);
+  });
+
+  it("doesn't play audio in a format it can't read as noise; says so instead", async () => {
+    const s = await open();
+    last().emit({ type: "audio", data: "T2dnUw==", rate: 24000, mime: "audio/ogg;codecs=opus" }, { type: "audio", data: "T2dnUw==", rate: 24000, mime: "audio/ogg;codecs=opus" });
+    expect(playing).toBe(0);
+    expect(s.state.error).toMatch(/audio\/ogg/);
+    last().emit({ type: "audio", data: "AAAA", rate: 24000, mime: "audio/pcm;rate=24000" });
+    expect(playing).toBe(1);
+  });
+});

@@ -228,6 +228,25 @@ function garbledEchoTail(heard: string, spoken: string): boolean {
 /** What the bot said lately, as content words (enough for any echo still in the room). */
 const spokenWords = (spoken: string) => content(spoken).slice(-160);
 
+/**
+ * An answer said over the bot's question that came back with it in one stretch ("Can I run a
+ * command? Yes, go ahead"): the sentences after the question's own. Only with a word of their own:
+ * a bare "Yes." could be its "Say yes or no" coming back misheard. Null when there's no such part.
+ */
+export function answerAfterEcho(heard: string, question: string): string | null {
+  const sentences = (heard.match(/[^.!?]+[.!?]*/g) ?? []).map((s) => s.trim()).filter(Boolean);
+  let echoed = 0;
+  while (echoed < sentences.length && isEcho(sentences[echoed], question)) echoed++;
+  if (!echoed || echoed === sentences.length) return null;
+  const rest = sentences.slice(echoed).join(" ");
+  const asked = new Set(normalize(question).split(" "));
+  return normalize(rest)
+    .split(" ")
+    .some((w) => w && !asked.has(w))
+    ? rest
+    : null;
+}
+
 /** Heard words that don't line up with what the bot said: the user's own. */
 export function newWords(heard: string, spoken: string): string[] {
   const words = content(heard);

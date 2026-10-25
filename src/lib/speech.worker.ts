@@ -6,6 +6,7 @@ import * as ort from "onnxruntime-web/webgpu";
 import ortMjs from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.mjs?url";
 import ortWasm from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url";
 import { FRAME, lullFor, patientFor, Segmenter, type SegmentEvent, startsEarly } from "./segmenter";
+import { cutShort, quietestSplit, repairTranscript } from "./transcript-check";
 
 // Use the copies of ONNX Runtime bundled with the app, so nothing is fetched from a CDN.
 ort.env.wasm.wasmPaths = { mjs: ortMjs, wasm: ortWasm };
@@ -181,6 +182,8 @@ let captionsFailed = false;
 /** The utterance being captioned, and how much of its audio the caption worker has had. */
 let utterance = 0;
 let captionSent = 0;
+/** The latest caption of this utterance, to check the final transcription against (see transcript-check.ts). */
+let caption = "";
 
 function startCaptions() {
   if (captioner || captionsFailed || mode !== "local" || language !== "en" || !partials) return;
@@ -195,7 +198,10 @@ function startCaptions() {
     const data = event.data;
     if (data.type === "ready") captionsReady = true;
     else if (data.type === "failed") fail();
-    else if (data.type === "caption" && data.utterance === utterance && partials && segmenter.speaking && data.text) live({ type: "partial", text: data.text });
+    else if (data.type === "caption" && data.utterance === utterance && partials && segmenter.speaking && data.text) {
+      caption = data.text;
+      live({ type: "partial", text: data.text });
+    }
   };
   worker.onerror = fail;
   worker.postMessage({ type: "load" });
@@ -249,6 +255,7 @@ function handle(event: SegmentEvent) {
       partialSamples = 0;
       utterance++;
       captionSent = 0;
+      caption = "";
     }
     if (event.type === "discard") {
       captioner?.postMessage({ type: "reset" });
@@ -302,8 +309,13 @@ function handle(event: SegmentEvent) {
   ) {
     partialBusy = true;
     partialSamples = event.audio.length;
+    const captioned = utterance;
     transcribe(event.audio, "partial")
-      .then((text) => text && partials && live({ type: "partial", text }))
+      .then((text) => {
+        if (!text || !partials) return;
+        if (captioned === utterance) caption = text;
+        live({ type: "partial", text });
+      })
       .catch(() => undefined)
       .finally(() => {
         partialBusy = false;
@@ -333,6 +345,7 @@ async function finish(event: Extract<SegmentEvent, { type: "end" }>) {
   // The listener that heard it gets the result, even if another takes the microphone meanwhile.
   const listener = owner;
   ended = event.version;
+  const heard = caption;
   live({ type: "transcribing" });
   if (mode === "cloud") {
     live({ type: "utterance", audio: event.audio }, [event.audio.buffer]);
@@ -345,8 +358,15 @@ async function finish(event: Extract<SegmentEvent, { type: "end" }>) {
   if (!guess) cancelSlot("speculative");
   speculative = null;
   try {
-    const text = (guess && (await guess.catch(() => null))) ?? (await transcribe(event.audio)) ?? "";
-    live({ type: "utterance", text, ms: Math.round(performance.now() - started), waitMs: event.silenceMs ?? 0 }, [], listener);
+    let text = (guess && (await guess.catch(() => null))) ?? (await transcribe(event.audio)) ?? "";
+    let repaired: string | null = null;
+    if (cutShort(text, heard)) {
+      // Far less than the captions showed: try again in two halves, else go by the captions.
+      const at = quietestSplit(event.audio);
+      const halves = await Promise.all([transcribe(event.audio.slice(0, at)), transcribe(event.audio.slice(at))]).catch(() => []);
+      ({ text, repaired } = repairTranscript(text, halves.filter(Boolean).join(" "), heard));
+    }
+    live({ type: "utterance", text, ms: Math.round(performance.now() - started), waitMs: event.silenceMs ?? 0, ...(repaired ? { repaired } : {}) }, [], listener);
   } catch (error) {
     live({ type: "error", message: `Speech recognition failed: ${(error as Error).message}` }, [], listener);
   }

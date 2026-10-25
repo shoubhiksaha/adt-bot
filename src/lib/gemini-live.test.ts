@@ -66,7 +66,7 @@ describe("server messages", () => {
       }),
     ).toEqual([
       { type: "input", text: "What's the weather" },
-      { type: "audio", data: "AAA=", rate: 24000 },
+      { type: "audio", data: "AAA=", rate: 24000, mime: "audio/pcm;rate=24000" },
       { type: "output", text: "It's sunny" },
       { type: "turnComplete" },
     ]);

@@ -3,7 +3,7 @@ import type { Attachment } from "./types";
 import { type EarlyReply, sendMessage, setVoiceApprover, setVoiceModeActive, startEarlyReply, stopStreaming, stripMemoryTags } from "./chat";
 import { activityFor } from "./agent/asks";
 import { splitThink } from "./llm";
-import { selectBot, startNewChat, updateSettings, useStore } from "./store";
+import { selectBot, startNewChat, updateConversation, updateSettings, useStore } from "./store";
 import { localChoice, localVoiceReady } from "./local-tts";
 import { chime, createSpeaker, duckSpeech, outputDb, type Speaker, speechReference, takeSentences, warmDeviceVoice } from "./tts";
 import { END_SILENCE_MS, type Engine, ENGINE_LABELS, listen, type ListenSession, resolveEngine, stopReadAloud, transcribe } from "./voice";
@@ -18,8 +18,10 @@ import {
   soundsLikeUser,
   userPart,
   approvalAnswer,
+  answerAfterEcho,
 } from "./voice-commands";
 import { setVoiceCloser } from "./voice-hooks";
+import { debugVoice } from "./voice-log";
 import { desktopInvoke } from "./desktop";
 import { Listener, type ListenerEvent, localSpeechModel, onWhisperProgress, SPEECH_MODELS, toWav } from "./whisper";
 
@@ -61,6 +63,11 @@ export type VoiceState = {
 const IDLE_TO_STANDBY_MS = 60_000;
 /** How long a spoken "Can I …?" waits for an answer, from when it has been said. */
 const APPROVAL_WAIT_MS = 60_000;
+/**
+ * Carrying on this soon after a request, before the reply has said or done anything, makes the two
+ * one request (they paused mid-sentence; see noteCutOff).
+ */
+const CUT_OFF_MS = 15_000;
 /** How often voice mode checks whether another app is playing sound (macOS desktop). */
 const OTHER_AUDIO_POLL_MS = 1500;
 /** Sound starting this soon after the bot stopped talking is checked for being its echo. */
@@ -93,6 +100,12 @@ const ECHO_GAPS = 60;
 const ECHO_GAPS_NEEDED = 6;
 const ECHO_GAPS_SURE = 15;
 /**
+ * The loudest an echo learned during a stretch of sound can be next to the output (dB). That sound
+ * may be the user talking over the bot, not its echo: a voice taken for an echo louder than the bot
+ * itself made every later cut-in impossible. (Real echoes measured -48 to -65 dB with echo cancelling.)
+ */
+const ECHO_GAP_MAX_DB = 0;
+/**
  * The system's echo cancelling (built-in speakers and mic, loud) leaves the microphone almost silent
  * while the bot talks, and mutes a voice talking over it too: only its first tenth of a second gets
  * through, too little for the speech detector. A jump this far (dB) above both the echo and the
@@ -107,37 +120,10 @@ const ONSET_WAIT_MS = 700;
 /** The echo typically this far (dB) under the output: the system's echo cancelling has taken it out. */
 const ECHO_REMOVED_DB = -35;
 
-/**
- * Why voice mode stopped or kept talking: in the console when localStorage "adt-debug-voice" is "1"
- * (read once), and in voice-debug.log on this computer when Settings → Voice → Voice diagnostics is on.
- */
-let debugOn: boolean | undefined;
-const debugVoice = (...parts: unknown[]) => {
-  try {
-    debugOn ??= localStorage.getItem("adt-debug-voice") === "1";
-  } catch {
-    debugOn = false;
-  }
-  if (debugOn) console.debug("[voice]", ...parts);
-  if (useStore.getState().settings.voice.diagnostics) logVoice(parts.map((p) => (typeof p === "string" ? p : JSON.stringify(p))).join(" "));
-};
-
-/** Lines for voice-debug.log, written every couple of seconds (desktop only). */
-let logLines: string[] = [];
-let logTimer: ReturnType<typeof setTimeout> | null = null;
-function logVoice(line: string) {
-  if (typeof window === "undefined" || !window.adtbotDesktop?.invoke) return;
-  logLines.push(`${new Date().toISOString()} ${line}`);
-  logTimer ??= setTimeout(() => {
-    const lines = logLines;
-    logLines = [];
-    logTimer = null;
-    void desktopInvoke("adt:voice:log", { lines }).catch(() => undefined);
-  }, 2000);
-}
-
 /** The output reading while the page's voice is between sentences (fetching the next one): silence. */
 const SILENT_DB = -100;
+/** Output this quiet (dB) leaves no echo worth the name. */
+const QUIET_OUT_DB = -60;
 
 const percentile = (values: number[], p: number) => [...values].sort((a, b) => a - b)[Math.min(values.length - 1, Math.floor(values.length * p))];
 
@@ -147,11 +133,14 @@ const percentile = (values: number[], p: number) => [...values].sort((a, b) => a
  * echo canceller: `gaps` are how much louder the microphone was than the output (dB) while the bot
  * talked, and `noise` the room's quiet level. In `window` (the moment since the sound began, as
  * microphone and recent-output dB) most readings must be well above the echo that output explains.
- * Until enough of the echo has been heard, never: the words decide then.
+ * Until enough of the echo has been heard, only while the bot has been silent (no echo to come
+ * back: e.g. its question's voice still being prepared); otherwise the words decide then.
  */
 export function heardOverEcho(window: { mic: number; out: number }[], gaps: number[], noise: number, margin = 6): boolean {
-  if (window.length < 6 || gaps.length < ECHO_GAPS_NEEDED) return false;
-  const gap = percentile(gaps, 0.9);
+  if (window.length < 6) return false;
+  const silent = window.every((w) => w.out <= QUIET_OUT_DB);
+  if (gaps.length < ECHO_GAPS_NEEDED && !silent) return false;
+  const gap = gaps.length >= ECHO_GAPS_NEEDED ? percentile(gaps, 0.9) : 0;
   // Little heard of the echo yet (in the first reply the echo itself often starts a stretch of "speech",
   // which pauses learning): a stricter margin rather than no check at all.
   const need = gaps.length < ECHO_GAPS_SURE ? margin + 3 : margin;
@@ -208,8 +197,15 @@ export class VoiceSession {
   private ducked = false;
   /** A reply started during a pause that probably ended the turn; kept if the turn ends with the same words. */
   private early: EarlyReply | null = null;
-  /** The question a tool is waiting on (see askApproval). */
-  private approval: { resolve: (answer: "allow" | "deny" | "timeout") => void; timer: ReturnType<typeof setTimeout> | null } | null = null;
+  /**
+   * The question a tool is waiting on (see askApproval). `reply`: the reply's voice; the question has
+   * its own, so talking over the question stops only the question.
+   */
+  private approval: { resolve: (answer: "allow" | "deny" | "timeout") => void; timer: ReturnType<typeof setTimeout> | null; reply: Speaker | null } | null = null;
+  /** Bumped when a question starts or is talked over: an older one's end doesn't change anything. */
+  private questionId = 0;
+  /** The question was talked over before it was finished (see stopQuestion). */
+  private questionCut = false;
   /** When the user last answered one (a tool asking isn't silence worth a "Still working on it"). */
   private approvalEndedAt = 0;
   /** The bot's output loudness (dB) lately, to match the echo that arrives a moment later. */
@@ -246,6 +242,12 @@ export class VoiceSession {
   private otherAudioRun = 0;
   /** A tool step of the current reply is running or about to (a command, a click). */
   private stepRunning = false;
+  /** The request being answered, and whether the reply has said or done anything yet (see noteCutOff). */
+  private asked: { text: string; turn: number; at: number; createdAt: number; said: boolean; tools: boolean } | null = null;
+  /** A request the user carried on from before the reply said or did anything: it goes in front of their next words. */
+  private cutOff: { text: string; createdAt: number; at: number } | null = null;
+  /** Taken out of the chat before the joined request is sent (see ask). */
+  private replacing: { text: string; createdAt: number } | null = null;
   private audioTimer: ReturnType<typeof setInterval> | null = null;
   /** When a sudden sound turned the bot down (see heardOnset), and the timer that turns it back up. */
   private onsetAt = -Infinity;
@@ -407,6 +409,7 @@ export class VoiceSession {
     this.offProgress?.();
     this.listener?.close();
     this.device?.cancel();
+    this.approval?.reply?.stop();
     this.speaker?.stop();
     // Speech turned down for a cut-in must not stay quiet for read-aloud or the next session.
     this.ducked = false;
@@ -417,6 +420,7 @@ export class VoiceSession {
     if (this.audioTimer) clearInterval(this.audioTimer);
     this.audioTimer = null;
     this.followUp = null;
+    this.cutOff = null;
     setVoiceModeActive(false);
     if (notify) this.hooks.onClose();
   }
@@ -460,7 +464,7 @@ export class VoiceSession {
         // Without an echo canceller the echo itself can start a stretch of "speech" before anything
         // was learned, and the check could never begin: learn just enough from it, turned down.
         const noise = this.quietLevels.length ? percentile(this.quietLevels, 0.5) : -60;
-        if (this.echoGaps.length < ECHO_GAPS_NEEDED && steady && recentOut > -45 && mic > noise + 6) this.echoGaps.push(mic - recentOut);
+        if (this.echoGaps.length < ECHO_GAPS_NEEDED && steady && recentOut > -45 && mic > noise + 6) this.echoGaps.push(Math.min(mic - recentOut, ECHO_GAP_MAX_DB));
         return;
       }
       // Only learn while nobody seems to be talking: the start of a cut-in isn't echo.
@@ -496,7 +500,7 @@ export class VoiceSession {
    * so the rest of the user's words get through, and back up if no speech follows.
    */
   private heardOnset(mic: number, out: number, now: number): boolean {
-    if (this.state.phase !== "speaking" || this.ducked || this.segmentActive || this.approval || this.otherAudio || this.bargeMode() !== "instant" || !this.speaker?.inPageAudio) return false;
+    if (this.state.phase !== "speaking" || this.ducked || this.segmentActive || this.otherAudio || this.bargeMode() !== "instant" || !this.speaker?.inPageAudio) return false;
     if (this.echoGaps.length < ECHO_GAPS_NEEDED || this.recentReadings.length < 10) return false;
     const echo = out + percentile(this.echoGaps, 0.5);
     const before = percentile(this.recentReadings.map((r) => r.mic), 0.2);
@@ -559,7 +563,7 @@ export class VoiceSession {
   private armCutInCheck(ms: number) {
     this.cutInTimer = setTimeout(() => {
       this.cutInTimer = null;
-      if (this.state.phase !== "speaking" || !this.ducked || !this.segmentActive || this.approval) return;
+      if (this.state.phase !== "speaking" || !this.ducked || !this.segmentActive) return;
       const noise = this.quietLevels.length ? percentile(this.quietLevels, 0.5) : -60;
       // Every CUT_IN_MS stretch not judged yet, from just before the sound was recognised on (a
       // short "stop" can be over before then); the window rolls on while the sound goes on.
@@ -585,7 +589,10 @@ export class VoiceSession {
           out: window.map((w) => Math.round(w.out)).join(" "),
         }),
       );
-      if (over && this.stepRunning) {
+      if (over && this.approval) {
+        // Answering over the question ("yes, go ahead"): stop asking; their words are the answer.
+        this.stopQuestion();
+      } else if (over && this.stepRunning) {
         // A step is running (a command, a click): stopping now would cut it off half done. Stay
         // turned down and let the words decide: "stop" still stops it, anything else comes next.
         debugVoice("cut-in during a step: turned down until the words are known");
@@ -637,7 +644,7 @@ export class VoiceSession {
     if (this.closed) return Promise.resolve("deny");
     this.answerApproval("deny");
     return new Promise((resolve) => {
-      const pending: NonNullable<VoiceSession["approval"]> = { resolve, timer: null };
+      const pending: NonNullable<VoiceSession["approval"]> = { resolve, timer: null, reply: this.speaker };
       this.approval = pending;
       this.reasks = 0;
       // Answered from the chat's card instead: drop the question here.
@@ -650,22 +657,67 @@ export class VoiceSession {
     });
   }
 
-  /** Says the question (or a short "Should I go ahead?") and waits for the answer from when it has been said. */
+  /**
+   * Says the question (or a short "Should I go ahead?") once the reply has finished what it was
+   * saying, in a voice of its own: talking over it stops just the question (see stopQuestion). The
+   * answer is waited for from when it has been said.
+   */
   private sayQuestion(pending: NonNullable<VoiceSession["approval"]>, text: string) {
     if (pending.timer) clearTimeout(pending.timer);
     pending.timer = null;
+    const id = ++this.questionId;
+    this.questionCut = false;
     this.set({ phase: "speaking", sentence: text, spokenChars: 0 });
-    const speaker = this.speaker ?? createSpeaker(this.context(), { onError: (message) => this.set({ error: message }) });
-    this.speaker = speaker;
-    speaker.say(text);
-    void speaker.idle().then(() => {
-      if (this.approval !== pending) return;
-      this.lastSpoken = speaker.spoken;
-      this.speechEndedAt = performance.now() + speaker.tailMs;
+    void (pending.reply?.idle() ?? Promise.resolve()).then(async () => {
+      if (this.approval !== pending || id !== this.questionId) return;
+      if (this.speaker && this.speaker !== pending.reply) this.speaker.stop();
+      const question = createSpeaker(this.context(), { onError: (message) => this.set({ error: message }) });
+      this.speaker = question;
+      this.unduck();
+      question.say(text);
+      await question.idle();
+      if (this.approval !== pending || id !== this.questionId) return;
+      this.lastSpoken = question.spoken;
+      this.speechEndedAt = performance.now() + question.tailMs;
+      // Its echo may have turned it down without stopping it: back up for what comes next.
+      this.unduck();
       this.listener?.setSensitivity("normal");
       this.set({ phase: "listening", partial: "" });
       this.armAnswerTimer(pending, APPROVAL_WAIT_MS);
     });
+  }
+
+  /** No answer in what was heard: ask again, briefly (twice at most), or go on listening for it. */
+  private awaitAnswer(pending: NonNullable<VoiceSession["approval"]>, askAgain: boolean) {
+    this.questionCut = false;
+    if (askAgain && this.reasks < 2) {
+      this.reasks++;
+      this.sayQuestion(pending, "Should I go ahead? Say yes or no.");
+    } else if (this.state.phase === "hearing") {
+      this.unduck();
+      this.listener?.setSensitivity("normal");
+      this.set({ phase: "listening", partial: "" });
+    }
+  }
+
+  /** The user talked over the question (answering it, most likely): stop asking and listen. */
+  private stopQuestion() {
+    const pending = this.approval;
+    if (!pending) return;
+    this.questionId++;
+    this.questionCut = true;
+    debugVoice("talked over the question: stopped asking");
+    const question = this.speaker;
+    if (question && question !== pending.reply) {
+      this.lastSpoken = question.spoken;
+      if (question.speaking) this.speechEndedAt = performance.now() + question.tailMs;
+      question.stop();
+    }
+    this.clearOnset();
+    this.unduck();
+    this.listener?.setSensitivity("normal");
+    this.set({ phase: "hearing", partial: "" });
+    this.armAnswerTimer(pending, APPROVAL_WAIT_MS);
   }
 
   private armAnswerTimer(pending: NonNullable<VoiceSession["approval"]>, ms: number) {
@@ -685,6 +737,13 @@ export class VoiceSession {
     if (pending.timer) clearTimeout(pending.timer);
     this.approval = null;
     this.approvalEndedAt = performance.now();
+    // Answered (by voice or a button) while still being asked: stop asking. The reply carries on in its own voice.
+    if (this.speaker && this.speaker !== pending.reply) {
+      this.speaker.stop();
+      this.speaker = pending.reply;
+    }
+    // Turned down by the answer said over the question: the reply goes on at full volume.
+    this.unduck();
     this.listener?.setSensitivity("strict");
     const activity = answer === "allow" ? "" : answer === "timeout" ? "No answer, so I didn't do that." : "Okay, skipping that.";
     if (!this.closed) this.set({ approval: null, phase: "thinking", partial: "", activity });
@@ -729,6 +788,8 @@ export class VoiceSession {
   private enterListening() {
     if (this.closed) return;
     this.stoppedByVoice = false;
+    // What they carried on with came to nothing (a cough, a stray word): no longer joined to anything.
+    this.cutOff = null;
     this.unduck();
     this.listener?.setSensitivity("normal");
     this.set({ phase: "listening", partial: "", sentence: "" });
@@ -767,7 +828,8 @@ export class VoiceSession {
     }
     if (event.type !== "tentative" && event.type !== "resume") {
       const said = "text" in event && event.text ? ` "${String(event.text).slice(0, 160)}"` : "";
-      debugVoice(`heard ${event.type}${said}`, JSON.stringify({ phase, mic: Math.round(this.listener?.micDb?.() ?? -100), ducked: this.ducked, step: this.stepRunning, otherAudio: this.otherAudio }));
+      const repaired = event.type === "utterance" && event.repaired ? { repaired: event.repaired } : {};
+      debugVoice(`heard ${event.type}${said}`, JSON.stringify({ phase, mic: Math.round(this.listener?.micDb?.() ?? -100), ducked: this.ducked, step: this.stepRunning, otherAudio: this.otherAudio, ...repaired }));
     }
     if (event.type === "start") {
       this.clearIdle();
@@ -787,7 +849,9 @@ export class VoiceSession {
     }
     if (event.type === "speech") {
       // A quarter second of clear speech (not a cough or click): the user may be cutting in.
-      if (phase === "speaking" && this.bargeMode() === "instant" && !this.approval && !this.otherAudio) {
+      // While a tool's question is asked, only a voice clearly louder than its echo stops it (the
+      // question ends in "say yes or no": its own words coming back mustn't answer it).
+      if (phase === "speaking" && this.bargeMode() === "instant" && !this.otherAudio && (!this.approval || this.speaker?.inPageAudio)) {
         if (this.speaker?.inPageAudio) {
           // Turn the bot right down now; stop it once the user is clearly louder than its echo, or
           // their words show it isn't our own voice coming back, whichever comes first.
@@ -843,6 +907,7 @@ export class VoiceSession {
         if (this.stepRunning && !this.isStop(event.text)) return;
         debugVoice("stopped by a live caption", event.text);
         // Talking over the bot: stop it now, while the user is still mid-sentence.
+        this.noteCutOff();
         this.interrupt();
         this.set({ phase: "hearing", partial: event.text });
       }
@@ -964,20 +1029,22 @@ export class VoiceSession {
     // A tool is waiting on the user's OK: this is the answer (or our own question coming back).
     if (this.approval && text) {
       early?.discard();
-      if (echoesLastWords(text, this.lastSpoken)) return;
-      const { answer, rest } = approvalAnswer(text);
+      const pending = this.approval;
+      // The question coming back can run into the answer said over it ("Can I run a command? Yes,
+      // go ahead"): the answer is the user's part.
+      const said = answerAfterEcho(text, this.lastSpoken) ?? text;
+      // Only the question coming back. Cut short by it, the question is asked again.
+      if (said === text && echoesLastWords(text, this.lastSpoken)) return this.awaitAnswer(pending, this.questionCut);
+      const { answer, rest } = approvalAnswer(said);
       if (answer) {
         // "Yes, and also check the Downloads folder": that part comes once this step is done.
         if (answer === "allow" && rest) this.followUp = rest;
         this.answerApproval(answer);
         return;
       }
-      this.set({ heard: text, partial: "" });
-      // A question, a pause or someone else talking: ask again, briefly (twice at most).
-      if (isSubstantial(text) && !isLikelyHallucination(text) && this.reasks < 2) {
-        this.reasks++;
-        this.sayQuestion(this.approval, "Should I go ahead? Say yes or no.");
-      }
+      this.set({ heard: said, partial: "" });
+      // A question, a pause or someone else talking: ask again, briefly.
+      this.awaitAnswer(pending, isSubstantial(said) && !isLikelyHallucination(said));
       return;
     }
     if (!text || isLikelyHallucination(text)) {
@@ -1073,11 +1140,34 @@ export class VoiceSession {
       debugVoice("stopped by what was heard", text);
       this.interrupt();
     } else if (phase === "thinking") {
+      this.noteCutOff();
       this.interrupt();
     } else if (phase === "muted") {
       return;
     }
+    const cutOff = this.cutOff;
+    this.cutOff = null;
+    if (cutOff && !command && performance.now() - cutOff.at < CUT_OFF_MS) {
+      // They paused, the bot started on the first half, and they carried on: one request, as meant
+      // ("Tell me if I…" + "…give you links to jobs, can you apply?").
+      debugVoice("joined to the request it carried on from", cutOff.text);
+      early?.discard();
+      early = null;
+      this.replacing = cutOff;
+      // "Tell me if I..." trails off: no full stop or dots in the middle of the joined sentence.
+      text = `${cutOff.text.trim().replace(/(?:\.|…)+$/, "")} ${text}`;
+    }
     await this.process(text, early);
+  }
+
+  /**
+   * The user's words are cutting in on the reply: if it hasn't said or done anything yet, what they
+   * asked was probably only the first half (they paused mid-sentence); keep it for their next words.
+   */
+  private noteCutOff() {
+    const asked = this.asked;
+    const fresh = asked && asked.turn === this.turn && !asked.said && !asked.tools && performance.now() - asked.at < CUT_OFF_MS;
+    this.cutOff = fresh ? { text: asked.text, createdAt: asked.createdAt, at: performance.now() } : null;
   }
 
   private matchWake(text: string): { rest: string } | null {
@@ -1181,6 +1271,8 @@ export class VoiceSession {
     this.set({ phase: "thinking", reply: "", sentence: "", spokenChars: 0, activity: "", latencyMs: null, timing: null, error: null });
     // An early reply's message was created when it started.
     const startedAt = early?.createdAt ?? Date.now();
+    const asked = options.search || options.imagine ? null : { text, turn, at: performance.now(), createdAt: startedAt, said: false, tools: false };
+    this.asked = asked;
     const askedAt = performance.now();
     let firstTextAt = 0;
     let spokenAny = false;
@@ -1191,6 +1283,7 @@ export class VoiceSession {
     const speaker = createSpeaker(this.context(), {
       onSentence: (sentence) => {
         if (turn !== this.turn) return;
+        if (asked) asked.said = true;
         lastSoundAt = performance.now();
         if (!spokenAny) {
           spokenAny = true;
@@ -1248,6 +1341,7 @@ export class VoiceSession {
       const message = latest();
       if (!message) return;
       const calls = message.toolCalls ?? [];
+      if (calls.length && asked) asked.tools = true;
       if (calls.length !== steps) {
         // A tool step: what was written before it was narration. The answer comes after the last step.
         steps = calls.length;
@@ -1261,7 +1355,8 @@ export class VoiceSession {
       this.stepRunning = Boolean(running && running.status !== "awaiting");
       const activity = running ? activityFor(running.name) : "";
       if (activity !== this.state.activity) this.set({ activity });
-      if (steps && this.state.phase === "speaking" && !speaker.speaking) this.set({ phase: "thinking" });
+      // (A tool's question is spoken in a voice of its own: the phase is the question's then.)
+      if (steps && this.state.phase === "speaking" && !speaker.speaking && !this.approval) this.set({ phase: "thinking" });
       const visible = stripMemoryTags(splitThink(message.content.slice(regionStart)).text);
       if (visible && !firstTextAt) firstTextAt = performance.now();
       if (visible !== this.state.reply) this.set({ reply: visible });
@@ -1288,8 +1383,8 @@ export class VoiceSession {
     let reminders = 0;
     const ticker = setInterval(() => {
       if (turn !== this.turn || this.closed) return;
-      if (steps && this.state.phase === "speaking" && !speaker.speaking) this.set({ phase: "thinking" });
-      if (steps && this.state.phase === "thinking" && !speaker.speaking && reminders < 2 && performance.now() - Math.max(lastSoundAt, this.approvalEndedAt) > STILL_WORKING_MS) {
+      if (steps && this.state.phase === "speaking" && !speaker.speaking && !this.approval) this.set({ phase: "thinking" });
+      if (steps && this.state.phase === "thinking" && !speaker.speaking && !this.approval && reminders < 2 && performance.now() - Math.max(lastSoundAt, this.approvalEndedAt) > STILL_WORKING_MS) {
         reminders++;
         speak(reminders === 1 ? "Still working on it." : "Almost there.");
       }
@@ -1305,6 +1400,10 @@ export class VoiceSession {
       early?.discard();
       return clearInterval(ticker);
     }
+    // The first half of this request, stopped before it said anything: out of the chat, since it's asked again as part of this.
+    const replacing = this.replacing;
+    this.replacing = null;
+    if (replacing) dropUnanswered(replacing);
     const unsubscribe = useStore.subscribe(() => feed(false));
     const modes = useStore.getState().settings.modes;
     try {
@@ -1357,6 +1456,9 @@ export class VoiceSession {
     this.dropEarly();
     this.followUp = null;
     this.stepRunning = false;
+    // A question is being asked: the reply's own voice (waiting behind it) stops too.
+    const reply = this.approval?.reply;
+    if (reply && reply !== this.speaker) reply.stop();
     if (this.speaker) {
       this.lastSpoken = this.speaker.spoken;
       if (this.speaker.speaking) this.speechEndedAt = performance.now() + this.speaker.tailMs;
@@ -1380,6 +1482,20 @@ export class VoiceSession {
     this.micLevel = 0;
     this.set({ phase: "error", error: message });
   }
+}
+
+/**
+ * Takes the first half of a request out of the chat (see noteCutOff): the user's message and the
+ * reply that was stopped before it had said or done anything. Left alone if the reply has anything in it.
+ */
+export function dropUnanswered(request: { text: string; createdAt: number }) {
+  const id = useStore.getState().activeConversationId;
+  if (!id) return;
+  updateConversation(id, (c) => {
+    const at = c.messages.findLastIndex((m) => m.role === "user" && m.createdAt >= request.createdAt && m.content.trim() === request.text.trim());
+    if (at < 0 || !c.messages.slice(at + 1).every((m) => m.role === "assistant" && !m.content.trim() && !m.toolCalls?.length && !m.attachments?.length)) return c;
+    return { ...c, messages: c.messages.slice(0, at), updatedAt: Date.now() };
+  });
 }
 
 /**

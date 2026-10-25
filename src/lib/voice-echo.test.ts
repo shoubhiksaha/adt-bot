@@ -37,8 +37,9 @@ vi.mock("./whisper", async () => {
   };
 });
 
-// The bot's voice: records what it says; every sentence "plays" instantly.
-const out = vi.hoisted(() => ({ said: [] as string[], speaking: false, db: -20, ducked: false }));
+// The bot's voice: records what it says; every sentence "plays" instantly. Like the real one, a
+// stopped voice says nothing more.
+const out = vi.hoisted(() => ({ said: [] as string[], speaking: false, db: -20, ducked: false, stops: 0, done: null as ((spoken: string) => boolean) | null }));
 vi.mock("./tts", async () => {
   const { takeSentences } = await vi.importActual<typeof import("./tts")>("./tts");
   return {
@@ -50,18 +51,23 @@ vi.mock("./tts", async () => {
     speechReference: () => null,
     createSpeaker: (_context: unknown, hooks: { onSentence?: (s: string) => void } = {}) => {
       let spoken = "";
+      let stopped = false;
       return {
         say(text: string) {
+          if (stopped) return;
           out.said.push(text);
           spoken += `${text} `;
           hooks.onSentence?.(text);
         },
         idle: async () => {
-          while (out.speaking) await sleep(5);
+          while (out.speaking && !stopped && !out.done?.(spoken)) await sleep(5);
         },
-        stop: () => undefined,
+        stop: () => {
+          if (!stopped) out.stops++;
+          stopped = true;
+        },
         get speaking() {
-          return out.speaking;
+          return out.speaking && !stopped && !out.done?.(spoken);
         },
         get spoken() {
           return spoken;
@@ -152,6 +158,8 @@ let saves = 0;
 registerTool({ ...lookup, name: "early_save", risk: "write", description: "Saves something", async run() { saves++; return "Saved."; } });
 // Another one: an approval is remembered for the app session ("ask the first time"), so each test asks about its own.
 registerTool({ ...lookup, name: "early_store", risk: "write", description: "Stores something", async run() { saves++; return "Stored."; } });
+// Talking over the question: one each, for the same reason.
+for (const name of ["early_note1", "early_note2", "early_note3", "early_note4", "early_note5", "early_note6"]) registerTool({ ...lookup, name, risk: "write", description: "Notes something down", async run() { saves++; return "Noted."; } });
 let slowDone = 0;
 let slowAborted = 0;
 registerTool({
@@ -188,6 +196,7 @@ beforeEach(() => {
   out.speaking = false;
   out.db = -20;
   out.ducked = false;
+  out.done = null;
   mic.level = 0.1;
   mic.removed = false;
   const provider: ProviderConfig = { id: "p", presetId: "custom", name: "P", kind: "openai", baseUrl: base, apiKey: "k", models: [] };
@@ -355,6 +364,23 @@ describe("talking over it, before the words are known", () => {
     await sleep(250);
     mic.emit({ type: "speech" });
     await until(() => s.state.phase === "hearing", 900);
+    out.speaking = false;
+  });
+
+  it("a voice heard before anything is known of its echo isn't learned as an echo louder than the bot (seen live: it never stopped)", async () => {
+    out.db = -30;
+    const s = await open();
+    out.speaking = true;
+    plans = [{ chunks: ["Can I run a command to check the test folder? ", "It's on your screen. ", "Say yes or no."], gap: 400 }];
+    mic.emit({ type: "start" });
+    mic.emit({ type: "utterance", text: "Tell me about the history of Paris", ms: 3, waitMs: 300 });
+    await until(() => s.state.phase === "speaking");
+    // Straight away, loud: the only sound to learn the echo from is this voice.
+    mic.emit({ type: "start" });
+    mic.level = 1;
+    await sleep(250);
+    mic.emit({ type: "speech" });
+    await until(() => s.state.phase === "hearing", 1500);
     out.speaking = false;
   });
 
@@ -597,6 +623,187 @@ describe("asking, steps and closing, by voice", () => {
   });
 });
 
+describe("a question asked in two halves", () => {
+  const say = (text: string) => {
+    mic.emit({ type: "start" });
+    mic.emit({ type: "utterance", text, ms: 3, waitMs: 300 });
+  };
+  const userMessages = () => chat().filter((m) => m.role === "user").map((m) => m.content);
+
+  it("carrying on before it has said anything makes one request (seen live: \"Tell me if I\" was sent alone)", async () => {
+    const s = await open();
+    plans = [{ delay: 600, chunks: ["Sure."] }, { chunks: ["Yes, I can apply to them."] }];
+    say("Tell me if I...");
+    await until(() => requests.length === 1 && s.state.phase === "thinking");
+    say("give you links to jobs on WhatsApp, can you apply to them?");
+    await until(() => requests.length === 2);
+    expect(userWords(1)).toBe("Tell me if I give you links to jobs on WhatsApp, can you apply to them?");
+    // The first half isn't left in the chat, or sent again as an earlier message.
+    expect(requests[1].body.messages.filter((m: any) => m.role === "user")).toHaveLength(1);
+    await until(() => said().includes("Yes, I can apply"));
+    expect(userMessages()).toEqual(["Tell me if I give you links to jobs on WhatsApp, can you apply to them?"]);
+    expect(chat().filter((m) => m.role === "assistant" && !m.content.trim())).toHaveLength(0);
+  });
+
+  it("also when the live caption is what stopped it", async () => {
+    const s = await open();
+    plans = [{ delay: 600, chunks: ["Sure."] }, { chunks: ["Done."] }];
+    say("Go and check the billing page that is open in the browser right now.");
+    await until(() => requests.length === 1 && s.state.phase === "thinking");
+    mic.emit({ type: "start" });
+    mic.emit({ type: "partial", text: "side by side with the" });
+    expect(s.state.phase).toBe("hearing");
+    mic.emit({ type: "utterance", text: "side by side with the other account.", ms: 3, waitMs: 300 });
+    await until(() => requests.length === 2);
+    expect(userWords(1)).toBe("Go and check the billing page that is open in the browser right now side by side with the other account.");
+    await until(() => said().includes("Done."));
+    expect(userMessages()).toHaveLength(1);
+  });
+
+  it("not once the reply has run a tool: that request stands, and the new words are their own", async () => {
+    const s = await open();
+    plans = [{ tool: "early_lookup", delay: 0 }, { delay: 600, chunks: ["Looked it up."] }, { chunks: ["It's sunny."] }];
+    say("Find the train times");
+    await until(() => toolRuns === 1 && requests.length === 2 && s.state.phase === "thinking");
+    say("and what is the weather like today");
+    await until(() => requests.length === 3);
+    expect(userWords(2)).toBe("and what is the weather like today");
+    expect(userMessages()[0]).toBe("Find the train times");
+  });
+
+  it("a stray sound in between doesn't join a later request to the cut-off one", async () => {
+    const s = await open();
+    plans = [{ delay: 600, chunks: ["Sure."] }, { chunks: ["Okay."] }];
+    say("Tell me if I");
+    await until(() => requests.length === 1 && s.state.phase === "thinking");
+    mic.emit({ type: "start" });
+    mic.emit({ type: "partial", text: "and also the other thing" });
+    expect(s.state.phase).toBe("hearing");
+    // It came to nothing.
+    mic.emit({ type: "discard" });
+    await until(() => s.state.phase === "listening");
+    say("what's the time in Delhi");
+    await until(() => requests.length === 2);
+    expect(userWords(1)).toBe("what's the time in Delhi");
+  });
+});
+
+describe("talking over its question", () => {
+  const say = (text: string) => {
+    mic.emit({ type: "start" });
+    mic.emit({ type: "utterance", text, ms: 3, waitMs: 300 });
+  };
+  /** It's asking "Can I …? Say yes or no." aloud, and the question has been coming back at echo level for a second. */
+  async function asking(tool: string) {
+    saves = 0;
+    const s = await open();
+    out.speaking = true;
+    // The reply's "On it." has been said; the question is still being asked.
+    out.done = (spoken) => !/yes or no/i.test(spoken);
+    plans = [{ tool }, { chunks: ["Saved it, all done."] }];
+    say("Save my note");
+    await until(() => s.state.approval !== null && s.state.phase === "speaking");
+    mic.level = 0.25;
+    await sleep(1200);
+    return s;
+  }
+
+  it("a voice clearly louder than its echo stops just the question; the words are the answer, and the reply carries on", async () => {
+    const s = await asking("early_note1");
+    const stops = out.stops;
+    mic.emit({ type: "start" });
+    mic.emit({ type: "speech" });
+    mic.level = 0.8;
+    await until(() => s.state.phase === "hearing", 900);
+    expect(out.stops).toBe(stops + 1);
+    expect(s.state.approval).not.toBeNull();
+    out.speaking = false;
+    mic.level = 0.1;
+    mic.emit({ type: "utterance", text: "yes go ahead", ms: 3, waitMs: 300 });
+    await until(() => saves === 1);
+    // The reply's own voice wasn't stopped with the question.
+    await until(() => said().includes("Saved it, all done."));
+  });
+
+  it("its own question coming back doesn't stop it, or answer it", async () => {
+    const s = await asking("early_note2");
+    mic.emit({ type: "start" });
+    mic.emit({ type: "speech" });
+    mic.emit({ type: "partial", text: "say yes or no" });
+    await sleep(700);
+    expect(s.state.phase).toBe("speaking");
+    expect(s.state.approval).not.toBeNull();
+    mic.emit({ type: "discard" });
+    out.speaking = false;
+    mic.level = 0.1;
+    await until(() => s.state.phase === "listening");
+    expect(saves).toBe(0);
+    say("yes");
+    await until(() => saves === 1);
+  });
+
+  it("turned down by its own echo but not stopped: back to full volume for the answer and the rest of the reply", async () => {
+    const s = await asking("early_note4");
+    mic.emit({ type: "start" });
+    mic.emit({ type: "speech" });
+    await until(() => out.ducked, 500);
+    await sleep(300);
+    expect(s.state.approval).not.toBeNull();
+    // The question finishes; its echo comes back as words.
+    out.speaking = false;
+    await until(() => s.state.phase === "listening");
+    expect(out.ducked).toBe(false);
+    mic.emit({ type: "utterance", text: /Can I[^?]*\?/.exec(said())?.[0] ?? "", ms: 3, waitMs: 300 });
+    await sleep(100);
+    expect(saves).toBe(0);
+    mic.level = 0.1;
+    say("yes");
+    await until(() => saves === 1);
+    expect(out.ducked).toBe(false);
+  });
+
+  it("the question coming back runs into the answer said over it: the answer still counts", async () => {
+    const s = await asking("early_note5");
+    mic.emit({ type: "start" });
+    mic.emit({ type: "speech" });
+    mic.level = 0.8;
+    await until(() => s.state.phase === "hearing", 900);
+    out.speaking = false;
+    mic.level = 0.1;
+    const question = /Can I[^?]*\?/.exec(said())?.[0] ?? "";
+    expect(question).not.toBe("");
+    mic.emit({ type: "utterance", text: `${question} Yes, go ahead.`, ms: 3, waitMs: 300 });
+    await until(() => saves === 1);
+  });
+
+  it("only the question coming back, after it was cut short: asked again, not left on \"hearing\"", async () => {
+    const s = await asking("early_note6");
+    mic.emit({ type: "start" });
+    mic.emit({ type: "speech" });
+    mic.level = 0.8;
+    await until(() => s.state.phase === "hearing", 900);
+    out.speaking = false;
+    mic.level = 0.1;
+    const asked = out.said.length;
+    mic.emit({ type: "utterance", text: /Can I[^?]*\?/.exec(said())?.[0] ?? "", ms: 3, waitMs: 300 });
+    await until(() => out.said.slice(asked).some((t) => /Should I go ahead/.test(t)));
+    expect(saves).toBe(0);
+    await until(() => s.state.phase === "listening");
+    say("yes");
+    await until(() => saves === 1);
+  });
+
+  it("answered with the button while it's still asking: the question stops, the reply goes on", async () => {
+    const s = await asking("early_note3");
+    const stops = out.stops;
+    s.answerApproval("allow");
+    expect(out.stops).toBe(stops + 1);
+    out.speaking = false;
+    await until(() => saves === 1);
+    await until(() => said().includes("Saved it, all done."));
+  });
+});
+
 describe("telling a late echo from a reply", () => {
   it("matches the bot's last words in order, not a short or different answer", async () => {
     const { echoesLastWords } = await import("./voice-commands");
@@ -663,6 +870,20 @@ describe("answering the bot's question", () => {
     const { echoesLastWords } = await import("./voice-commands");
     expect(echoesLastWords("Yes.", "Can I create a routine: Morning news? Say yes or no.")).toBe(false);
     expect(echoesLastWords("create a routine morning news say yes or no", "Can I create a routine: Morning news? Say yes or no.")).toBe(true);
+  });
+
+  it("finds the answer said over the question when both come back as one stretch, but never a yes the question itself said", async () => {
+    const { answerAfterEcho } = await import("./voice-commands");
+    const question = "Can I run a command to check the test folder? It's on your screen. Say yes or no.";
+    // Seen in testing (loud speakers, no echo cancelling).
+    expect(answerAfterEcho("Can I run a command? Yes, go ahead.", question)).toBe("Yes, go ahead.");
+    expect(answerAfterEcho("And I run a command to check the other folder, it's on your screen. No, don't.", question)).toBe("No, don't.");
+    // Only the question coming back, maybe misheard: no answer in it.
+    expect(answerAfterEcho("Can I run a command to check the test folder? It's on your screen. Say yes.", question)).toBeNull();
+    expect(answerAfterEcho("Can I run a command? Yes.", question)).toBeNull();
+    expect(answerAfterEcho("Can I run a command to check the test folder?", question)).toBeNull();
+    // No echo in front: left to the usual answer check.
+    expect(answerAfterEcho("Yes, go ahead.", question)).toBeNull();
   });
 });
 
@@ -745,6 +966,14 @@ describe("talking over the bot: more than its own echo explains", async () => {
     expect(heardOverEcho(silent.map((w) => ({ ...w, mic: -25 })), echoGaps(-28), -55)).toBe(true);
     expect(heardOverEcho(moment(() => -20), echoGaps(-28, 5), -55)).toBe(false);
     expect(heardOverEcho(moment(() => -20).slice(0, 5), echoGaps(-28), -55)).toBe(false);
+  });
+
+  it("with nothing known of the echo, a voice while the bot is silent still counts (its question's voice not started yet)", () => {
+    const silent = Array.from({ length: 9 }, () => ({ out: -100 }));
+    expect(heardOverEcho(silent.map((w) => ({ ...w, mic: -25 })), [], -55)).toBe(true);
+    expect(heardOverEcho(silent.map((w) => ({ ...w, mic: -50 })), [], -55)).toBe(false);
+    // Its voice just started: the echo could be any loudness, so not yet.
+    expect(heardOverEcho([...silent.slice(0, 6), ...moment(() => -25).slice(0, 3)].map((w) => ({ mic: -25, ...w })), [], -55)).toBe(false);
   });
 
   it("with only a little of the echo heard, a voice must be further above it", () => {

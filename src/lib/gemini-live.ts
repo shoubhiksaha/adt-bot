@@ -107,8 +107,8 @@ export type LiveCall = { id: string; name: string; args: Record<string, unknown>
 
 export type LiveEvent =
   | { type: "ready" }
-  /** Base64 16-bit PCM at `rate` Hz. */
-  | { type: "audio"; data: string; rate: number }
+  /** Base64 16-bit PCM at `rate` Hz (`mime`: the type the server gave it). */
+  | { type: "audio"; data: string; rate: number; mime?: string }
   /** What the user said, a piece at a time. */
   | { type: "input"; text: string }
   /** What the model is saying, a piece at a time. */
@@ -158,7 +158,7 @@ export function parseServerMessage(message: unknown): LiveEvent[] {
       const data = part?.inlineData;
       if (data?.data && /^audio\//.test(String(data.mimeType ?? "audio/pcm"))) {
         const rate = Number(/rate=(\d+)/.exec(String(data.mimeType ?? ""))?.[1] ?? 24000);
-        events.push({ type: "audio", data: String(data.data), rate });
+        events.push({ type: "audio", data: String(data.data), rate, mime: String(data.mimeType ?? "audio/pcm") });
       }
     }
     if (content.outputTranscription?.text) events.push({ type: "output", text: String(content.outputTranscription.text) });
@@ -183,6 +183,11 @@ export function parseServerMessage(message: unknown): LiveEvent[] {
 }
 
 // Audio ------------------------------------------------------------------------------------------
+
+/** Audio the app plays as it comes: raw 16-bit PCM (what the Live API sends). Anything else would play as noise. */
+export function isPcm(mime: string): boolean {
+  return /^audio\/(pcm|l16)\b/i.test(mime);
+}
 
 /** Microphone samples (−1…1) as base64 little-endian 16-bit PCM. */
 export function pcm16Base64(samples: Float32Array): string {

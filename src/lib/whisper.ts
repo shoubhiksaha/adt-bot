@@ -145,7 +145,8 @@ export type ListenerEvent =
   | { type: "resume" }
   | { type: "transcribing" }
   /** `ms`: transcription time; `waitMs`: silence waited before the turn was judged over. */
-  | { type: "utterance"; text?: string; audio?: Float32Array; ms?: number; waitMs?: number }
+  /** `repaired`: the transcription came back far shorter than the captions, so it was redone ("retry") or the captions used. */
+  | { type: "utterance"; text?: string; audio?: Float32Array; ms?: number; waitMs?: number; repaired?: "retry" | "captions" }
   | { type: "error"; message: string }
   /** The microphone delivers pure digital silence: blocked by the OS, muted, or the wrong input. */
   | { type: "silent"; message: string }

@@ -8,7 +8,7 @@ import { COMPUTER_GUIDANCE, createToolRunner, TOOL_GUIDANCE, type ToolRunner } f
 import { type AgentTool, type ToolContext, toolsFor, type TurnTaint } from "./agent/tools";
 import { withSharedMemory } from "./memory-recall";
 import { buildSystemPrompt, setVoiceApprover, setVoiceModeActive, stripMemoryTags, titleFrom } from "./chat";
-import { closeReason, LIVE_MODELS, LiveConnection, type LiveCall, type LiveEvent, type LiveSetup, pcm16Base64, pcm16Samples } from "./gemini-live";
+import { closeReason, isPcm, LIVE_MODELS, LiveConnection, type LiveCall, type LiveEvent, type LiveSetup, pcm16Base64, pcm16Samples } from "./gemini-live";
 import workletUrl from "./pcm-worklet.js?url";
 import { newConversation, uid, updateConversation, useStore } from "./store";
 import { detectEnv } from "./transport";
@@ -16,6 +16,8 @@ import { chime, createPcmPlayer, type PcmPlayer } from "./tts";
 import type { Message, ToolCallRecord } from "./types";
 import { stopReadAloud } from "./voice";
 import { parseVoiceCommand, yesOrNo } from "./voice-commands";
+import { setVoiceCloser } from "./voice-hooks";
+import { debugVoice } from "./voice-log";
 import type { VoiceState } from "./voice-session";
 
 /** Quiet this long (nobody talking): stop sending the microphone, which Gemini bills by the minute. */
@@ -26,6 +28,12 @@ const ANSWER_PAUSE_MS = 700;
 const HISTORY_MESSAGES = 20;
 /** Tool results are cut to this length (the session's context is smaller than a chat model's). */
 const RESULT_LIMIT = 12_000;
+/**
+ * Closing voice mode (the user said so, or the bot did): a short goodbye gets this long to start and
+ * play out; a reply still going after END_MAX_MS is cut off.
+ */
+const END_GRACE_MS = 2000;
+const END_MAX_MS = 6000;
 
 const LIVE_RULES = [
   "Tools run in the background while you keep talking: say one short sentence first (like \"On it.\"), then give the result when it arrives.",
@@ -35,6 +43,13 @@ const LIVE_RULES = [
 ].join(" ");
 
 type Mic = { level(): number; close(): void };
+
+/** "Okay, that's all. Close voice mode.": what the user said ends with closing voice mode. */
+function saysEnd(text: string): boolean {
+  const bots = useStore.getState().bots;
+  const last = text.split(/(?<=[.!?])\s+/).map((s) => s.trim()).filter(Boolean).at(-1) ?? "";
+  return [text, last].some((t) => t && parseVoiceCommand(t, bots)?.type === "end");
+}
 
 /** Opens the microphone (echo-cancelled) and hands over ~0.1 s pieces of 16 kHz audio. */
 async function openMic(onAudio: (samples: Float32Array) => void): Promise<Mic> {
@@ -144,8 +159,15 @@ export class LiveVoiceSession {
   private approval: Approval | null = null;
   /** Questions from tools are asked one at a time. */
   private approvals: Promise<unknown> = Promise.resolve();
-  /** The user said "goodbye": end once the reply is over. */
+  /** The user said "goodbye" (or the bot closed voice mode): end once the reply is over (see endSoon). */
   private ending = false;
+  private endTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Waits for a pause in what the user is saying, then checks it for "close voice mode". */
+  private endCheck: ReturnType<typeof setTimeout> | null = null;
+  /** The sound of the current reply, for the diagnostics log (a sound with no words: not speech). */
+  private sound = { pieces: 0, samples: 0, energy: 0, peak: 0, rate: 0, mime: "" };
+  /** Audio in a format the app can't play came: said once. */
+  private badAudio = "";
   private stopAll = new AbortController();
   private taint: TurnTaint = { sources: new Set() };
   private tools: AgentTool[] = [];
@@ -203,6 +225,8 @@ export class LiveVoiceSession {
     this.conversationId = activeConversationId;
     const platform = (await detectEnv()).platform;
     if (this.closed) return;
+    // The bot can close voice mode (end_voice_mode), once its goodbye has been heard.
+    setVoiceCloser(() => this.endSoon("the bot closed it"));
     // Gemini searches Google itself; the app's own web search isn't needed.
     this.tools = toolsFor({ settings, providers, platform, bot }).filter((t) => t.name !== "web_search");
     this.toolContext = {
@@ -241,6 +265,7 @@ export class LiveVoiceSession {
       return;
     }
     chime("listen");
+    debugVoice("live: connected", JSON.stringify({ model: this.setup.model, voice: this.setup.voice, tools: this.tools.length }));
     this.set({ phase: "listening", error: null });
     this.armIdle();
     const request = this.hooks.initialRequest?.trim();
@@ -296,6 +321,7 @@ export class LiveVoiceSession {
       onEvent: (event: LiveEvent) => this.onEvent(event),
       onClose: (info: { code: number; reason: string }) => {
         if (this.closed || this.connection !== connection) return;
+        debugVoice("live: connection closed", JSON.stringify({ code: info.code, reason: info.reason, resumable: Boolean(this.resumeHandle) }));
         // Dropped mid-session: carry on where it was if the server gave us a way back.
         if (this.resumeHandle) void this.reconnect();
         else this.fail(closeReason(info.code, info.reason));
@@ -321,6 +347,7 @@ export class LiveVoiceSession {
   private async reconnect(attempt = 1) {
     if (this.closed || this.reconnecting || !this.setup) return;
     this.reconnecting = true;
+    debugVoice("live: reconnecting", JSON.stringify({ attempt, resumed: Boolean(this.resumeHandle) }));
     const old = this.connection;
     try {
       const next = this.makeConnection({ ...this.setup, resumeHandle: this.resumeHandle || undefined, history: this.resumeHandle ? undefined : this.history() });
@@ -349,15 +376,17 @@ export class LiveVoiceSession {
       case "output":
         return this.onOutput(event.text);
       case "audio":
-        return this.onAudio(event.data, event.rate);
+        return this.onAudio(event.data, event.rate, event.mime ?? "audio/pcm");
       case "interrupted":
         return this.onInterrupted();
       case "turnComplete":
         return this.onTurnComplete();
       case "toolCall":
+        debugVoice("live: tool calls", event.calls.map((c) => c.name).join(", "));
         event.calls.forEach((call) => void this.runTool(call));
         return;
       case "toolCancel":
+        debugVoice("live: tool calls cancelled", event.ids.length);
         event.ids.forEach((id) => this.running.get(id)?.abort());
         return;
       case "goAway":
@@ -367,6 +396,7 @@ export class LiveVoiceSession {
         this.resumeHandle = event.handle;
         return;
       case "error":
+        debugVoice("live: error", event.message);
         this.set({ error: event.message });
         return;
     }
@@ -436,11 +466,45 @@ export class LiveVoiceSession {
   }
 
   /** The exchange is over: a "goodbye" in it ends the session once the reply has been heard. */
-  private endExchange() {
-    const said = this.user?.text.trim();
-    if (said && parseVoiceCommand(said, useStore.getState().bots)?.type === "end") this.ending = true;
+  private endExchange(how: "complete" | "interrupted") {
+    const said = this.user?.text.trim() ?? "";
+    const { pieces, samples, energy, peak, rate, mime } = this.sound;
+    const seconds = rate ? samples / rate : 0;
+    const words = this.reply?.text.trim() ?? "";
+    debugVoice(
+      `live: ${how}`,
+      JSON.stringify({
+        you: said.slice(0, 200),
+        reply: words.slice(0, 200),
+        sound: pieces ? { pieces, seconds: Math.round(seconds * 10) / 10, rms: Math.round(20 * Math.log10(Math.sqrt(energy / samples) + 1e-9)), peak: Math.round(20 * Math.log10(peak + 1e-9)), rate, mime } : null,
+        mic: Math.round((this.mic?.level() ?? 0) * 100) / 100,
+      }),
+    );
+    // Seconds of sound and not a word of transcript: Gemini made a noise, not speech.
+    if (seconds > 3 && !words) debugVoice("live: sound with no words (not speech)");
+    this.sound = { pieces: 0, samples: 0, energy: 0, peak: 0, rate: 0, mime: "" };
+    if (saysEnd(said)) this.endSoon("you said so");
     this.user = null;
     this.reply = null;
+  }
+
+  /**
+   * Closes voice mode once a short goodbye has been heard: when it's quiet (and has had a moment to
+   * start), or after END_MAX_MS whatever is playing.
+   */
+  private endSoon(why: string) {
+    if (this.ending || this.closed) return;
+    this.ending = true;
+    debugVoice(`live: closing voice mode (${why})`);
+    const started = performance.now();
+    const check = () => {
+      this.endTimer = null;
+      if (this.closed) return;
+      const waited = performance.now() - started;
+      if ((waited >= END_GRACE_MS && !this.player.playing && !this.reply) || waited >= END_MAX_MS) return this.close();
+      this.endTimer = setTimeout(check, 250);
+    };
+    this.endTimer = setTimeout(check, 250);
   }
 
   // Events -----------------------------------------------------------------------------------
@@ -449,6 +513,12 @@ export class LiveVoiceSession {
     this.clearIdle();
     this.lastInputAt = performance.now();
     this.userSaid(text);
+    // "Close voice mode" closes it as soon as they've said it, not only once Gemini has replied (it may not).
+    if (this.endCheck) clearTimeout(this.endCheck);
+    this.endCheck = setTimeout(() => {
+      this.endCheck = null;
+      if (this.user && saysEnd(this.user.text)) this.endSoon("you said so");
+    }, ANSWER_PAUSE_MS);
     // While it's still asking, what the microphone hears may be the question coming back.
     if (this.approval && !this.player.playing) this.listenForAnswer(text);
     this.set({ phase: this.state.phase === "speaking" ? "speaking" : "hearing", partial: this.user?.text ?? "", heard: this.user?.text ?? "" });
@@ -463,28 +533,47 @@ export class LiveVoiceSession {
     this.set({ reply: clean, partial: "" });
   }
 
-  private onAudio(data: string, rate: number) {
+  private onAudio(data: string, rate: number, mime: string) {
     if (this.skipping) return;
+    if (!isPcm(mime)) {
+      // Played as raw samples it would only be noise.
+      if (this.badAudio !== mime) {
+        this.badAudio = mime;
+        debugVoice("live: audio in a format the app can't play", mime);
+        this.set({ error: `Gemini Live sent its voice as ${mime}, which this version of the app can't play.` });
+      }
+      return;
+    }
     const reply = this.startReply();
     if (this.state.phase !== "speaking") {
       // From the user's last words to the first sound of the answer.
       const latency = this.lastInputAt > reply.startedAt - 30_000 ? Math.round(performance.now() - this.lastInputAt) : null;
       this.set({ phase: "speaking", partial: "", ...(this.state.latencyMs === null && latency !== null ? { latencyMs: latency } : {}) });
     }
-    this.player.push(pcm16Samples(data), rate);
+    const samples = pcm16Samples(data);
+    const sound = this.sound;
+    sound.pieces++;
+    sound.samples += samples.length;
+    sound.rate = rate;
+    sound.mime = mime;
+    for (const v of samples) {
+      sound.energy += v * v;
+      if (Math.abs(v) > sound.peak) sound.peak = Math.abs(v);
+    }
+    this.player.push(samples, rate);
   }
 
   private onInterrupted() {
     // The user talked over it: Gemini dropped the rest of the reply; so do we.
     this.player.flush();
     this.skipping = false;
-    this.endExchange();
+    this.endExchange("interrupted");
     this.set({ phase: "hearing" });
   }
 
   private onTurnComplete() {
     this.skipping = false;
-    this.endExchange();
+    this.endExchange("complete");
     void this.player.idle().then(() => {
       if (this.closed || this.reply || this.player.playing) return;
       if (this.ending) return this.close();
@@ -546,6 +635,7 @@ export class LiveVoiceSession {
       signal.addEventListener("abort", () => this.approval === pending && this.answerApproval("deny"), { once: true });
       this.clearIdle();
       this.set({ approval: { question: summary, reason, detail } });
+      debugVoice("live: asking", summary);
       const question = summary.replace(/ Say yes or no\.$/, "");
       this.send((c) => c.sendText(
         `[ADT Bot, not the user] A tool you called needs the user's OK first. Ask them now in one short sentence: "${question}" Then wait: the app hears their yes or no and sends you the tool's result.`,
@@ -574,6 +664,7 @@ export class LiveVoiceSession {
     clearTimeout(pending.timer);
     if (pending.pause) clearTimeout(pending.pause);
     this.approval = null;
+    debugVoice("live: answer", answer);
     if (!this.closed) this.set({ approval: null, activity: answer === "allow" ? this.state.activity : "Okay, skipping that." });
     pending.resolve(answer);
   }
@@ -645,6 +736,10 @@ export class LiveVoiceSession {
   /** Lets go of the microphone, the connection, sound and running tools. */
   private release() {
     this.clearIdle();
+    if (this.endTimer) clearTimeout(this.endTimer);
+    if (this.endCheck) clearTimeout(this.endCheck);
+    this.endTimer = null;
+    this.endCheck = null;
     this.answerApproval("deny");
     this.stopAll.abort();
     this.running.forEach((c) => c.abort());
@@ -664,13 +759,16 @@ export class LiveVoiceSession {
     if (this.closed) return;
     this.release();
     this.closed = true;
+    debugVoice("live: closed");
     setVoiceApprover(null);
+    setVoiceCloser(null);
     setVoiceModeActive(false);
     if (notify) this.hooks.onClose();
   }
 
   private fail(message: string) {
     if (this.closed) return;
+    debugVoice("live: failed", message);
     chime("error");
     this.release();
     this.set({ phase: "error", error: message });
