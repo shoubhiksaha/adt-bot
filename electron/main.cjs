@@ -449,17 +449,62 @@ app.whenReady().then(() => {
   if (!globalShortcut.register(VOICE_SHORTCUT, () => toggleVoiceMode())) console.warn(`Couldn't register ${VOICE_SHORTCUT} (used by another app).`);
   // Voice mode keeps its timers and audio at full speed while the bot works in other apps.
   // Settings → Voice → Voice diagnostics: what voice mode heard and decided, kept under 2 MB.
+  const voiceLog = () => path.join(app.getPath("userData"), "voice-debug.log");
+  let voiceLogStarted = false;
   ipcMain.handle("adt:voice:log", (event, payload) => {
     if (!trustedUrl(event.senderFrame?.url ?? "")) throw new Error("Blocked adt:voice:log from an untrusted page");
     const lines = Array.isArray(payload?.lines) ? payload.lines.filter((l) => typeof l === "string").map((l) => l.slice(0, 2000)).slice(0, 500) : [];
     if (!lines.length) return true;
-    const file = path.join(app.getPath("userData"), "voice-debug.log");
+    // Which version wrote the lines that follow (a report may cover several).
+    if (!voiceLogStarted) lines.unshift(`${new Date().toISOString()} === ADT Bot ${app.getVersion()} (${process.platform} ${process.arch})`);
+    voiceLogStarted = true;
+    const file = voiceLog();
     try {
       if (fs.existsSync(file) && fs.statSync(file).size > 2 * 1024 * 1024) fs.renameSync(file, `${file}.old`);
       fs.appendFileSync(file, `${lines.join("\n")}\n`);
     } catch (error) {
       console.warn("Voice log:", error.message);
     }
+    return true;
+  });
+  // Settings → Voice → Save a report: the page builds it from the log (src/lib/voice-report.ts) and
+  // shows it; what the person saves goes to Downloads for them to send. Nothing is uploaded.
+  const savedReports = new Set();
+  ipcMain.handle("adt:voice:report-data", (event) => {
+    if (!trustedUrl(event.senderFrame?.url ?? "")) throw new Error("Blocked adt:voice:report-data from an untrusted page");
+    const read = (file) => {
+      try {
+        return fs.readFileSync(file, "utf8");
+      } catch {
+        return "";
+      }
+    };
+    return {
+      log: read(`${voiceLog()}.old`) + read(voiceLog()),
+      app: { version: app.getVersion(), platform: process.platform, arch: process.arch, os: process.getSystemVersion(), electron: process.versions.electron },
+    };
+  });
+  ipcMain.handle("adt:voice:report-save", (event, payload) => {
+    if (!trustedUrl(event.senderFrame?.url ?? "")) throw new Error("Blocked adt:voice:report-save from an untrusted page");
+    const bytes = payload?.bytes;
+    if (!(bytes instanceof Uint8Array) || !bytes.length || bytes.length > 20 * 1024 * 1024) throw new Error("That report can't be saved.");
+    const ext = payload?.zip ? "zip" : "txt";
+    const now = new Date();
+    const two = (n) => String(n).padStart(2, "0");
+    const stamp = `${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())} ${two(now.getHours())}.${two(now.getMinutes())}`;
+    const dir = app.getPath("downloads");
+    fs.mkdirSync(dir, { recursive: true });
+    let file = path.join(dir, `ADT Bot voice report ${stamp}.${ext}`);
+    for (let n = 2; fs.existsSync(file); n++) file = path.join(dir, `ADT Bot voice report ${stamp} (${n}).${ext}`);
+    fs.writeFileSync(file, bytes);
+    savedReports.add(file);
+    return { path: file, name: path.basename(file) };
+  });
+  ipcMain.handle("adt:voice:report-show", (event, payload) => {
+    if (!trustedUrl(event.senderFrame?.url ?? "")) throw new Error("Blocked adt:voice:report-show from an untrusted page");
+    // Only a report this app saved: the page can't point the file manager anywhere else.
+    if (!savedReports.has(payload?.path)) throw new Error("Not a saved report");
+    shell.showItemInFolder(payload.path);
     return true;
   });
   ipcMain.handle("adt:voice:active", (event, payload) => {

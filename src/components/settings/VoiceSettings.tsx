@@ -1,4 +1,4 @@
-import { AudioLines, Volume2 } from "lucide-react";
+import { AudioLines, FileText, Volume2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { updateSettings, useStore } from "../../lib/store";
 import { CUSTOM_VOICE_TEMPLATES, type CustomVoice, newCustomVoice } from "../../lib/custom-tts";
@@ -22,6 +22,7 @@ import { localSpeechModel, onSpeechNotice, onWhisperProgress, preloadWhisper, SP
 import { LIVE_MODELS, LIVE_VOICES } from "../../lib/gemini-live";
 import { switchToDeviceVoice, switchToServerVoice, usingServerVoice } from "../../lib/server-voice";
 import { ModelInput, Section, Toggle } from "./controls";
+import { VoiceReport } from "./VoiceReport";
 
 /** Whose system voice settings to point to (null on phones). */
 const DESKTOP_OS =
@@ -44,6 +45,7 @@ export function VoiceSettings() {
   const server = useStore((s) => s.settings.server);
   const [serverNote, setServerNote] = useState<{ text: string; error?: boolean } | null>(null);
   const [serverBusy, setServerBusy] = useState(false);
+  const [reporting, setReporting] = useState(false);
   /** The system's voices (null while they load). */
   const [voices, setVoices] = useState<DeviceVoice[] | null>(null);
   const [autoVoice, setAutoVoice] = useState<string>("");
@@ -356,12 +358,21 @@ export function VoiceSettings() {
         )}
         <Toggle checked={voice.concise} onChange={(v) => set({ concise: v })} title="Short spoken answers" hint="Bots answer in a sentence or two, like a phone call, and skip formatting." />
         {window.adtbotDesktop && (
-          <Toggle
-            checked={Boolean(voice.diagnostics)}
-            onChange={(v) => set({ diagnostics: v })}
-            title="Voice diagnostics"
-            hint="For troubleshooting: saves what voice mode heard and why it stopped or kept talking to voice-debug.log in ADT Bot's folder on this computer. It includes what was said. Turn it off when you're done."
-          />
+          <>
+            <Toggle
+              checked={Boolean(voice.diagnostics)}
+              onChange={(v) => set({ diagnostics: v })}
+              title="Voice diagnostics"
+              hint="For troubleshooting: saves what voice mode heard and why it stopped or kept talking to voice-debug.log in ADT Bot's folder on this computer. It includes what was said. The last seconds of the bot's voice are kept in memory too, for a report. Turn it off when you're done."
+            />
+            <div className="btn-row" style={{ marginTop: -6, marginBottom: 14 }}>
+              <button type="button" className="btn" onClick={() => setReporting(true)}>
+                <FileText size={14} /> Save a voice report…
+              </button>
+              <span className="small muted">A file to send for help with a voice problem; you see what's in it first.</span>
+            </div>
+            {reporting && <VoiceReport onClose={() => setReporting(false)} />}
+          </>
         )}
         <div className="field">
           <label htmlFor="voice-model">Model for voice conversations</label>

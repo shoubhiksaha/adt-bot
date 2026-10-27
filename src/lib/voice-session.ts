@@ -21,7 +21,7 @@ import {
   answerAfterEcho,
 } from "./voice-commands";
 import { setVoiceCloser } from "./voice-hooks";
-import { debugVoice } from "./voice-log";
+import { debugVoice, spoken } from "./voice-log";
 import { desktopInvoke } from "./desktop";
 import { Listener, type ListenerEvent, localSpeechModel, onWhisperProgress, SPEECH_MODELS, toWav } from "./whisper";
 
@@ -827,7 +827,7 @@ export class VoiceSession {
       return;
     }
     if (event.type !== "tentative" && event.type !== "resume") {
-      const said = "text" in event && event.text ? ` "${String(event.text).slice(0, 160)}"` : "";
+      const said = "text" in event && event.text ? ` ${spoken(String(event.text).slice(0, 160))}` : "";
       const repaired = event.type === "utterance" && event.repaired ? { repaired: event.repaired } : {};
       debugVoice(`heard ${event.type}${said}`, JSON.stringify({ phase, mic: Math.round(this.listener?.micDb?.() ?? -100), ducked: this.ducked, step: this.stepRunning, otherAudio: this.otherAudio, ...repaired }));
     }
@@ -893,7 +893,7 @@ export class VoiceSession {
       const now = this.state.phase;
       const echo = ` ${normalize(this.recentSpeech())} `.includes(` ${normalize(event.text)} `);
       if ((now === "speaking" || now === "thinking") && !this.approval && this.bargeMode() !== "off" && this.isStop(event.text) && !echo) {
-        debugVoice("stopped by a short word", event.text);
+        debugVoice("stopped by a short word", spoken(event.text));
         this.interrupt();
         this.enterListening();
       }
@@ -905,7 +905,7 @@ export class VoiceSession {
       else if ((now === "speaking" || now === "thinking") && this.isCutIn(event.text)) {
         // A step is running: only "stop" cuts it off; anything else waits for the whole sentence and comes next.
         if (this.stepRunning && !this.isStop(event.text)) return;
-        debugVoice("stopped by a live caption", event.text);
+        debugVoice("stopped by a live caption", spoken(event.text));
         // Talking over the bot: stop it now, while the user is still mid-sentence.
         this.noteCutOff();
         this.interrupt();
@@ -1057,7 +1057,7 @@ export class VoiceSession {
     if (this.otherAudio && phase !== "standby" && !parseVoiceCommand(text, useStore.getState().bots)) {
       const rest = this.addressedRest(text);
       if (rest === null) {
-        debugVoice("other audio is playing and this wasn't addressed to the bot", text);
+        debugVoice("other audio is playing and this wasn't addressed to the bot", spoken(text));
         early?.discard();
         this.unduck();
         if (phase === "hearing") this.enterListening();
@@ -1079,7 +1079,7 @@ export class VoiceSession {
       // Began while the bot was talking: its own voice, or the user (maybe both, echo first).
       const own = userPart(text, this.recentSpeech());
       if (own === null || (phase === "speaking" && this.quieterThanEcho())) {
-        if (own !== null) debugVoice("words, but never louder than the leftover echo", text, Math.round(this.segmentPeak));
+        if (own !== null) debugVoice("words, but never louder than the leftover echo", spoken(text), Math.round(this.segmentPeak));
         early?.discard();
         this.unduck();
         if (phase === "hearing") this.enterListening();
@@ -1124,7 +1124,7 @@ export class VoiceSession {
     // A step is running (a command, a click): don't cut it off half done for anything but a command
     // like "stop". The request comes next, once this reply is done.
     if ((phase === "speaking" || phase === "thinking") && this.stepRunning && !command) {
-      debugVoice("a step is running: this comes next", text);
+      debugVoice("a step is running: this comes next", spoken(text));
       early?.discard();
       this.followUp = text;
       this.unduck();
@@ -1137,7 +1137,7 @@ export class VoiceSession {
         this.unduck();
         return;
       }
-      debugVoice("stopped by what was heard", text);
+      debugVoice("stopped by what was heard", spoken(text));
       this.interrupt();
     } else if (phase === "thinking") {
       this.noteCutOff();
@@ -1150,7 +1150,7 @@ export class VoiceSession {
     if (cutOff && !command && performance.now() - cutOff.at < CUT_OFF_MS) {
       // They paused, the bot started on the first half, and they carried on: one request, as meant
       // ("Tell me if I…" + "…give you links to jobs, can you apply?").
-      debugVoice("joined to the request it carried on from", cutOff.text);
+      debugVoice("joined to the request it carried on from", spoken(cutOff.text));
       early?.discard();
       early = null;
       this.replacing = cutOff;

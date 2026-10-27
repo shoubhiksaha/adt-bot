@@ -4,6 +4,7 @@ import { providerFetch } from "./transport";
 import { audioFromJson, buildCustomRequest } from "./custom-tts";
 import { KOKORO_VOICES, localChoice, localVoiceReady, synthesizeLocally } from "./local-tts";
 import type { CloudTts, ProviderConfig, VoiceSettings } from "./types";
+import { recordBotVoice } from "./voice-recording";
 
 export function customVoiceFor(voice: VoiceSettings) {
   const id = voice.tts.startsWith("custom:") ? voice.tts.slice(7) : "";
@@ -174,6 +175,7 @@ function outputNode(ctx: AudioContext): AudioNode {
     duck.connect(reference);
     samples = new Float32Array(analyser.fftSize);
   }
+  recordBotVoice(ctx, duck!);
   return analyser;
 }
 

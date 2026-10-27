@@ -18,6 +18,12 @@ export const debugVoice = (...parts: unknown[]) => {
   if (useStore.getState().settings.voice.diagnostics) logVoice(parts.map((p) => (typeof p === "string" ? p : JSON.stringify(p))).join(" "));
 };
 
+/**
+ * Words someone said (the user or the bot), marked ⟦like this⟧ in the log so a voice report can
+ * leave them out (src/lib/voice-report.ts).
+ */
+export const spoken = (text: string) => `⟦${text.replace(/[⟦⟧]/g, "")}⟧`;
+
 /** Lines for voice-debug.log, written every couple of seconds (desktop only). */
 let logLines: string[] = [];
 let logTimer: ReturnType<typeof setTimeout> | null = null;

@@ -17,7 +17,7 @@ import type { Message, ToolCallRecord } from "./types";
 import { stopReadAloud } from "./voice";
 import { parseVoiceCommand, yesOrNo } from "./voice-commands";
 import { setVoiceCloser } from "./voice-hooks";
-import { debugVoice } from "./voice-log";
+import { debugVoice, spoken } from "./voice-log";
 import type { VoiceState } from "./voice-session";
 
 /** Quiet this long (nobody talking): stop sending the microphone, which Gemini bills by the minute. */
@@ -474,8 +474,8 @@ export class LiveVoiceSession {
     debugVoice(
       `live: ${how}`,
       JSON.stringify({
-        you: said.slice(0, 200),
-        reply: words.slice(0, 200),
+        you: spoken(said.slice(0, 200)),
+        reply: spoken(words.slice(0, 200)),
         sound: pieces ? { pieces, seconds: Math.round(seconds * 10) / 10, rms: Math.round(20 * Math.log10(Math.sqrt(energy / samples) + 1e-9)), peak: Math.round(20 * Math.log10(peak + 1e-9)), rate, mime } : null,
         mic: Math.round((this.mic?.level() ?? 0) * 100) / 100,
       }),
@@ -635,7 +635,7 @@ export class LiveVoiceSession {
       signal.addEventListener("abort", () => this.approval === pending && this.answerApproval("deny"), { once: true });
       this.clearIdle();
       this.set({ approval: { question: summary, reason, detail } });
-      debugVoice("live: asking", summary);
+      debugVoice("live: asking", spoken(summary));
       const question = summary.replace(/ Say yes or no\.$/, "");
       this.send((c) => c.sendText(
         `[ADT Bot, not the user] A tool you called needs the user's OK first. Ask them now in one short sentence: "${question}" Then wait: the app hears their yes or no and sends you the tool's result.`,
