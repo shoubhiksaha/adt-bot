@@ -1,20 +1,50 @@
-import { Download, Plus, Upload } from "lucide-react";
+import { Download, Plug, Plus, Sparkles, Upload } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Avatar } from "../../components/Avatar";
 import { Dialog } from "../../components/Dialog";
+import { isDesktop } from "../../lib/desktop";
 import { pickFiles, saveTextFile } from "../../lib/files";
 import { selectBot, useStore } from "../../lib/store";
 import type { Bot } from "../../lib/types";
 import { loadRoutines, useRoutines } from "../automation/routines-store";
 import { describeSchedule } from "../automation/schedule";
+import { type AppService, refreshApps, useApps } from "../apps/api";
 import { openView } from "../registry";
 import { skillsFor } from "../skills/skills";
+import { CustomBotDialog } from "./CustomBotDialog";
 import { gallery } from "./gallery";
 import { type BotTemplate, buildTemplate, installTemplate, parseTemplate, type TemplateChoice, templateFileName } from "./template";
 import "./templates.css";
 
+const NEED_WORDS: Record<AppService, string> = { mail: "email", calendar: "calendar", drive: "files", chat: "Slack", post: "X account", dms: "X messages" };
+
+/** A template whose job needs an account (the inbox bot: email) says so, with the way to connect it. */
+function NeedsApps({ needs }: { needs?: AppService[] }) {
+  const accounts = useApps((s) => s.accounts);
+  const loaded = useApps((s) => s.loaded);
+  useEffect(() => {
+    if (needs?.length) void refreshApps();
+  }, [needs]);
+  const missing = (needs ?? []).filter((need) => !accounts.some((a) => a.services.includes(need)));
+  if (!missing.length || (isDesktop() && !loaded)) return null;
+  const words = missing.map((need) => NEED_WORDS[need]);
+  const list = words.length > 1 ? `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}` : words[0];
+  return (
+    <p className="template-needs small">
+      <Plug size={14} /> It works with your {list}, and none is connected yet.{" "}
+      {isDesktop() ? (
+        <button type="button" className="link-btn" onClick={() => window.dispatchEvent(new CustomEvent("adt:open-settings", { detail: "apps" }))}>
+          Connect your {words[0]}
+        </button>
+      ) : (
+        "Connect it in the ADT Bot desktop app (Settings → Apps)."
+      )}
+    </p>
+  );
+}
+
 /** Everything a template would add, shown in full before adding it. */
-function TemplatePreview({ template, trusted, onClose }: { template: BotTemplate; trusted: boolean; onClose: () => void }) {
+function TemplatePreview({ template, trusted, needs, onClose }: { template: BotTemplate; trusted: boolean; needs?: AppService[]; onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<{ bot: Bot; notes: string[] } | null>(null);
   const [error, setError] = useState("");
@@ -34,6 +64,7 @@ function TemplatePreview({ template, trusted, onClose }: { template: BotTemplate
       {done ? (
         <div className="template-preview">
           <p>{done.bot.name} was added to your bots.</p>
+          <NeedsApps needs={needs} />
           {done.notes.length > 0 && (
             <ul className="small muted">
               {done.notes.map((n) => (
@@ -67,6 +98,7 @@ function TemplatePreview({ template, trusted, onClose }: { template: BotTemplate
               <p className="small muted">{bot.description}</p>
             </div>
           </div>
+          <NeedsApps needs={needs} />
           {!trusted && (
             <p className="notice small">
               Only add templates from people you trust. Read its instructions and routines below: the bot will follow them. Its routines arrive
@@ -217,7 +249,8 @@ export function TemplateExportDialog({ bot, onClose }: { bot: Bot; onClose: () =
 }
 
 export default function TemplatesView() {
-  const [preview, setPreview] = useState<{ template: BotTemplate; trusted: boolean } | null>(null);
+  const [preview, setPreview] = useState<{ template: BotTemplate; trusted: boolean; needs?: AppService[] } | null>(null);
+  const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
   const entries = gallery();
   const importFile = async () => {
@@ -235,8 +268,8 @@ export default function TemplatesView() {
     <div className="templates-view">
       <div className="templates-head">
         <p className="muted small grow">
-          Ready-made bots with a job, the skills for it and routines (off until you switch them on). Add one, then change anything in its
-          settings. Share your own bots from their settings ("Share as template").
+          Ready-made bots with a job, the skills for it and routines (off until you switch them on), or your own: describe it and ADT Bot
+          writes it. Change anything later in the bot's settings, and share your bots from there ("Share as template").
         </p>
         <button type="button" className="btn" onClick={() => void importFile()}>
           <Upload size={15} /> Import a template
@@ -244,7 +277,21 @@ export default function TemplatesView() {
       </div>
       {error && <p className="error-text small">{error}</p>}
       <ul className="template-grid">
-        {entries.map(({ id, template }) => (
+        <li className="template-card template-create">
+          <div className="template-who">
+            <span className="template-create-icon" aria-hidden="true">
+              <Sparkles size={22} />
+            </span>
+            <div>
+              <strong>Create your own bot</strong>
+              <p className="small muted">Describe what it should do: ADT Bot writes its name, instructions and tools. Or fill them in yourself.</p>
+            </div>
+          </div>
+          <button type="button" className="btn primary" onClick={() => setCreating(true)}>
+            <Sparkles size={15} /> Create
+          </button>
+        </li>
+        {entries.map(({ id, template, needs }) => (
           <li key={id} className="template-card">
             <div className="template-who">
               <Avatar value={template.bot.avatar} size="lg" />
@@ -256,13 +303,14 @@ export default function TemplatesView() {
             <p className="small muted template-includes">
               {[...template.skills.map((s) => `/${s.name}`), ...template.routines.map((r) => `${r.name} (${describeSchedule(r.schedule)})`)].join(" · ")}
             </p>
-            <button type="button" className="btn" onClick={() => setPreview({ template, trusted: true })}>
+            <button type="button" className="btn" onClick={() => setPreview({ template, trusted: true, needs })}>
               <Plus size={15} /> Add
             </button>
           </li>
         ))}
       </ul>
-      {preview && <TemplatePreview template={preview.template} trusted={preview.trusted} onClose={() => setPreview(null)} />}
+      {preview && <TemplatePreview template={preview.template} trusted={preview.trusted} needs={preview.needs} onClose={() => setPreview(null)} />}
+      {creating && <CustomBotDialog onClose={() => setCreating(false)} />}
     </div>
   );
 }

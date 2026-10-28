@@ -8,7 +8,16 @@
   "type": "module",
   "main": "electron/main.cjs",
   "adtbot": {
-    "reportInbox": ""
+    "reportInbox": "",
+    "signIn": {
+      "google": {
+        "clientId": "",
+        "clientSecret": ""
+      },
+      "microsoft": {
+        "clientId": ""
+      }
+    }
   },
   "scripts": {
     "dev": "vite",

@@ -12,7 +12,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 const require = createRequire(import.meta.url);
 const { createAccounts } = require("./accounts.cjs");
-const { createMail, gmailQuery, outlookSearch } = require("./mail.cjs");
+const { createMail, gmailQuery, outlookSearch, signInProblem } = require("./mail.cjs");
+const { discoverMail } = require("./discover.cjs");
 const { createCalendar } = require("./calendar.cjs");
 const { createSocial } = require("./social.cjs");
 const { addresses } = require("./common.cjs");
@@ -78,6 +79,8 @@ beforeEach(() => {
 describe("Google", () => {
   const tokens = { issued: 0, refreshed: 0 };
   let expiresIn = 3600;
+  let refuseRefresh = false;
+  let who = "me@gmail.com";
   const drafts = [];
   const sent = [];
   const events = [];
@@ -89,10 +92,11 @@ describe("Google", () => {
         tokens.issued++;
         return { json: { access_token: `at-${tokens.issued}`, refresh_token: "rt-1", expires_in: expiresIn } };
       }
+      if (refuseRefresh) return { status: 400, json: { error: "invalid_grant", error_description: "Token has been expired or revoked." } };
       tokens.refreshed++;
       return { json: { access_token: `at-r${tokens.refreshed}`, expires_in: 3600 } };
     },
-    "GET /oauth2/v3/userinfo": () => ({ json: { email: "me@gmail.com" } }),
+    "GET /oauth2/v3/userinfo": () => ({ json: { email: who } }),
     "GET /gmail/v1/users/me/messages/": ({ url }) => {
       const id = url.pathname.split("/").pop();
       if (url.searchParams.get("format") === "raw") {
@@ -234,6 +238,52 @@ describe("Google", () => {
     // An account connected without mail can't be used for mail.
     await expect(createMail({ accounts: fresh }).search({ account: account.id })).rejects.toThrow(/isn't connected for email/);
     expiresIn = 3600;
+  });
+
+  it("signs in with one click using the app registration the copy was built with", async () => {
+    const endpoints = { "https://accounts.google.com": base, "https://oauth2.googleapis.com": base, "https://www.googleapis.com": base };
+    const plain = createAccounts({ dir, vault: memoryVault(), openExternal: browser(), endpoints });
+    expect(plain.builtInSignIn()).toEqual({ google: false, microsoft: false, x: false });
+    await expect(plain.connectOAuth({ provider: "google", services: ["mail"], builtIn: true })).rejects.toThrow(/no built-in Google sign-in/);
+
+    const built = createAccounts({ dir, vault: memoryVault(), openExternal: browser(), endpoints, builtIn: { google: { clientId: "builtin.apps.googleusercontent.com", clientSecret: "s3cret" } } });
+    expect(built.builtInSignIn()).toEqual({ google: true, microsoft: false, x: false });
+    // Whatever the window sends as an ID is ignored: it's the built-in registration.
+    const account = await built.connectOAuth({ provider: "google", clientId: "someone-else", services: ["mail"], builtIn: true });
+    expect(browser.last.searchParams.get("client_id")).toBe("builtin.apps.googleusercontent.com");
+    expect(account).toMatchObject({ provider: "google", label: "me@gmail.com", services: ["mail"] });
+  });
+
+  it("shows an expired sign-in as signed out, and signs in again without pasting anything", async () => {
+    const endpoints = { "https://accounts.google.com": base, "https://oauth2.googleapis.com": base, "https://gmail.googleapis.com": base, "https://www.googleapis.com": base };
+    const vault = memoryVault();
+    let apps = createAccounts({ dir, vault, openExternal: browser(), endpoints });
+    const account = await apps.connectOAuth({ provider: "google", clientId: "mine.apps.googleusercontent.com", clientSecret: "s3cret", services: ["mail"] });
+    // The access token runs out and Google refuses the refresh token (a testing app after a week).
+    const saved = JSON.parse(await vault.getValue("apps", account.id));
+    await vault.setValue("apps", account.id, JSON.stringify({ ...saved, expires: 0 }));
+    refuseRefresh = true;
+    await expect(createMail({ accounts: apps }).search({ account: account.id })).rejects.toThrow(/sign-in for me@gmail\.com has expired.*Settings → Apps/);
+    expect(apps.list()[0]).toMatchObject({ id: account.id, needsSignIn: true });
+    // It stays that way after a restart.
+    apps = createAccounts({ dir, vault, openExternal: browser(), endpoints });
+    expect(apps.list()[0].needsSignIn).toBe(true);
+
+    // Signing in as someone else is refused: bots and routines use this account.
+    who = "other@gmail.com";
+    await expect(apps.reconnect({ id: account.id })).rejects.toThrow(/You signed in as other@gmail\.com, but this connection is me@gmail\.com/);
+    expect(apps.list()).toHaveLength(1);
+    expect(apps.list()[0].needsSignIn).toBe(true);
+    expect([...vault.store.keys()].filter((k) => k.endsWith(".check"))).toEqual([]);
+
+    who = "me@gmail.com";
+    refuseRefresh = false;
+    const again = await apps.reconnect({ id: account.id });
+    expect(browser.last.searchParams.get("client_id")).toBe("mine.apps.googleusercontent.com");
+    expect(again).toMatchObject({ id: account.id, label: "me@gmail.com", services: ["mail"] });
+    expect(again.needsSignIn).toBeUndefined();
+    expect(JSON.parse(fs.readFileSync(path.join(dir, "apps.json"), "utf8"))[0].needsSignIn).toBeUndefined();
+    expect(await createMail({ accounts: apps }).search({ account: account.id })).toHaveLength(2);
   });
 });
 
@@ -403,7 +453,16 @@ describe("any email account (IMAP and SMTP)", () => {
       imap: { host: "127.0.0.1", port: imapServer.server?.address?.().port ?? imapServer.address().port, secure: false },
       smtp: { host: "127.0.0.1", port: smtpServer.server.address().port, secure: false },
     });
-    await expect(accounts.connectImap(config("wrong"), mail.check)).rejects.toThrow(/refused the password|Couldn't reach/);
+    await expect(accounts.connectImap(config("wrong"), mail.check)).rejects.toThrow(/didn't accept that address and password/);
+    // Reading works but sending doesn't (nothing listens on that port): said before it's saved.
+    const closed = await new Promise((r) => {
+      const probe = createServer().listen(0, "127.0.0.1", () => {
+        const port = probe.address().port;
+        probe.close(() => r(port));
+      });
+    });
+    await expect(accounts.connectImap({ ...config("app-pass"), smtp: { host: "127.0.0.1", port: closed, secure: false } }, mail.check)).rejects.toThrow(/Reading mail works, but sending doesn't: Couldn't reach 127\.0\.0\.1/);
+    expect(accounts.list()).toEqual([]);
     const account = await accounts.connectImap(config("app-pass"), mail.check);
     expect(account).toMatchObject({ provider: "imap", label: "me@example.com", services: ["mail"] });
     expect(JSON.stringify(accounts.list())).not.toMatch(/app-pass/);
@@ -468,5 +527,58 @@ describe("any email account (IMAP and SMTP)", () => {
   it("checks addresses", () => {
     expect(addresses("a@x.com, B <b@y.org>")).toEqual(["a@x.com", "B <b@y.org>"]);
     expect(() => addresses("a@x.com, nope")).toThrow(/"nope" isn't an email address/);
+  });
+});
+
+describe("connecting email from just the address", () => {
+  const resolver = (records) => ({
+    resolveMx: async (d) => records[`mx:${d}`] ?? Promise.reject(Object.assign(new Error("none"), { code: "ENODATA" })),
+    resolveSrv: async (d) => records[`srv:${d}`] ?? Promise.reject(Object.assign(new Error("none"), { code: "ENODATA" })),
+  });
+
+  it("knows the big services by their domain, without asking DNS", async () => {
+    const none = { resolveMx: () => Promise.reject(new Error("asked")), resolveSrv: () => Promise.reject(new Error("asked")) };
+    expect(await discoverMail("Me@Gmail.com", { resolver: none })).toMatchObject({ service: "gmail", how: "domain", passwords: true, signIn: "google", imap: { host: "imap.gmail.com", port: 993 }, smtp: { host: "smtp.gmail.com", port: 465 } });
+    expect(await discoverMail("me@hotmail.com", { resolver: none })).toMatchObject({ service: "microsoft", passwords: false, signIn: "microsoft" });
+    expect((await discoverMail("me@hotmail.com", { resolver: none })).imap).toBeUndefined();
+    expect(await discoverMail("me@icloud.com", { resolver: none })).toMatchObject({ service: "icloud", smtp: { host: "smtp.mail.me.com", port: 587 } });
+    expect(await discoverMail("me@zoho.in", { resolver: none })).toMatchObject({ service: "zoho", imap: { host: "imap.zoho.in" } });
+    await expect(discoverMail("not an address")).rejects.toThrow(/full email address/);
+  });
+
+  it("finds a company's mail at Google, Microsoft 365 or Zoho from its MX records", async () => {
+    const dns = resolver({
+      "mx:acme.example": [{ exchange: "alt1.aspmx.l.google.com", priority: 5 }, { exchange: "aspmx.l.google.com", priority: 1 }],
+      "mx:contoso.example": [{ exchange: "contoso-example.mail.protection.outlook.com", priority: 0 }],
+      "mx:shop.example": [{ exchange: "mx.zoho.eu", priority: 10 }],
+    });
+    expect(await discoverMail("ann@acme.example", { resolver: dns })).toMatchObject({ service: "gmail", how: "mx", imap: { host: "imap.gmail.com" } });
+    expect(await discoverMail("bo@contoso.example", { resolver: dns })).toMatchObject({ service: "microsoft", how: "mx", passwords: false });
+    expect(await discoverMail("cy@shop.example", { resolver: dns })).toMatchObject({ service: "zoho", how: "mx", imap: { host: "imap.zoho.eu" }, smtp: { host: "smtp.zoho.eu" } });
+  });
+
+  it("uses the servers a domain announces, else a guess to check, and never waits long", async () => {
+    const dns = resolver({
+      "mx:own.example": [{ exchange: "mx.own.example", priority: 10 }],
+      "srv:_imaps._tcp.own.example": [{ name: "mail.own.example.", port: 993, priority: 0 }],
+      "srv:_submission._tcp.own.example": [{ name: "mail.own.example.", port: 587, priority: 0 }],
+    });
+    expect(await discoverMail("me@own.example", { resolver: dns })).toEqual({ service: "other", label: "own.example", how: "srv", passwords: true, imap: { host: "mail.own.example", port: 993 }, smtp: { host: "mail.own.example", port: 587 } });
+    expect(await discoverMail("me@small.example", { resolver: dns })).toMatchObject({ how: "guess", imap: { host: "imap.small.example", port: 993 }, smtp: { host: "smtp.small.example", port: 465 } });
+    const hangs = { resolveMx: () => new Promise(() => {}), resolveSrv: () => new Promise(() => {}) };
+    const started = Date.now();
+    expect(await discoverMail("me@slow.example", { resolver: hangs, timeoutMs: 200 })).toMatchObject({ how: "guess" });
+    expect(Date.now() - started).toBeLessThan(1500);
+  });
+
+  it("says what went wrong signing in, and what to do", () => {
+    const gmail = { imap: { host: "imap.gmail.com" } };
+    const other = { imap: { host: "mail.own.example" } };
+    expect(signInProblem({ responseText: "[ALERT] Application-specific password required: https://support.google.com/accounts/answer/185833 (Failure)", authenticationFailed: true }, gmail, "imap.gmail.com")).toMatch(/Gmail needs an app password here, not your Google password/);
+    expect(signInProblem({ responseText: "[AUTHENTICATIONFAILED] Invalid credentials (Failure)", authenticationFailed: true }, gmail, "imap.gmail.com")).toMatch(/Gmail didn't accept that address and app password/);
+    expect(signInProblem({ code: "EAUTH", response: "535 5.7.8 Authentication failed" }, other, "smtp.own.example")).toMatch(/didn't accept that address and password/);
+    expect(signInProblem({ code: "ENOTFOUND", message: "getaddrinfo ENOTFOUND imap.nope.example" }, other, "imap.nope.example")).toMatch(/no mail server called imap\.nope\.example/);
+    expect(signInProblem({ code: "ECONNREFUSED", message: "connect ECONNREFUSED" }, other, "mail.own.example")).toMatch(/Couldn't reach mail\.own\.example/);
+    expect(signInProblem({ message: "unable to verify the first certificate", code: "UNABLE_TO_VERIFY_LEAF_SIGNATURE" }, other, "mail.own.example")).toMatch(/valid security certificate/);
   });
 });

@@ -95,10 +95,11 @@ async function loopback(provider) {
 }
 
 /**
- * @param {{ dir: string, vault: any, fetch?: typeof fetch, openExternal: (url: string) => Promise<void> | void, endpoints?: Record<string, string> }} options
- *   `endpoints` points service addresses elsewhere (tests: a fake Google on localhost).
+ * @param {{ dir: string, vault: any, fetch?: typeof fetch, openExternal: (url: string) => Promise<void> | void, endpoints?: Record<string, string>, builtIn?: Record<string, { clientId: string, clientSecret?: string }> }} options
+ *   `endpoints` points service addresses elsewhere (tests: a fake Google on localhost). `builtIn`:
+ *   the app registrations this copy of ADT Bot was built with, for one-click sign-in.
  */
-function createAccounts({ dir, vault, fetch = globalThis.fetch, openExternal, endpoints = {} }) {
+function createAccounts({ dir, vault, fetch = globalThis.fetch, openExternal, endpoints = {}, builtIn = {} }) {
   const file = path.join(dir, "apps.json");
   /** @type {any[]} */
   let accounts = [];
@@ -137,7 +138,12 @@ function createAccounts({ dir, vault, fetch = globalThis.fetch, openExternal, en
     }
     const response = await fetch(rewrite(provider.tokenUrl), { method: "POST", headers, body });
     const data = JSON.parse((await readLimited(response, 1e6)).toString("utf8") || "{}");
-    if (!response.ok || !data.access_token) throw new Error(`${provider.label} refused the sign-in: ${data.error_description || data.error || response.status}`);
+    if (!response.ok || !data.access_token) {
+      const error = new Error(`${provider.label} refused the sign-in: ${data.error_description || data.error || response.status}`);
+      error.status = response.status;
+      error.code = data.error;
+      throw error;
+    }
     return data;
   }
 
@@ -148,13 +154,29 @@ function createAccounts({ dir, vault, fetch = globalThis.fetch, openExternal, en
     expires: Date.now() + (Number(data.expires_in) || 3600) * 1000,
   });
 
+  /** The service said no to the saved sign-in: it shows as "signed out" until the user signs in again. */
+  const signedOut = (account) => {
+    if (!account.needsSignIn) {
+      account.needsSignIn = true;
+      save();
+    }
+    return new Error(`The ${PROVIDERS[account.provider].label} sign-in for ${account.label} has expired. The user can sign in again in Settings → Apps (one click, no setup).`);
+  };
+
   async function freshToken(account, force = false) {
     const secret = await getSecret(account.id);
     if (account.provider === "slack") return secret.token;
     if (!force && secret.access && secret.expires - 60_000 > Date.now()) return secret.access;
-    if (!secret.refresh) throw new Error(`${PROVIDERS[account.provider].label} sign-in expired. Connect the account again in Settings → Apps.`);
+    if (!secret.refresh) throw signedOut(account);
     const provider = PROVIDERS[account.provider];
-    const data = await tokenRequest(provider, { grant_type: "refresh_token", refresh_token: secret.refresh }, secret.clientId, secret.clientSecret);
+    let data;
+    try {
+      data = await tokenRequest(provider, { grant_type: "refresh_token", refresh_token: secret.refresh }, secret.clientId, secret.clientSecret);
+    } catch (error) {
+      // Revoked, expired (Google's testing apps: a week) or the app registration was deleted.
+      if (error.status === 400 || error.status === 401) throw signedOut(account);
+      throw error;
+    }
     const next = tokensFrom(data, secret);
     await setSecret(account.id, next);
     return next.access;
@@ -214,7 +236,84 @@ function createAccounts({ dir, vault, fetch = globalThis.fetch, openExternal, en
     return { status: response.status, type, data, buffer };
   }
 
-  const publicView = (a) => ({ id: a.id, provider: a.provider, label: a.label, services: a.services, createdAt: a.createdAt, ...(a.imap ? { imap: { ...a.imap } } : {}) });
+  const publicView = (a) => ({
+    id: a.id,
+    provider: a.provider,
+    label: a.label,
+    services: a.services,
+    createdAt: a.createdAt,
+    ...(a.needsSignIn ? { needsSignIn: true } : {}),
+    ...(a.imap ? { imap: { ...a.imap } } : {}),
+  });
+
+  /** The app registration to sign in with: the user's own, or the one this copy was built with. */
+  const registration = (name, { clientId, clientSecret, builtIn: useBuiltIn }) => {
+    if (useBuiltIn) {
+      const own = builtIn[name];
+      if (!own?.clientId) throw new Error(`This copy of ADT Bot has no built-in ${PROVIDERS[name]?.label ?? ""} sign-in. Use the steps under "Use your own app registration".`);
+      return { clientId: own.clientId, clientSecret: own.clientSecret ?? "" };
+    }
+    clientId = text(clientId, 300).trim();
+    if (!clientId) throw new Error("Enter the client ID from your app registration (see the steps).");
+    return { clientId, clientSecret: text(clientSecret, 300).trim() };
+  };
+
+  /** Signs in through the browser (OAuth with PKCE and a loopback address); returns the token answer. */
+  async function signIn(provider, clientId, clientSecret, wanted) {
+    const scopes = [...provider.baseScopes, ...wanted.flatMap((s) => provider.scopes[s])];
+    const { verifier, challenge } = pkce();
+    const state = crypto.randomBytes(16).toString("hex");
+    const server = await loopback(provider);
+    try {
+      const auth = new URL(rewrite(provider.authUrl));
+      const params = { client_id: clientId, redirect_uri: server.redirectUri, response_type: "code", scope: scopes.join(" "), state, code_challenge: challenge, code_challenge_method: "S256", ...provider.authParams };
+      for (const [k, v] of Object.entries(params)) auth.searchParams.set(k, v);
+      const code = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("Sign-in timed out. Try again.")), SIGN_IN_TIMEOUT_MS);
+        server.onRequest((req, res) => {
+          let back;
+          try {
+            back = new URL(req.url, server.redirectUri);
+          } catch {
+            res.writeHead(400).end();
+            return;
+          }
+          if (back.pathname !== (provider.callbackPath ?? "/") || (!back.searchParams.has("code") && !back.searchParams.has("error"))) {
+            res.writeHead(404).end();
+            return;
+          }
+          res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+          if (back.searchParams.get("state") !== state) {
+            res.end(page("This sign-in doesn't match the one ADT Bot started. Try again from the app."));
+            return;
+          }
+          clearTimeout(timer);
+          const error = back.searchParams.get("error");
+          if (error) {
+            res.end(page("Sign-in was cancelled. You can close this tab."));
+            reject(new Error(error === "access_denied" ? "Sign-in was cancelled." : `Sign-in failed: ${error}`));
+            return;
+          }
+          res.end(page("Connected. You can close this tab and go back to ADT Bot."));
+          resolve(back.searchParams.get("code"));
+        });
+        Promise.resolve(openExternal(auth.toString())).catch(reject);
+      });
+      return await tokenRequest(provider, { grant_type: "authorization_code", code, redirect_uri: server.redirectUri, code_verifier: verifier }, clientId, clientSecret);
+    } finally {
+      server.close();
+    }
+  }
+
+  /** The account's name at the service (its email address or @username), or "" if it can't be read. */
+  async function profileName(id, provider) {
+    try {
+      const profile = await api(id, "GET", provider.profileUrl);
+      return text(provider.profileName(profile.data ?? {}), 200);
+    } catch {
+      return "";
+    }
+  }
 
   return {
     providers: PROVIDERS,
@@ -224,71 +323,64 @@ function createAccounts({ dir, vault, fetch = globalThis.fetch, openExternal, en
     secret: getSecret,
     rewrite,
 
-    /** Signs in through the browser (OAuth with PKCE and a loopback address); returns the new account. */
-    async connectOAuth({ provider: name, clientId, clientSecret, services }) {
+    /**
+     * Connects an account by signing in through the browser; returns the new account. `builtIn`:
+     * with the app registration this copy was built with (one click), else the user's own.
+     */
+    async connectOAuth({ provider: name, clientId, clientSecret, services, builtIn: useBuiltIn }) {
       const provider = PROVIDERS[name];
       if (!provider || provider.kind !== "oauth") throw new Error("Unknown service.");
-      clientId = text(clientId, 300).trim();
-      clientSecret = text(clientSecret, 300).trim();
-      if (!clientId) throw new Error("Enter the client ID from your app registration (see the steps).");
+      const app = registration(name, { clientId, clientSecret, builtIn: useBuiltIn });
       const wanted = (Array.isArray(services) ? services : Object.keys(provider.scopes)).filter((s) => provider.scopes[s]);
       if (!wanted.length) throw new Error("Pick at least one thing to connect.");
-      const scopes = [...provider.baseScopes, ...wanted.flatMap((s) => provider.scopes[s])];
-      const { verifier, challenge } = pkce();
-      const state = crypto.randomBytes(16).toString("hex");
-      const server = await loopback(provider);
-      try {
-        const auth = new URL(rewrite(provider.authUrl));
-        const params = { client_id: clientId, redirect_uri: server.redirectUri, response_type: "code", scope: scopes.join(" "), state, code_challenge: challenge, code_challenge_method: "S256", ...provider.authParams };
-        for (const [k, v] of Object.entries(params)) auth.searchParams.set(k, v);
-        const code = await new Promise((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error("Sign-in timed out. Try again.")), SIGN_IN_TIMEOUT_MS);
-          server.onRequest((req, res) => {
-            let back;
-            try {
-              back = new URL(req.url, server.redirectUri);
-            } catch {
-              res.writeHead(400).end();
-              return;
-            }
-            if (back.pathname !== (provider.callbackPath ?? "/") || (!back.searchParams.has("code") && !back.searchParams.has("error"))) {
-              res.writeHead(404).end();
-              return;
-            }
-            res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-            if (back.searchParams.get("state") !== state) {
-              res.end(page("This sign-in doesn't match the one ADT Bot started. Try again from the app."));
-              return;
-            }
-            clearTimeout(timer);
-            const error = back.searchParams.get("error");
-            if (error) {
-              res.end(page("Sign-in was cancelled. You can close this tab."));
-              reject(new Error(error === "access_denied" ? "Sign-in was cancelled." : `Sign-in failed: ${error}`));
-              return;
-            }
-            res.end(page("Connected. You can close this tab and go back to ADT Bot."));
-            resolve(back.searchParams.get("code"));
-          });
-          Promise.resolve(openExternal(auth.toString())).catch(reject);
-        });
-        const data = await tokenRequest(provider, { grant_type: "authorization_code", code, redirect_uri: server.redirectUri, code_verifier: verifier }, clientId, clientSecret);
-        const id = crypto.randomUUID();
-        const account = { id, provider: name, label: provider.label, services: wanted, createdAt: Date.now() };
-        accounts.push(account);
-        await setSecret(id, { ...tokensFrom(data), clientId, clientSecret });
-        try {
-          const profile = await api(id, "GET", provider.profileUrl);
-          account.label = text(provider.profileName(profile.data ?? {}), 200) || provider.label;
-        } catch {}
-        save();
-        return publicView(account);
-      } catch (error) {
-        throw error;
-      } finally {
-        server.close();
-      }
+      const data = await signIn(provider, app.clientId, app.clientSecret, wanted);
+      const id = crypto.randomUUID();
+      const account = { id, provider: name, label: provider.label, services: wanted, createdAt: Date.now() };
+      accounts.push(account);
+      await setSecret(id, { ...tokensFrom(data), ...app });
+      account.label = (await profileName(id, provider)) || provider.label;
+      save();
+      return publicView(account);
     },
+
+    /**
+     * Signs in again to an account whose sign-in expired or was revoked, with the registration it
+     * was connected with: nothing to paste. It must be the same account (bots and routines use it).
+     */
+    async reconnect({ id }) {
+      const account = accounts.find((a) => a.id === id);
+      if (!account) throw new Error("That account isn't connected any more.");
+      const provider = PROVIDERS[account.provider];
+      if (provider.kind !== "oauth") throw new Error(`${account.label} doesn't use a sign-in. Disconnect it and connect it again.`);
+      let saved = {};
+      try {
+        saved = await getSecret(id);
+      } catch {}
+      // The keychain entry is gone: the registration this copy was built with, if that's what it used.
+      const app = saved.clientId ? { clientId: saved.clientId, clientSecret: saved.clientSecret ?? "" } : registration(account.provider, { builtIn: true });
+      const data = await signIn(provider, app.clientId, app.clientSecret, account.services);
+      const trial = `${id}.check`;
+      accounts.push({ ...account, id: trial });
+      let name = "";
+      try {
+        await setSecret(trial, { ...tokensFrom(data), ...app });
+        name = await profileName(trial, provider);
+      } finally {
+        accounts = accounts.filter((a) => a.id !== trial);
+        await setSecret(trial, null).catch(() => undefined);
+      }
+      if (name && account.label !== provider.label && name.toLowerCase() !== account.label.toLowerCase()) {
+        throw new Error(`You signed in as ${name}, but this connection is ${account.label}. Sign in as ${account.label}, or connect ${name} as another account.`);
+      }
+      await setSecret(id, { ...tokensFrom(data), ...app });
+      if (name) account.label = name;
+      delete account.needsSignIn;
+      save();
+      return publicView(account);
+    },
+
+    /** Which services this copy of ADT Bot can sign in to with one click. */
+    builtInSignIn: () => Object.fromEntries(Object.keys(PROVIDERS).filter((name) => PROVIDERS[name].kind === "oauth").map((name) => [name, Boolean(builtIn[name]?.clientId)])),
 
     /** Slack: a bot token from the user's own Slack app, checked before it's saved. */
     async connectToken({ provider: name, token }) {

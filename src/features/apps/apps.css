@@ -45,6 +45,43 @@
   gap: 8px;
 }
 
+/* Connect: one-click sign-in, and email from just the address. */
+.app-quick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.app-quick .tool-groups {
+  flex-basis: 100%;
+}
+.app-email {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.app-email .btn {
+  align-self: flex-start;
+}
+.app-email .link-btn {
+  align-self: flex-start;
+  margin: 0;
+}
+.app-email-found {
+  margin: 0;
+}
+.app-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  vertical-align: baseline;
+}
+
 /* Bot settings → Email this bot. */
 .bot-email {
   margin-bottom: 14px;

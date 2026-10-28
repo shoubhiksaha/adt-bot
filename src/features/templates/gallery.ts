@@ -1,8 +1,10 @@
 /** Ready-made bots: a job, the skill for it, and (off until you switch them on) a routine. */
+import type { AppService } from "../apps/api";
 import { localTimezone } from "../automation/schedule";
 import { type BotTemplate, TEMPLATE_APP } from "./template";
 
-type Entry = { id: string; template: BotTemplate };
+/** `needs`: the connected accounts its job depends on (Settings → Apps), offered when it's added. */
+type Entry = { id: string; template: BotTemplate; needs?: AppService[] };
 
 const WEEKDAYS = [1, 2, 3, 4, 5];
 
@@ -17,6 +19,7 @@ export function gallery(): Entry[] {
   return [
     {
       id: "inbox",
+      needs: ["mail"],
       template: t(
         {
           name: "Inbox Assistant",
@@ -170,6 +173,7 @@ export function gallery(): Entry[] {
     },
     {
       id: "meetings",
+      needs: ["calendar", "mail"],
       template: t(
         {
           name: "Meeting Prep",

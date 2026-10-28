@@ -3,6 +3,7 @@
 // sign-ins, tokens and passwords stay here (electron/apps/accounts.cjs).
 const { createAccounts } = require("../apps/accounts.cjs");
 const { createCalendar } = require("../apps/calendar.cjs");
+const { discoverMail } = require("../apps/discover.cjs");
 const { createMail } = require("../apps/mail.cjs");
 const { createSocial } = require("../apps/social.cjs");
 
@@ -16,15 +17,47 @@ function testEndpoints() {
   }
 }
 
+/**
+ * The app registrations this copy was built with, for one-click "Sign in with Google/Microsoft": set
+ * by whoever builds the app (package.json adtbot.signIn, or ADT_GOOGLE_CLIENT_ID,
+ * ADT_GOOGLE_CLIENT_SECRET and ADT_MICROSOFT_CLIENT_ID). A desktop app's client secret isn't secret
+ * (Google says so for installed apps); PKCE protects the sign-in. Empty: users bring their own.
+ */
+function builtInSignIn() {
+  const config = require("../../package.json").adtbot?.signIn ?? {};
+  const pick = (env, value) => String(process.env[env] || value || "").trim();
+  return {
+    google: { clientId: pick("ADT_GOOGLE_CLIENT_ID", config.google?.clientId), clientSecret: pick("ADT_GOOGLE_CLIENT_SECRET", config.google?.clientSecret) },
+    microsoft: { clientId: pick("ADT_MICROSOFT_CLIENT_ID", config.microsoft?.clientId) },
+  };
+}
+
+/**
+ * End-to-end tests only (ADT_APPS_TEST_BROWSER, with the fake services above): instead of opening
+ * the browser, follow the fake sign-in page's redirect back to the app, and note the address.
+ */
+function testBrowser(endpoints) {
+  const log = process.env.ADT_APPS_TEST_BROWSER;
+  if (!log || !Object.keys(endpoints).length) return null;
+  return async (url) => {
+    if (!/^http:\/\/127\.0\.0\.1:\d+\//.test(url)) throw new Error("Not a test sign-in page.");
+    require("node:fs").appendFileSync(log, `${url}\n`);
+    await fetch(url, { redirect: "follow" });
+  };
+}
+
 exports.register = ({ ipcMain, shell, userData, secrets }) => {
+  const endpoints = testEndpoints();
+  const simulated = testBrowser(endpoints);
   const accounts = createAccounts({
     dir: userData,
     vault: secrets,
-    endpoints: testEndpoints(),
+    endpoints,
+    builtIn: builtInSignIn(),
     // Only the services' own sign-in pages open in the browser.
     openExternal: (url) => {
       if (!/^https?:\/\//.test(url)) throw new Error("Not a sign-in page.");
-      return shell.openExternal(url);
+      return simulated ? simulated(url) : shell.openExternal(url);
     },
   });
   const mail = createMail({ accounts });
@@ -55,6 +88,9 @@ exports.register = ({ ipcMain, shell, userData, secrets }) => {
 
   ipcMain.handle("adt:apps:list", () => accounts.list());
   ipcMain.handle("adt:apps:connect", (_event, payload) => accounts.connectOAuth(payload ?? {}));
+  ipcMain.handle("adt:apps:sign-in-options", () => accounts.builtInSignIn());
+  ipcMain.handle("adt:apps:reconnect", (_event, payload) => accounts.reconnect({ id: String(payload?.id ?? "") }));
+  ipcMain.handle("adt:apps:detect-email", (_event, payload) => discoverMail(String(payload?.address ?? "")));
   ipcMain.handle("adt:apps:connect-token", (_event, payload) => accounts.connectToken(payload ?? {}));
   ipcMain.handle("adt:apps:connect-email", (_event, payload) => accounts.connectImap(payload ?? {}, mail.check));
   ipcMain.handle("adt:apps:remove", (_event, payload) => accounts.remove(String(payload?.id ?? "")));

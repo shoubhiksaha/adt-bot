@@ -24,7 +24,7 @@ database or server stack to run.
 | Learns from you | Remembers preferences and past work | Notes on every chat and lasting facts, recalled when relevant; all on your device, visible and editable on the Memory screen (facts must be in your own words) |
 | Skills | Reusable how-tos | Skills in the open SKILL.md format: bots save and reuse them, `/name` hands one over, import and export files |
 | Bots working together | Group chats of bots | Group chats of 2–6 bots (discussion, debate or panel) with a summary, bots handing tasks to bots, and bots starting discussions themselves |
-| Your apps | Gmail, Calendar, Drive, Outlook, Slack, X… | Gmail, Calendar, Drive, Outlook, OneDrive, any IMAP mail, Slack and X with your own app keys, plus any MCP server |
+| Your apps | Gmail, Calendar, Drive, Outlook, Slack, X… | Gmail, Calendar, Drive, Outlook, OneDrive, any IMAP mail, Slack and X: email from just your address and an app password, one-click Google/Microsoft sign-in in builds that include it, else your own app keys; plus any MCP server |
 | Runs on its own | Schedules, email and app triggers, in xAI's cloud | Schedules and cron, or when an email arrives (plus-addresses too), a Slack or X message, a feed item, a page change, a webhook or a folder change; and on your own always-on server while your computers are off |
 | A browser that works while you're away | A cloud computer per account | Your always-on server's own browser: routines read and use websites; sign in to sites once from the app and they stay signed in; it only reaches the public internet |
 | Email your bots | An email address per bot | Each bot can have its own plus-address on your account (you+adt@gmail.com): email it a task from your phone and the answer comes back by email; mail from anyone else is ignored |
@@ -77,8 +77,11 @@ database or server stack to run.
   ones a bot wrote after reading outside content, stay marked "not checked" until you've read them.
 - **Bot templates**: eight ready-made bots (Inbox Assistant, Research Analyst, Daily Briefing, Writing Coach,
   Travel Planner, Meeting Prep, Social Media Manager, Coding Buddy), each with its skill and, off until you switch
-  it on, a routine. Share your own bots as a file ("Share as template"): only what you tick goes in, never chats or
-  keys.
+  it on, a routine. Ones that need an account (the Inbox Assistant: email) say so and link to Settings → Apps.
+  Share your own bots as a file ("Share as template"): only what you tick goes in, never chats or keys.
+- **Create your own bot** (Bot templates, first card): say in a few words what it's for, and your own model writes
+  its name, picture, instructions and tools for you to check and change before it's made; or fill them in yourself.
+  The **+** next to Bots in the sidebar makes a blank one straight in its settings.
 - **Agent log**: every action bots took or were refused, with why it was allowed, its arguments (secrets hidden)
   and what came back. Filter by bot, outcome and time; export CSV or JSON.
 
@@ -148,8 +151,11 @@ Bots can do things as well as talk. Turn it on or off, and choose what needs you
   up. Each bot uses its own model, instructions and tools.
 - **Connected apps** (desktop, **Settings → Apps**): Gmail, Google Calendar and Drive; Outlook mail and calendar and
   OneDrive; any other mail account over IMAP/SMTP with an app password (Gmail, iCloud, Yahoo, Fastmail, Zoho or your
-  company's); Slack; and X. Google, Microsoft and X sign in through your browser with your own app registration (the
-  steps are in the app); sign-ins are encrypted with your system keychain and never leave the desktop side. Bots can
+  company's); Slack; and X. Type your email address and ADT Bot finds your service (by its domain, or its DNS for a
+  company domain) and shows only its steps: an app password link, or Microsoft sign-in for Outlook and Microsoft 365.
+  Google, Microsoft and X sign in through your browser with your own app registration (the steps are in the app),
+  or with one click in builds that include one (below). An expired sign-in shows **Sign in again**: one click, same
+  account, nothing to paste. Sign-ins are encrypted with your system keychain and never leave the desktop side. Bots can
   search, read, draft and send email, list and add calendar events, search, read and create files, read and post
   in Slack, and search, read mentions and messages, post and message on X. Everything they read is outside
   content; sending, posting and creating ask first, and the approval card says exactly what will happen.
@@ -583,6 +589,22 @@ npm run build        # type-check and production web build
 npm run catalog      # refresh bundled model ids from @earendil-works/pi-ai
 npm run icons        # regenerate icons from public/icon.svg
 ```
+
+**One-click "Sign in with Google / Microsoft"** (optional, for the copies you build and hand out): register the app
+once and put its IDs in `package.json` → `adtbot.signIn`:
+
+- **Google**: in Google Cloud, switch on the Gmail, Calendar and Drive APIs, set up the Google Auth Platform
+  (External), and create a client of type **Desktop app**; put its `clientId` and `clientSecret` in
+  `adtbot.signIn.google`. A desktop app's secret isn't secret (Google says so; sign-in uses PKCE). Gmail access is a
+  "restricted" scope: while the app is in testing only the test users you list (up to 100) can sign in, and Google
+  asks them to sign in again about weekly; publishing it for everyone needs Google's verification and a yearly
+  security assessment.
+- **Microsoft**: in Entra → App registrations, a registration for "any organizational directory and personal
+  Microsoft accounts" with a **Public client/native** redirect URI `http://localhost`; put its `clientId` in
+  `adtbot.signIn.microsoft`. No review is needed for personal accounts; some work accounts need their admin's OK.
+
+`ADT_GOOGLE_CLIENT_ID`, `ADT_GOOGLE_CLIENT_SECRET` and `ADT_MICROSOFT_CLIENT_ID` override them when starting the app.
+Copies built without them show the bring-your-own-registration steps.
 
 ## License
 

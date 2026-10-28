@@ -1,4 +1,4 @@
-import { Ban, Check, ChevronRight, Loader2, MessageSquare, ShieldAlert, ShieldCheck, Undo2, Wrench, X } from "lucide-react";
+import { Ban, Check, ChevronRight, Loader2, MessageSquare, Plug, ShieldAlert, ShieldCheck, Undo2, Wrench, X } from "lucide-react";
 import { askTitle, mainArg } from "../lib/agent/asks";
 import { VideoPlayer } from "./VideoPlayer";
 import { useEffect, useState } from "react";
@@ -165,7 +165,21 @@ export function ToolCalls({ calls, live, turn }: { calls: ToolCallRecord[]; live
             </div>
           ),
       )}
+      {!live && <AppsFix calls={calls} />}
       {changedFiles && turn && <UndoFileChanges turn={turn} />}
+    </div>
+  );
+}
+
+/** A tool needed an account connected (or signed in again): the way there, in view with the list folded. */
+function AppsFix({ calls }: { calls: ToolCallRecord[] }) {
+  const result = calls.find((c) => c.status !== "running" && /Settings → Apps/.test(c.result ?? ""))?.result;
+  if (!result) return null;
+  return (
+    <div className="tool-progress small">
+      <button type="button" className="link-btn" onClick={() => window.dispatchEvent(new CustomEvent("adt:open-settings", { detail: "apps" }))}>
+        <Plug size={13} /> {/expired|sign in again/i.test(result) ? "Sign in again" : "Connect an account"} in Settings → Apps
+      </button>
     </div>
   );
 }

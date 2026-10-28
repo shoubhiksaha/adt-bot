@@ -266,16 +266,8 @@ function createMail({ accounts, ImapFlow = () => require("imapflow").ImapFlow, n
       return { to: m.to, subject: m.subject };
     }
     const { password } = await accounts.secret(a.id);
-    const { smtp, user } = a.imap;
-    const local = LOOPBACK.test(smtp.host);
-    const transport = nodemailer().createTransport({
-      host: smtp.host,
-      port: smtp.port,
-      secure: smtp.secure,
-      requireTLS: !smtp.secure && !local,
-      auth: { user, pass: password },
-      tls: local ? { rejectUnauthorized: false } : undefined,
-    });
+    const { smtp } = a.imap;
+    const transport = smtpTransport(a.imap, password);
     const raw = await rawMessage(a, m);
     const info = await transport.sendMail({ envelope: { from: a.imap.address, to: [...m.to, ...m.cc].map(bareAddress) }, raw });
     // Gmail keeps a copy itself; elsewhere it goes in Sent.
@@ -286,6 +278,19 @@ function createMail({ accounts, ImapFlow = () => require("imapflow").ImapFlow, n
       }).catch(() => undefined);
     }
     return { id: info.messageId, to: m.to, subject: m.subject };
+  }
+
+  function smtpTransport({ smtp, user }, password) {
+    const local = LOOPBACK.test(smtp.host);
+    return nodemailer().createTransport({
+      host: smtp.host,
+      port: smtp.port,
+      secure: smtp.secure,
+      requireTLS: !smtp.secure && !local,
+      auth: { user, pass: password },
+      tls: local ? { rejectUnauthorized: false } : undefined,
+      connectionTimeout: 30_000,
+    });
   }
 
   /**
@@ -397,18 +402,54 @@ function createMail({ accounts, ImapFlow = () => require("imapflow").ImapFlow, n
     });
   }
 
-  /** Signs in to a new IMAP/SMTP account once, so a wrong password shows up straight away. */
+  /**
+   * Signs in to a new account's IMAP and SMTP servers once, so a wrong password or server shows up
+   * straight away, in words that say what to do.
+   */
   async function check(config, password) {
     const temp = { id: "check", provider: "imap", label: config.address, services: ["mail"], imap: config };
     try {
       await withImap(temp, async (client) => client.status("INBOX", { messages: true }), password);
     } catch (error) {
-      const reason = String(error?.responseText || error?.message || error);
-      throw new Error(/auth|login|credential|password/i.test(reason) ? "The mail server refused the password. Use an app password (see the steps)." : `Couldn't reach the mail server: ${reason}`);
+      throw new Error(signInProblem(error, config, config.imap.host));
+    }
+    const transport = smtpTransport(config, password);
+    try {
+      await transport.verify();
+    } catch (error) {
+      throw new Error(`Reading mail works, but sending doesn't: ${signInProblem(error, config, config.smtp.host)}`);
+    } finally {
+      transport.close();
     }
   }
 
   return { search, read, draft, send, arrivals, sentByMe, check };
 }
 
-module.exports = { createMail, gmailQuery, outlookSearch };
+const GMAIL_HOST = /(^|\.)gmail\.com$|googlemail\.com$/i;
+
+/** What went wrong signing in to a mail server, and what to do about it. */
+function signInProblem(error, config, host) {
+  const reason = String(error?.responseText || error?.response || error?.message || error);
+  const code = String(error?.code ?? "");
+  const gmail = GMAIL_HOST.test(config.imap.host);
+  if (/application-specific password|app password|web login required|WEBALERT/i.test(reason)) {
+    return gmail
+      ? "Gmail needs an app password here, not your Google password. Create one (2-Step Verification must be on) and paste its 16 letters."
+      : "This account needs an app password here, not your normal password. Create one in your email account's security settings.";
+  }
+  if (error?.authenticationFailed || code === "EAUTH" || /authenticat|invalid credentials|login fail|logon failure|password|\b535\b/i.test(reason)) {
+    return gmail
+      ? "Gmail didn't accept that address and app password. Check the address, or create a new app password and paste it again."
+      : "The mail server didn't accept that address and password. Check both; many services need an app password instead of your normal one.";
+  }
+  if (/ENOTFOUND|EAI_AGAIN/.test(code) || /getaddrinfo/.test(reason)) return `There's no mail server called ${host}. Check the server name, or your internet connection.`;
+  if (/ECONNREFUSED|ETIMEDOUT|ECONNRESET|EHOSTUNREACH|ESOCKET|ETIMEOUT|ECONNECTION/.test(code) || /timed? ?out|connection/i.test(reason)) {
+    return `Couldn't reach ${host}. Check the server name and port, and your internet connection.`;
+  }
+  if (/certificate|CERT_|self.signed/i.test(reason + code)) return `${host} didn't show a valid security certificate, so ADT Bot didn't send the password.`;
+  if (/IMAP.*(disabled|not enabled)|enable IMAP/i.test(reason)) return "IMAP is switched off for this account. Turn it on in your email settings, then try again.";
+  return `The mail server said: ${reason.slice(0, 200)}`;
+}
+
+module.exports = { createMail, gmailQuery, outlookSearch, signInProblem };

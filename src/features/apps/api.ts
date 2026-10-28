@@ -12,6 +12,8 @@ export type AppAccount = {
   label: string;
   services: AppService[];
   createdAt: number;
+  /** The service stopped taking the saved sign-in: "Sign in again". */
+  needsSignIn?: boolean;
   imap?: { address: string; user: string; imap: { host: string; port: number; secure: boolean }; smtp: { host: string; port: number; secure: boolean } };
 };
 
@@ -30,15 +32,69 @@ export async function refreshApps(): Promise<AppAccount[]> {
 }
 
 /** Runs an operation ("mail.search") on the desktop side. */
-export function appsCall<T>(op: string, params: Record<string, unknown>): Promise<T> {
-  if (!isDesktop()) return Promise.reject(new Error("Connected apps need the ADT Bot desktop app."));
-  return desktopInvoke<T>("adt:apps:call", { op, params });
+export async function appsCall<T>(op: string, params: Record<string, unknown>): Promise<T> {
+  if (!isDesktop()) throw new Error("Connected apps need the ADT Bot desktop app.");
+  try {
+    return await desktopInvoke<T>("adt:apps:call", { op, params });
+  } catch (error) {
+    // Electron prefixes main-process errors with "Error invoking remote method …: Error:"; the bot needs only the rest.
+    throw new Error(String((error as Error)?.message ?? error).replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/, ""));
+  }
 }
 
 export async function connectOAuth(provider: "google" | "microsoft" | "x", clientId: string, clientSecret: string, services: AppService[]) {
   const account = await desktopInvoke<AppAccount>("adt:apps:connect", { provider, clientId, clientSecret, services });
   await refreshApps();
   return account;
+}
+
+/** One click: signs in with the app registration this copy of ADT Bot was built with. */
+export async function signInWith(provider: "google" | "microsoft", services: AppService[]) {
+  const account = await desktopInvoke<AppAccount>("adt:apps:connect", { provider, services, builtIn: true });
+  await refreshApps();
+  return account;
+}
+
+/** Signs in again to an account whose sign-in expired, with nothing to paste. */
+export async function reconnectApp(id: string) {
+  const account = await desktopInvoke<AppAccount>("adt:apps:reconnect", { id });
+  await refreshApps();
+  return account;
+}
+
+/** Which services this copy can sign in to with one click (its built-in app registrations). */
+export const useSignInOptions = create<{ google: boolean; microsoft: boolean }>(() => ({ google: false, microsoft: false }));
+
+export async function loadSignInOptions() {
+  if (!isDesktop()) return;
+  try {
+    useSignInOptions.setState(await desktopInvoke<{ google: boolean; microsoft: boolean }>("adt:apps:sign-in-options"));
+  } catch {}
+}
+
+/** Where an address's email lives (from the domain and its DNS), and how to connect it. */
+export type MailService = {
+  service: "gmail" | "microsoft" | "icloud" | "yahoo" | "fastmail" | "zoho" | "other";
+  label: string;
+  /** "domain", "mx" (a company's mail at Google or Microsoft), "srv" (announced servers) or "guess". */
+  how: "domain" | "mx" | "srv" | "guess";
+  /** False for Outlook and Microsoft 365: only Microsoft sign-in works. */
+  passwords: boolean;
+  imap?: { host: string; port: number };
+  smtp?: { host: string; port: number };
+  signIn?: "google" | "microsoft";
+  appPasswords?: string;
+  twoStep?: string;
+};
+
+export function detectEmail(address: string): Promise<MailService> {
+  return desktopInvoke<MailService>("adt:apps:detect-email", { address });
+}
+
+/** Google shows app passwords in groups of four ("abcd efgh ijkl mnop"); the spaces aren't part of it. */
+export function cleanAppPassword(service: MailService["service"] | undefined, password: string): string {
+  const joined = password.replace(/\s+/g, "");
+  return service === "gmail" && /^[a-z]{16}$/i.test(joined) ? joined : password;
 }
 
 export async function connectSlack(token: string) {
@@ -72,19 +128,9 @@ export function pickAccount(service: AppService, ref: unknown, provider?: AppPro
   const what = { mail: "email", calendar: "calendar", drive: "files", chat: "Slack", post: "X", dms: "X messages" }[service];
   if (!list.length) throw new Error(`No ${what} account is connected. The user can connect one in Settings → Apps.`);
   const key = typeof ref === "string" ? ref.trim().toLowerCase() : "";
-  if (!key) return list[0];
+  if (!key) return list.find((a) => !a.needsSignIn) ?? list[0];
   const alias: Record<string, AppProvider> = { gmail: "google", google: "google", outlook: "microsoft", microsoft: "microsoft", onedrive: "microsoft", drive: "google", imap: "imap", email: "imap", slack: "slack", x: "x", twitter: "x" };
   const found = list.find((a) => a.id === ref || a.label.toLowerCase() === key || a.label.toLowerCase().includes(key)) ?? list.find((a) => alias[key] === a.provider);
   if (!found) throw new Error(`No connected account matches "${ref}". Connected: ${list.map((a) => a.label).join(", ")}.`);
   return found;
 }
-
-/** Common email providers' servers, for "any email account". */
-export const MAIL_PRESETS: { id: string; label: string; imap: { host: string; port: number }; smtp: { host: string; port: number }; help: string }[] = [
-  { id: "gmail", label: "Gmail (app password)", imap: { host: "imap.gmail.com", port: 993 }, smtp: { host: "smtp.gmail.com", port: 465 }, help: "https://myaccount.google.com/apppasswords" },
-  { id: "icloud", label: "iCloud Mail", imap: { host: "imap.mail.me.com", port: 993 }, smtp: { host: "smtp.mail.me.com", port: 587 }, help: "https://support.apple.com/102654" },
-  { id: "yahoo", label: "Yahoo Mail", imap: { host: "imap.mail.yahoo.com", port: 993 }, smtp: { host: "smtp.mail.yahoo.com", port: 465 }, help: "https://help.yahoo.com/kb/SLN15241.html" },
-  { id: "fastmail", label: "Fastmail", imap: { host: "imap.fastmail.com", port: 993 }, smtp: { host: "smtp.fastmail.com", port: 465 }, help: "https://www.fastmail.help/hc/en-us/articles/360058752854" },
-  { id: "zoho", label: "Zoho Mail", imap: { host: "imap.zoho.com", port: 993 }, smtp: { host: "smtp.zoho.com", port: 465 }, help: "https://www.zoho.com/mail/help/adminconsole/two-factor-authentication.html" },
-  { id: "custom", label: "Other (enter servers)", imap: { host: "", port: 993 }, smtp: { host: "", port: 465 }, help: "" },
-];
