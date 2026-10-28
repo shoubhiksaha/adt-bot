@@ -55,7 +55,7 @@ function useBrand() {
   }, [brand.name, brand.logo]);
 }
 
-/** Opt-in: listen for "Hey <nickname>" while the app is open and voice mode isn't. */
+/** Opt-in: listen for the wake phrase ("Hey <nickname>" or the bot's own) while the app is open and voice mode isn't. */
 function useWakeWord(enabled: boolean, onWake: (request: string) => void) {
   const [listening, setListening] = useState(false);
   useEffect(() => {

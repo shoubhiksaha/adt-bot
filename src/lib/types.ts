@@ -47,6 +47,8 @@ export type Bot = {
   name: string;
   /** What you call it out loud; also its wake word ("Hey Jarvis"). */
   nickname?: string;
+  /** Its own wake phrase ("Computer", "Wake up Friday") instead of "Hey <nickname>"; "" = the default. */
+  wakePhrase?: string;
   /** Files only this bot uses (product docs, its instructions…). */
   knowledge?: KnowledgeRef[];
   /** Tool groups this bot may use ("all" = every available group). */
@@ -296,7 +298,7 @@ export type VoiceSettings = {
   /** Optional faster model just for voice conversations ("" = the bot's own model). */
   voiceProviderId: string;
   voiceModel: string;
-  /** In voice mode, go to standby after a quiet spell and wake on "Hey <nickname>". */
+  /** In voice mode, go to standby after a quiet spell and wake on the bot's wake phrase ("Hey <nickname>" by default). */
   wakeWord: boolean;
   /** Listen for the wake word whenever the app is open (opt-in, shows an indicator). */
   handsFree: boolean;

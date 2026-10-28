@@ -5,6 +5,7 @@ import { CUSTOM_VOICE_TEMPLATES, type CustomVoice, newCustomVoice } from "../../
 import { bestVoice, CLOUD_TTS, customVoiceFor, type DeviceVoice, listVoices, OPENAI_TTS_VOICES, rankVoice } from "../../lib/tts";
 import type { CloudTts, VoiceSettings } from "../../lib/types";
 import { ENGINE_LABELS, resolveEngine, speak, TRANSCRIBE_MODEL_SUGGESTIONS } from "../../lib/voice";
+import { wakePhraseOf } from "../../lib/voice-commands";
 import {
   KOKORO_MB,
   KOKORO_VOICES,
@@ -23,6 +24,7 @@ import { LIVE_MODELS, LIVE_VOICES } from "../../lib/gemini-live";
 import { switchToDeviceVoice, switchToServerVoice, usingServerVoice } from "../../lib/server-voice";
 import { ModelInput, Section, Toggle } from "./controls";
 import { VoiceReport } from "./VoiceReport";
+import { WakePhraseField } from "../WakePhraseField";
 
 /** Whose system voice settings to point to (null on phones). */
 const DESKTOP_OS =
@@ -41,7 +43,7 @@ export function VoiceSettings() {
   const voice = useStore((s) => s.settings.voice);
   const autoSpeak = useStore((s) => s.settings.autoSpeak);
   const useProxy = useStore((s) => s.settings.useProxy);
-  const bots = useStore((s) => s.bots);
+  const wakeBot = useStore((s) => s.bots.find((b) => b.id === s.activeBotId) ?? s.bots[0]);
   const server = useStore((s) => s.settings.server);
   const [serverNote, setServerNote] = useState<{ text: string; error?: boolean } | null>(null);
   const [serverBusy, setServerBusy] = useState(false);
@@ -57,7 +59,7 @@ export function VoiceSettings() {
   const geminiKeys = providers.filter((p) => p.kind === "gemini" && p.apiKey);
   const engine = resolveEngine(voice, providers);
   const set = (patch: Partial<typeof voice>) => updateSettings({ voice: { ...voice, ...patch } });
-  const wakeName = bots[0]?.nickname?.trim() || bots[0]?.name || "ADT";
+  const wakePhrase = wakePhraseOf(wakeBot);
 
   useEffect(() => {
     const load = () => {
@@ -399,16 +401,17 @@ export function VoiceSettings() {
       </Section>
 
       <Section title="Hands-free">
+        {wakeBot && <WakePhraseField bot={wakeBot} label={`Wake phrase for ${wakeBot.name}`} />}
         <Toggle
           checked={voice.wakeWord}
           onChange={(v) => set({ wakeWord: v })}
           title={`Standby and wake word in voice mode`}
-          hint={`After a quiet spell, voice mode waits for “Hey ${wakeName}”. Set a nickname for each bot in its settings.`}
+          hint={`After a quiet spell, voice mode waits for “${wakePhrase}”. Each bot can have its own phrase, in its settings.`}
         />
         <Toggle
           checked={voice.handsFree}
           onChange={(v) => set({ handsFree: v })}
-          title={`Always listen for “Hey ${wakeName}”`}
+          title={`Always listen for “${wakePhrase}”`}
           hint="While the app is open, saying the wake word opens voice mode. Speech is processed on this device and nothing is sent until you wake it. A mic indicator shows while it's listening."
         />
       </Section>

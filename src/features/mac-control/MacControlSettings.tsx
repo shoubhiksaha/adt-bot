@@ -4,7 +4,7 @@ import { useStore } from "../../lib/store";
 import { type MacPermissions, type MacScreenshot, mac } from "./api";
 import { deleteRecipe, useRecipes } from "./recipes";
 import { TeachTask } from "./TeachTask";
-import { isComputerControlDesktop, isMacDesktop, platformComputerNoun, setMacControlEnabled, useMacControl } from "./store";
+import { isComputerControlDesktop, isLinuxDesktop, isMacDesktop, platformComputerNoun, setMacControlEnabled, useMacControl } from "./store";
 import { macTools } from "./tools";
 
 const RISK_LABEL = { read: "never asks", write: "asks per your policy", external: "asks per your policy", destructive: "always asks (unless turned off under Full access)" } as const;
@@ -79,7 +79,7 @@ export function MacControlSettings() {
   const run = (work: Promise<unknown>) => void work.catch((e: Error) => setError(e.message)).finally(refresh);
 
   if (!isComputerControlDesktop()) {
-    return <p className="muted">Controlling the computer is available in the ADT Bot desktop app on macOS and Windows.</p>;
+    return <p className="muted">Controlling the computer is available in the ADT Bot desktop app on macOS, Windows and Linux.</p>;
   }
 
   const testShot = async () => {
@@ -110,7 +110,12 @@ export function MacControlSettings() {
       {access === "sandbox" && <p className="small mac-control-warn">Computer access is set to Sandbox in Tools &amp; safety, so screen control is off.</p>}
       {access === "full" && !enabled && <p className="small muted">Computer access is set to Full access in Tools &amp; safety, so bots can control this {device} even with this off.</p>}
 
-      {!isMacDesktop() ? (
+      {isLinuxDesktop() ? (
+        <LinuxPermissions perms={perms} busy={busy} error={error} preview={preview} onTest={() => void testShot()} onAllow={() => {
+            setBusy(true);
+            run(mac("connect").finally(() => setBusy(false)));
+          }} />
+      ) : !isMacDesktop() ? (
         <WindowsPermissions busy={busy} error={error} preview={preview} onTest={() => void testShot()} />
       ) : (
       <Section title="macOS permissions" hint={`Switch on ${perms?.app ?? "ADT Bot"} in each list in System Settings. This page updates on its own when you come back.`}>
@@ -191,6 +196,92 @@ function WindowsPermissions({ busy, error, preview, onTest }: { busy: boolean; e
     <Section title="Windows" hint="Windows needs no extra permission: bots read apps through UI Automation, which is built into Windows.">
       <p className="small muted">
         Apps running as administrator can't be read or controlled unless ADT Bot runs as administrator too. Some apps only show their controls after a moment, or not at all; bots then fall back to screenshots.
+      </p>
+      <div className="btn-row">
+        <button type="button" className="btn" disabled={busy} onClick={onTest}>
+          {busy ? "Capturing…" : "Test screenshot"}
+        </button>
+      </div>
+      {error && <p className="small mac-control-warn">{error}</p>}
+      {preview && (
+        <figure className="mac-control-preview">
+          <img src={preview.src} alt="Test screenshot of this PC" />
+          {preview.note && <figcaption className="small muted">{preview.note}</figcaption>}
+        </figure>
+      )}
+    </Section>
+  );
+}
+
+const LINUX_INPUT: Record<string, string> = {
+  xtest: "Working",
+  portal: "Allowed",
+  "portal-saved": "Allowed (the desktop remembers your OK)",
+  "portal-needs-approval": "Needs your OK once",
+  none: "Not available",
+};
+
+/**
+ * Linux: what works on this desktop. X11 needs nothing; on Wayland the desktop asks once before a bot
+ * can use the pointer and keyboard (and may ask about screenshots).
+ */
+function LinuxPermissions({
+  perms,
+  busy,
+  error,
+  preview,
+  onTest,
+  onAllow,
+}: {
+  perms: MacPermissions | null;
+  busy: boolean;
+  error: string;
+  preview: { src: string; note?: string } | null;
+  onTest: () => void;
+  onAllow: () => void;
+}) {
+  const l = perms?.linux;
+  const wayland = l?.session === "wayland";
+  return (
+    <Section
+      title={wayland ? "Linux (Wayland)" : l?.session === "x11" ? "Linux (X11)" : "Linux"}
+      hint="Bots read and press apps' controls through AT-SPI, Linux's accessibility system, and see the screen through screenshots."
+    >
+      <PermissionRow
+        ok={l ? l.atspi : null}
+        title="Reading apps"
+        status={l ? (l.atspi ? "Working" : "Not available") : "Checking…"}
+        use="needed to list apps' controls, press them and fill in fields"
+      />
+      <PermissionRow
+        ok={l ? l.screenshot !== "none" : null}
+        title="Screenshots"
+        status={l ? (l.screenshot === "none" ? "Not available" : wayland ? "Through the desktop (it may ask the first time)" : "Working") : "Checking…"}
+        use="needed to see the screen"
+      />
+      <PermissionRow
+        ok={l ? l.input !== "none" && l.input !== "portal-needs-approval" : null}
+        title="Pointer and keyboard"
+        status={l ? (LINUX_INPUT[l.input] ?? l.input) : "Checking…"}
+        use="needed to click and type"
+        action={l?.input === "portal-needs-approval" ? { label: busy ? "Waiting for your OK…" : "Allow control", onClick: onAllow } : undefined}
+      />
+      {l?.input === "portal-needs-approval" && (
+        <p className="small muted">
+          The desktop shows its own dialog: turn on <strong>Allow Remote Interaction</strong>, keep <strong>Remember This Selection</strong> ticked, and click
+          Share. It remembers the answer, and Stop all bots ends the session. Only you can answer the desktop's dialogs: bots can't.
+        </p>
+      )}
+      {(l?.missing.length ?? 0) > 0 && (
+        <p className="small mac-control-warn">
+          Missing: {l!.missing.join(", ")}. On Ubuntu or Debian: sudo apt install python3-gi gir1.2-atspi-2.0 at-spi2-core (Fedora: sudo dnf install python3-gobject at-spi2-core),
+          then restart ADT Bot.
+        </p>
+      )}
+      {l?.error && <p className="small mac-control-warn">{l.error}</p>}
+      <p className="small muted">
+        Apps made with GTK or Qt, Firefox, Chrome and Electron apps show their controls. Others still work through screenshots and clicks.
+        {wayland ? " On Wayland apps can't report where their controls are on screen, so bots press them by name, or click points in a screenshot." : ""}
       </p>
       <div className="btn-row">
         <button type="button" className="btn" disabled={busy} onClick={onTest}>

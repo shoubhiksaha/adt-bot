@@ -30,7 +30,7 @@ const ISOLATION_HEADERS = {
 };
 
 /**
- * @param {{ port?: number, host?: string, distDir?: string, proxy?: Parameters<typeof createProxyHandler>[0], sync?: Parameters<typeof createSyncHandler>[0] | false, agent?: { handle: (req: any, res: any, next: () => void) => void }, speech?: { handle: (req: any, res: any, next: () => void) => void } }} options
+ * @param {{ port?: number, host?: string, distDir?: string, proxy?: Parameters<typeof createProxyHandler>[0], sync?: Parameters<typeof createSyncHandler>[0] | false, agent?: { handle: (req: any, res: any, next: () => void) => void }, speech?: { handle: (req: any, res: any, next: () => void) => void }, reports?: { handle: (req: any, res: any, next: () => void) => void } }} options
  * @returns {Promise<{ server: import("node:http").Server, url: string }>}
  */
 export function startServer(options = {}) {
@@ -69,6 +69,7 @@ export function startServer(options = {}) {
   const sync = options.sync ? createSyncHandler(options.sync) : (_req, _res, next) => next();
   const agent = options.agent ? options.agent.handle : (_req, _res, next) => next();
   const speech = options.speech ? options.speech.handle : (_req, _res, next) => next();
+  const reports = options.reports ? options.reports.handle : (_req, _res, next) => next();
   const server = createServer((req, res) => {
     const fail = () => {
       if (!res.headersSent) res.writeHead(500);
@@ -76,7 +77,7 @@ export function startServer(options = {}) {
     };
     // A handler that throws (synchronously or not) answers 500 instead of taking the server down.
     try {
-      Promise.resolve(sync(req, res, () => agent(req, res, () => speech(req, res, () => proxy(req, res, () => serveStatic(req, res)))))).catch(fail);
+      Promise.resolve(sync(req, res, () => agent(req, res, () => speech(req, res, () => reports(req, res, () => proxy(req, res, () => serveStatic(req, res))))))).catch(fail);
     } catch {
       fail();
     }
@@ -120,6 +121,27 @@ if (isMain) {
     });
     void speech.prepare();
   }
+  // ADT_REPORTS=1: the developer's inbox for voice reports sent from the app (server/reports.mjs).
+  let reports;
+  if (process.env.ADT_REPORTS === "1") {
+    const { createReportInbox } = await import("./reports.mjs");
+    const mb = (name, fallback) => Number(process.env[name] || fallback) * 1024 * 1024;
+    reports = createReportInbox({
+      dir: join(dataDir(), "reports"),
+      token: process.env.ADT_REPORTS_TOKEN || process.env.ADT_AGENT_TOKEN || "",
+      maxBytes: mb("ADT_REPORTS_MAX_MB", 8),
+      maxTotalBytes: mb("ADT_REPORTS_MAX_TOTAL_MB", 1024),
+      keepDays: Number(process.env.ADT_REPORTS_KEEP_DAYS || 30),
+      perHour: Number(process.env.ADT_REPORTS_PER_HOUR || 120),
+      // The public port sits behind HTTPS (Tailscale Funnel, Caddy): rate-limit by the address it passes on.
+      trustProxy: process.env.ADT_TRUST_PROXY === "1" || process.env.ADT_REPORTS_TRUST_PROXY === "1",
+    });
+    // A second port that takes reports and nothing else: the one to open to the internet.
+    if (process.env.ADT_REPORTS_PUBLIC_PORT) {
+      const publicPort = Number(process.env.ADT_REPORTS_PUBLIC_PORT);
+      createServer((req, res) => reports.receiveOnly(req, res)).listen(publicPort, host, () => console.log(`Voice reports are taken on port ${publicPort} (only POST /api/reports).`));
+    }
+  }
   const loopback = host === "127.0.0.1" || host === "localhost" || host === "::1";
   const { url } = await startServer({
     host,
@@ -145,11 +167,13 @@ if (isMain) {
         : false,
     agent,
     speech,
+    reports,
   });
   console.log(`ADT Bot running at ${url}`);
   if (process.env.ADT_SYNC === "1") console.log(`Sync is on (data in ${join(dataDir(), "sync")}).`);
   if (agent) console.log(`Always-on routines are on (data in ${join(dataDir(), "agent")}).`);
   if (speech) console.log(`Voice mode's speech runs here (${process.env.ADT_SPEECH_URL}).`);
+  if (reports) console.log(`Voice reports inbox: ${url}/reports (data in ${join(dataDir(), "reports")}).`);
   // ROOMS=1: also open a LAN chat room (people only; bots in rooms need the desktop app).
   if (process.env.ROOMS === "1") {
     const { createRoomHub } = await import("./rooms.mjs");

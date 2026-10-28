@@ -29,3 +29,4 @@ deploy/.env
 # Research notes and reports (deep research runs)
 research_notes/
 reports/
+__pycache__/

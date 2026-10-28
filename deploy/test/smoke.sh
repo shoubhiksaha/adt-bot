@@ -50,6 +50,14 @@ pass "the voice goes through the relay"
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL/api/speech/v1/audio/speech")" = 401 ] || fail "speech needs the token"
 pass "speech needs the token"
 
+printf 'ADT Bot voice report\nSaved: now\n\nWhat went wrong:\nsmoke test\n' > /tmp/adt-smoke-report.txt
+CODE=$(curl -fsS -H "content-type: text/plain" --data-binary @/tmp/adt-smoke-report.txt "http://127.0.0.1:18788/api/reports" | sed -n 's/.*"code":"\([^"]*\)".*/\1/p')
+[ -n "$CODE" ] || fail "the public port takes a voice report"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:18788/api/reports")" = 404 ] || fail "the public port only takes reports"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$URL/api/reports")" = 401 ] || fail "reading reports needs the token"
+curl -fsS -H "$AUTH" "$URL/api/reports" | grep -q "\"code\":\"$CODE\"" || fail "the report is in the inbox"
+pass "voice reports: taken on the public port, read with the token"
+
 compose restart adt-bot
 for _ in $(seq 1 60); do curl -fsS "$URL/api/health" >/dev/null 2>&1 && break; sleep 2; done
 compose exec -T adt-bot test -f /data/.write-test || fail "data survives a restart"

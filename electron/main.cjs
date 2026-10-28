@@ -468,7 +468,7 @@ app.whenReady().then(() => {
     return true;
   });
   // Settings → Voice → Save a report: the page builds it from the log (src/lib/voice-report.ts) and
-  // shows it; what the person saves goes to Downloads for them to send. Nothing is uploaded.
+  // shows it; what the person saves goes to Downloads for them to send.
   const savedReports = new Set();
   ipcMain.handle("adt:voice:report-data", (event) => {
     if (!trustedUrl(event.senderFrame?.url ?? "")) throw new Error("Blocked adt:voice:report-data from an untrusted page");
@@ -499,6 +499,46 @@ app.whenReady().then(() => {
     fs.writeFileSync(file, bytes);
     savedReports.add(file);
     return { path: file, name: path.basename(file) };
+  });
+  // Or straight to the developer, when this build has a report inbox (server/reports.mjs): the
+  // address is set by whoever builds the app (package.json adtbot.reportInbox; ADT_REPORT_INBOX
+  // overrides it), never by the page, and only what the person sees and sends goes.
+  const reportInbox = (() => {
+    const raw = process.env.ADT_REPORT_INBOX || require("../package.json").adtbot?.reportInbox || "";
+    try {
+      const url = new URL(raw);
+      const local = ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
+      return url.protocol === "https:" || (url.protocol === "http:" && local) ? `${url.origin}${url.pathname.replace(/\/+$/, "")}` : "";
+    } catch {
+      return "";
+    }
+  })();
+  ipcMain.handle("adt:voice:report-inbox", (event) => {
+    if (!trustedUrl(event.senderFrame?.url ?? "")) throw new Error("Blocked adt:voice:report-inbox from an untrusted page");
+    return reportInbox ? { host: new URL(reportInbox).host } : null;
+  });
+  ipcMain.handle("adt:voice:report-send", async (event, payload) => {
+    if (!trustedUrl(event.senderFrame?.url ?? "")) throw new Error("Blocked adt:voice:report-send from an untrusted page");
+    if (!reportInbox) throw new Error("This copy of ADT Bot has no report inbox to send to.");
+    const bytes = payload?.bytes;
+    if (!(bytes instanceof Uint8Array) || !bytes.length || bytes.length > 8 * 1024 * 1024) throw new Error("That report is too large to send; save it instead.");
+    const about = { version: app.getVersion(), platform: process.platform, arch: process.arch, note: String(payload?.note ?? "").slice(0, 300) };
+    let response;
+    try {
+      response = await net.fetch(`${reportInbox}/api/reports`, {
+        method: "POST",
+        body: bytes,
+        headers: { "content-type": payload?.zip ? "application/zip" : "text/plain; charset=utf-8", "x-adtbot-report": encodeURIComponent(JSON.stringify(about)) },
+        signal: AbortSignal.timeout(60_000),
+      });
+    } catch {
+      throw new Error(`Couldn't reach the developer's report inbox (${new URL(reportInbox).host}). Check the connection, or save the report and send it yourself.`);
+    }
+    const reply = await response.json().catch(() => ({}));
+    if (response.status !== 201 || typeof reply?.code !== "string") {
+      throw new Error(reply?.error ? `The report inbox said: ${reply.error}` : `The report inbox didn't take it (${response.status}). Save the report and send it yourself.`);
+    }
+    return { code: reply.code.slice(0, 20), keepDays: Number(reply.keepDays) || 30 };
   });
   ipcMain.handle("adt:voice:report-show", (event, payload) => {
     if (!trustedUrl(event.senderFrame?.url ?? "")) throw new Error("Blocked adt:voice:report-show from an untrusted page");

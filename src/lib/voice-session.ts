@@ -12,11 +12,12 @@ import {
   endsWithStop,
   isLikelyHallucination,
   isSubstantial,
-  matchWakeWord,
+  matchBotWake,
   normalize,
   parseVoiceCommand,
   soundsLikeUser,
   userPart,
+  wakePhraseOf,
   approvalAnswer,
   answerAfterEcho,
 } from "./voice-commands";
@@ -25,6 +26,11 @@ import { debugVoice, spoken } from "./voice-log";
 import { desktopInvoke } from "./desktop";
 import { Listener, type ListenerEvent, localSpeechModel, onWhisperProgress, SPEECH_MODELS, toWav } from "./whisper";
 
+/** Every bot, the active one first: any bot's wake phrase wakes the session (and switches to that bot). */
+function botsActiveFirst() {
+  const { bots, activeBotId } = useStore.getState();
+  return [...bots].sort((a, b) => Number(b.id === activeBotId) - Number(a.id === activeBotId));
+}
 
 export type VoicePhase = "loading" | "listening" | "hearing" | "thinking" | "speaking" | "standby" | "muted" | "error";
 
@@ -51,7 +57,8 @@ export type VoiceState = {
    */
   timing: { turn: number; stt: number; model: number; speech: number; early?: number } | null;
   engineLabel: string;
-  wakeName: string;
+  /** What to say to wake it from standby ("Hey ADT", or the bot's own phrase). */
+  wakePhrase: string;
   /** A tool waiting for the user's OK, asked aloud (answer by voice or with the buttons). `detail`: all of what will run. */
   approval: { question: string; reason: string; detail?: string } | null;
   /** Another app is playing sound (a video, music, a call): requests must start with the bot's name. */
@@ -271,7 +278,7 @@ export class VoiceSession {
       // Name the on-device model that actually runs (Whisper or Moonshine).
       engineLabel:
         this.engine === "whisper-local" ? `${SPEECH_MODELS[localSpeechModel(settings.voice.localModel)].label.split(":")[0]} on this device (private, offline)` : ENGINE_LABELS[this.engine],
-      wakeName: this.wakeNames()[0] ?? "ADT",
+      wakePhrase: this.wakePhrase(),
       approval: null,
     };
   }
@@ -316,7 +323,6 @@ export class VoiceSession {
     return { voice: settings.voice, providers, useProxy: settings.useProxy };
   }
 
-  /** Names that wake the session: every bot's nickname and name, the active bot first. */
   /**
    * A video, music or a call playing on this Mac reaches the microphone like a voice, and the system's
    * echo cancelling only removes the bot's own sound. While another app plays sound, requests must start
@@ -343,14 +349,15 @@ export class VoiceSession {
 
   /** What was said after the bot's name ("Hey ADT, pause the video" → "pause the video"), or null if it wasn't addressed. */
   private addressedRest(text: string): string | null {
-    const wake = matchWakeWord(text, this.wakeNames());
-    return wake.woke ? wake.rest : null;
+    for (const bot of botsActiveFirst()) {
+      const wake = matchBotWake(text, bot);
+      if (wake.woke) return wake.rest;
+    }
+    return null;
   }
 
-  private wakeNames(): string[] {
-    const { bots, activeBotId } = useStore.getState();
-    const ordered = [...bots].sort((a, b) => Number(b.id === activeBotId) - Number(a.id === activeBotId));
-    return ordered.flatMap((b) => [b.nickname?.trim(), b.name]).filter((n): n is string => Boolean(n));
+  private wakePhrase(): string {
+    return wakePhraseOf(botsActiveFirst()[0]);
   }
 
   async start() {
@@ -801,7 +808,7 @@ export class VoiceSession {
     if (this.closed) return;
     this.dropEarly();
     this.clearIdle();
-    this.set({ phase: "standby", partial: "", sentence: "", wakeName: this.wakeNames()[0] ?? "ADT" });
+    this.set({ phase: "standby", partial: "", sentence: "", wakePhrase: this.wakePhrase() });
     if (!this.usesVad) void this.deviceLoop();
   }
 
@@ -1171,12 +1178,10 @@ export class VoiceSession {
   }
 
   private matchWake(text: string): { rest: string } | null {
-    const { bots, activeBotId } = useStore.getState();
-    for (const bot of [...bots].sort((a, b) => Number(b.id === activeBotId) - Number(a.id === activeBotId))) {
-      const names = [bot.nickname?.trim(), bot.name].filter((n): n is string => Boolean(n));
-      const wake = matchWakeWord(text, names);
+    for (const bot of botsActiveFirst()) {
+      const wake = matchBotWake(text, bot);
       if (wake.woke) {
-        if (bot.id !== activeBotId) selectBot(bot.id);
+        if (bot.id !== useStore.getState().activeBotId) selectBot(bot.id);
         return { rest: wake.rest };
       }
     }
@@ -1209,7 +1214,7 @@ export class VoiceSession {
         this.close();
         return;
       case "standby":
-        if (await this.say(`Okay. Say "hey ${this.wakeNames()[0] ?? "ADT"}" when you need me.`)) this.enterStandby();
+        if (await this.say(`Okay. Say "${this.wakePhrase()}" when you need me.`)) this.enterStandby();
         return;
       case "newChat": {
         const id = useStore.getState().activeBotId;
@@ -1499,7 +1504,7 @@ export function dropUnanswered(request: { text: string; createdAt: number }) {
 }
 
 /**
- * Hands-free: while the app is open (and voice mode isn't), listen for "Hey <nickname>" and open
+ * Hands-free: while the app is open (and voice mode isn't), listen for a bot's wake phrase and open
  * voice mode with whatever followed. Only runs when the user has turned it on.
  */
 export class WakeWatcher {
@@ -1539,11 +1544,10 @@ export class WakeWatcher {
   }
 
   private check(text: string) {
-    const { bots, activeBotId } = useStore.getState();
-    for (const bot of [...bots].sort((a, b) => Number(b.id === activeBotId) - Number(a.id === activeBotId))) {
-      const wake = matchWakeWord(text, [bot.nickname?.trim(), bot.name].filter((n): n is string => Boolean(n)));
+    for (const bot of botsActiveFirst()) {
+      const wake = matchBotWake(text, bot);
       if (wake.woke) {
-        if (bot.id !== activeBotId) selectBot(bot.id);
+        if (bot.id !== useStore.getState().activeBotId) selectBot(bot.id);
         chime("wake");
         this.onWake(wake.rest);
         return;

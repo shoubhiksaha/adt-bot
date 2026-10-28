@@ -64,6 +64,35 @@ Pay-As-You-Go: Always Free resources stay free, and idle PAYG instances aren't r
    what you say to the server for speech-to-text and gets the reply's voice from it. "Use this device
    again" switches back.
 
+## Voice reports from the people using your app
+
+In the app, Settings → Voice → **Save a voice report…** shows a report on a voice problem (the voice
+diagnostics log, what went wrong in the person's words and, if they choose, the last 10 seconds of the
+bot's voice). With a report inbox it also has **Send to the developer**. The person sees all of it first,
+and nothing goes until they click. The server keeps reports in `reports/` in its data volume.
+
+1. **Read them** at `http://<server>:8787/reports` over Tailscale, with the server token. Each has a
+   code like `K7QM-3WXP` that the person is shown, for when they write to you. You can listen to the
+   recording there. From your Mac: `ADT_REPORTS_URL=http://<server>:8787 ADT_REPORTS_TOKEN=… npm run reports`
+   lists them, and `npm run reports -- get K7QM-3WXP` saves one in `reports/` (gitignored).
+2. **Take them from the internet.** Reports arrive on a second port, 8788, which accepts reports and
+   nothing else, and only from this machine. Give it an HTTPS address with Tailscale Funnel (free):
+   ```sh
+   sudo tailscale funnel --bg --set-path /api/reports http://127.0.0.1:8788/api/reports
+   tailscale funnel status        # the https://<machine>.<tailnet>.ts.net address
+   ```
+   Only `/api/reports` on 8788 is public. The app, sync and your inbox page stay on Tailscale.
+3. **Build the app with that address**: in `package.json` set `"adtbot": { "reportInbox":
+   "https://<machine>.<tailnet>.ts.net" }`, then build as usual. Copies built without one only save
+   reports to Downloads. (`ADT_REPORT_INBOX=…` when starting the app overrides it, for testing.)
+
+Limits, in `deploy/.env` if you want others: `ADT_REPORTS_MAX_MB` (8 per report),
+`ADT_REPORTS_MAX_TOTAL_MB` (1024 in all), `ADT_REPORTS_KEEP_DAYS` (30, then deleted),
+`ADT_REPORTS_PER_HOUR` (120 from everyone; 5 an hour from one address), `ADT_REPORTS_TOKEN` (a
+separate token just for reading reports). Nothing about the sender is stored, not even their address.
+Reports can hold what people said to their bot: tell your users in your privacy policy that reports
+they send come to you and are deleted after 30 days.
+
 ## Faster speech
 
 On 2 server cores, Whisper "base" takes a few seconds per sentence. Options, fastest first:

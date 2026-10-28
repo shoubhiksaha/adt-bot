@@ -16,6 +16,9 @@ services:
       # Keep this port closed to the internet (Oracle's firewall does by default): reach the server
       # over Tailscale, or put HTTPS in front of it (deploy/README.md).
       - "${ADT_PORT:-8787}:8787"
+      # Voice reports sent from the app, and nothing else. Only this machine can reach it: to take
+      # reports from the internet, put HTTPS in front of it (Tailscale Funnel, deploy/README.md).
+      - "127.0.0.1:${ADT_REPORTS_PORT:-8788}:8788"
     environment:
       ADT_SYNC: "1"
       ADT_AGENT_TOKEN: ${ADT_TOKEN:?Set ADT_TOKEN in deploy/.env (24 or more random characters)}
@@ -24,6 +27,15 @@ services:
       ADT_SPEECH_TTS_MODEL: ${ADT_SPEECH_TTS_MODEL:-speaches-ai/Kokoro-82M-v1.0-ONNX}
       ADT_SPEECH_VOICE: ${ADT_SPEECH_VOICE:-af_heart}
       ADT_NTFY_URL: ${ADT_NTFY_URL:-}
+      # Your inbox for voice reports (read at /reports with the server token).
+      ADT_REPORTS: "1"
+      ADT_REPORTS_PUBLIC_PORT: "8788"
+      ADT_REPORTS_TRUST_PROXY: "1"
+      ADT_REPORTS_TOKEN: ${ADT_REPORTS_TOKEN:-}
+      ADT_REPORTS_MAX_MB: ${ADT_REPORTS_MAX_MB:-8}
+      ADT_REPORTS_MAX_TOTAL_MB: ${ADT_REPORTS_MAX_TOTAL_MB:-1024}
+      ADT_REPORTS_KEEP_DAYS: ${ADT_REPORTS_KEEP_DAYS:-30}
+      ADT_REPORTS_PER_HOUR: ${ADT_REPORTS_PER_HOUR:-120}
       ADT_DATA_DIR: /data
     volumes:
       - adt-data:/data

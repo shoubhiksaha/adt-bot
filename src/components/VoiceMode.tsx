@@ -193,7 +193,7 @@ export function VoiceMode({ initialRequest, onClose }: { initialRequest?: string
       : phase === "standby"
         ? state.live
           ? "Paused while it's quiet. Tap to carry on."
-          : `Say “Hey ${state.wakeName}” to continue`
+          : `Say “${state.wakePhrase}” to continue`
         : phase === "thinking" && state.activity
           ? state.activity
           : STATUS[phase];

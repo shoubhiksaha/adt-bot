@@ -193,7 +193,7 @@ export class LiveVoiceSession {
       latencyMs: null,
       timing: null,
       engineLabel: `${model} · ${voice.liveVoice || "Kore"}`,
-      wakeName: "",
+      wakePhrase: "",
       approval: null,
       live: true,
     };

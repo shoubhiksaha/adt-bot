@@ -7,11 +7,11 @@ import { deleteRecipe, fill, findRecipe, highestRisk, markRun, missingParams, re
 import { isComputerControlDesktop, isMacDesktop, platformComputerNoun, useMacControl, whileControlling } from "./store";
 import { formatPage, formatUi, matchLines, normalize, type PageSnapshot, pickElement, RISKY_LABEL, type UiElement, type UiSnapshot } from "./ui";
 
-/** "Mac" on macOS, "PC" on Windows. The tool names stay mac_* on both for compatibility. */
+/** "Mac" on macOS, "PC" on Windows and Linux. The tool names stay mac_* everywhere for compatibility. */
 const DEVICE = platformComputerNoun();
 
 /**
- * Computer use on the user's computer (macOS or Windows). Off until the user switches on "Allow
+ * Computer use on the user's computer (macOS, Windows or Linux). Off until the user switches on "Allow
  * bots to control this computer" (Settings → Computer control) or gives Full access. Looking is
  * read-only; acting asks per the approval policy (not with Full access); AppleScript and quitting
  * apps are destructive.
@@ -372,13 +372,13 @@ export const macTools: AgentTool[] = [
     risk: "write",
     riskFor: (args) => (args.action === "quit" ? "destructive" : "write"),
     description:
-      'Open or bring forward an app on this ${DEVICE} by name (e.g. "Safari", "Notes") and list its controls, open a link, or quit an app (action "quit"). ' +
+      `Open or bring forward an app on this ${DEVICE} by name (e.g. "Safari", "Notes") and list its controls, open a link, or quit an app (action "quit"). ` +
       "Links can be web pages or app links: mailto:, sms:, tel:, facetime:, spotify:, maps:, slack:, zoommtg:, whatsapp://send?phone=<digits>&text=<url-encoded>. " +
       "Opening a link brings that app to the front and interrupts the user; for a WhatsApp message prefer the background way: mac_ui (app WhatsApp, query the contact), mac_press the chat, mac_set_text the message with submit:true.",
     parameters: {
       type: "object",
       properties: {
-        app: { type: "string", description: "App name as in the Applications folder" },
+        app: { type: "string", description: DEVICE === "Mac" ? "App name as in the Applications folder" : "App name as its launcher or Start menu shows it" },
         url: { type: "string", description: 'A web or app link to open. With app, a web page opens in that browser (e.g. app "Google Chrome"); without, in the default one' },
         action: { type: "string", enum: ["open", "quit"], description: "Default open" },
       },
@@ -764,7 +764,7 @@ const recipeRunTool = macTool({
 
 macTools.push(browserTool, findTextTool, recipesTool, recipeRunTool);
 
-// AppleScript, browser scripting and screen OCR are macOS-only; hide them on Windows.
+// AppleScript, browser scripting and screen OCR are macOS-only; hide them on Windows and Linux.
 const MAC_ONLY = new Set(["mac_applescript", "mac_browser", "mac_find_text"]);
 for (const tool of macTools) if (MAC_ONLY.has(tool.name)) tool.available = macOnly;
 

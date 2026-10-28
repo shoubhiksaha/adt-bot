@@ -7,6 +7,9 @@
   "author": "ADT Bot",
   "type": "module",
   "main": "electron/main.cjs",
+  "adtbot": {
+    "reportInbox": ""
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build && vite build -c vite.headless.config.ts",
@@ -27,7 +30,8 @@
     "ios": "npm run cap:sync && cap open ios",
     "android:apk": "npm run cap:sync && cd android && ./gradlew assembleDebug",
     "brand": "node scripts/brand.mjs",
-    "native:mac": "sh scripts/build-mac-helper.sh"
+    "native:mac": "sh scripts/build-mac-helper.sh",
+    "reports": "node scripts/reports.mjs"
   },
   "build": {
     "appId": "app.adtbot.desktop",
@@ -113,7 +117,22 @@
       ],
       "category": "Utility",
       "icon": "build/icon.png",
-      "maintainer": "ADT Bot"
+      "maintainer": "ADT Bot",
+      "extraResources": [
+        {
+          "from": "electron/native/linux-helper.py",
+          "to": "linux-helper.py"
+        }
+      ]
+    },
+    "deb": {
+      "recommends": [
+        "libappindicator3-1",
+        "python3",
+        "python3-gi",
+        "gir1.2-atspi-2.0",
+        "at-spi2-core"
+      ]
     },
     "appImage": {
       "artifactName": "ADT-Bot-${version}-linux-${arch}.${ext}"

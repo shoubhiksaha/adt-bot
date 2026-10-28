@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { FRAME, Segmenter, type SegmentEvent } from "./segmenter";
-import { isEcho, matchWakeWord, parseVoiceCommand } from "./voice-commands";
+import { isEcho, matchBotWake, matchWakeWord, parseVoiceCommand, wakePhraseOf } from "./voice-commands";
 
 const run = (probs: number[], endSilenceMs = 600) => {
   const seg = new Segmenter({ endSilenceMs });
@@ -114,6 +114,33 @@ describe("wake word", () => {
   it("doesn't wake on unrelated speech", () => {
     expect(matchWakeWord("Hey there, how are you", names).woke).toBe(false);
     expect(matchWakeWord("I think the weather is nice", names).woke).toBe(false);
+  });
+});
+
+describe("a bot's own wake phrase", () => {
+  const jarvis = { name: "ADT", nickname: "Jarvis" };
+  it("wakes on the phrase, alone or before a request, with or without a greeting", () => {
+    const bot = { ...jarvis, wakePhrase: "Wake up Friday" };
+    expect(matchBotWake("Wake up, Friday!", bot)).toEqual({ woke: true, rest: "" });
+    expect(matchBotWake("wake up friday what's on my calendar", bot)).toEqual({ woke: true, rest: "what's on my calendar" });
+    expect(matchBotWake("Okay, wake up Fryday. Play some music", bot)).toEqual({ woke: true, rest: "Play some music" });
+    expect(matchBotWake("wake up fry day, timer for ten minutes", bot)).toEqual({ woke: true, rest: "timer for ten minutes" });
+    const computer = { ...jarvis, wakePhrase: "Computer" };
+    expect(matchBotWake("Computer", computer)).toEqual({ woke: true, rest: "" });
+    expect(matchBotWake("Hey computer, lights off", computer)).toEqual({ woke: true, rest: "lights off" });
+    expect(matchBotWake("Hey Friday", { ...jarvis, wakePhrase: "Hey Friday" })).toEqual({ woke: true, rest: "" });
+  });
+  it("replaces 'Hey <nickname>' and only counts at the start", () => {
+    const bot = { ...jarvis, wakePhrase: "Computer" };
+    expect(matchBotWake("Hey Jarvis, what's the time", bot).woke).toBe(false);
+    expect(matchBotWake("My computer is slow", bot).woke).toBe(false);
+    expect(matchBotWake("Wake up", { ...jarvis, wakePhrase: "Wake up Friday" }).woke).toBe(false);
+  });
+  it("falls back to 'Hey <nickname>' when it has none", () => {
+    expect(matchBotWake("Hey Jarvis, what's the time", { ...jarvis, wakePhrase: "  " })).toEqual({ woke: true, rest: "what's the time" });
+    expect(wakePhraseOf({ ...jarvis, wakePhrase: "" })).toBe("Hey Jarvis");
+    expect(wakePhraseOf({ name: "ADT" })).toBe("Hey ADT");
+    expect(wakePhraseOf({ ...jarvis, wakePhrase: " Computer " })).toBe("Computer");
   });
 });
 

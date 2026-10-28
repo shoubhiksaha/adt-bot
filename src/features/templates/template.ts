@@ -20,6 +20,7 @@ export type BotTemplate = {
   bot: {
     name: string;
     nickname?: string;
+    wakePhrase?: string;
     avatar: string;
     description: string;
     systemPrompt: string;
@@ -53,6 +54,7 @@ export async function buildTemplate(bot: Bot, choice: TemplateChoice): Promise<B
     bot: {
       name: bot.name,
       ...(bot.nickname ? { nickname: bot.nickname } : {}),
+      ...(bot.wakePhrase?.trim() ? { wakePhrase: bot.wakePhrase.trim() } : {}),
       avatar: bot.avatar.length <= LIMITS.avatar ? bot.avatar : "✦",
       description: bot.description,
       systemPrompt: bot.systemPrompt,
@@ -109,6 +111,7 @@ export function parseTemplate(json: string): BotTemplate {
     bot: {
       name,
       nickname: text(bot.nickname, 40) || undefined,
+      wakePhrase: text(bot.wakePhrase, 60) || undefined,
       avatar: safeAvatar(text(bot.avatar, LIMITS.avatar)),
       description: text(bot.description, 300),
       systemPrompt,
@@ -160,6 +163,7 @@ export async function installTemplate(template: BotTemplate, trusted = false): P
   updateBot(created.id, {
     name: template.bot.name,
     nickname: template.bot.nickname ?? "",
+    wakePhrase: template.bot.wakePhrase ?? "",
     avatar: template.bot.avatar,
     description: template.bot.description,
     systemPrompt: template.bot.systemPrompt,

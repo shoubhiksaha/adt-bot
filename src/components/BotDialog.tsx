@@ -5,11 +5,13 @@ import { fileText } from "../lib/images";
 import { presetById } from "../lib/providers";
 import { deleteBot, selectBot, updateBot, useStore } from "../lib/store";
 import type { Bot, ThinkingLevel } from "../lib/types";
+import { wakePhraseOf } from "../lib/voice-commands";
 import { Avatar } from "./Avatar";
 import { askConfirm, confirmThen } from "./Confirm";
 import { Dialog } from "./Dialog";
 import { KNOWLEDGE_ACCEPT, KnowledgeFiles } from "./KnowledgeFiles";
 import { ModelField } from "./ModelField";
+import { WakePhraseField } from "./WakePhraseField";
 
 const TemplateExportDialog = lazy(() => import("../features/templates/TemplatesView").then((m) => ({ default: m.TemplateExportDialog })));
 const BotEmailField = lazy(() => import("../features/apps/BotEmailField"));
@@ -84,8 +86,9 @@ export default function BotDialog({ botId, fresh, onClose }: { botId: string; fr
         </div>
       </div>
       <p className="small muted" style={{ marginTop: -6 }}>
-        Say “Hey {bot.nickname?.trim() || bot.name}” for hands-free voice, or “switch to {bot.nickname?.trim() || bot.name}” in voice mode.
+        Say “{wakePhraseOf(bot)}” for hands-free voice, or “switch to {bot.nickname?.trim() || bot.name}” in voice mode.
       </p>
+      <WakePhraseField bot={bot} />
       <div className="field">
         <label>Description</label>
         <input className="input" value={bot.description} onChange={(e) => set({ description: e.target.value })} />

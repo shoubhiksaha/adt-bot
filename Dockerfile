@@ -24,7 +24,7 @@ ENV HOST=0.0.0.0 PORT=8787 NODE_ENV=production
 # Uncomment to let the relay reach model servers on your LAN/VPN or the Docker host
 # (use http://host.docker.internal:11434/v1 for Ollama on the host):
 # ENV ADTBOT_PROXY_PRIVATE=1
-EXPOSE 8787
+EXPOSE 8787 8788
 # deploy/docker-compose.yml keeps the server's data in a volume at /data (ADT_DATA_DIR).
 RUN mkdir -p /data && chown node:node /data
 USER node

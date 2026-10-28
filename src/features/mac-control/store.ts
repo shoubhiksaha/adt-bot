@@ -29,10 +29,15 @@ export function isMacDesktop(): boolean {
   return typeof window !== "undefined" && Boolean(window.adtbotDesktop?.invoke) && window.adtbotDesktop?.platform === "darwin";
 }
 
-/** True in the desktop app where computer control exists: macOS or Windows. */
+/** True in the desktop app where computer control exists: macOS, Windows or Linux. */
 export function isComputerControlDesktop(): boolean {
   if (typeof window === "undefined" || !window.adtbotDesktop?.invoke) return false;
-  return window.adtbotDesktop?.platform === "darwin" || window.adtbotDesktop?.platform === "win32";
+  return ["darwin", "win32", "linux"].includes(window.adtbotDesktop?.platform ?? "");
+}
+
+/** True in the desktop app on Linux. */
+export function isLinuxDesktop(): boolean {
+  return typeof window !== "undefined" && Boolean(window.adtbotDesktop?.invoke) && window.adtbotDesktop?.platform === "linux";
 }
 
 /** What to call this computer in UI and tool text: "Mac" on macOS, "PC" elsewhere. */

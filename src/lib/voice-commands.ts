@@ -91,6 +91,41 @@ export function matchWakeWord(text: string, names: string[]): { woke: boolean; r
   return { woke: false, rest: "" };
 }
 
+type WakeBot = { name: string; nickname?: string; wakePhrase?: string };
+
+/** What wakes a bot, as shown to the user: the phrase it was given, or "Hey <nickname>". */
+export function wakePhraseOf(bot: WakeBot | undefined): string {
+  return bot?.wakePhrase?.trim() || `Hey ${bot?.nickname?.trim() || bot?.name || "ADT"}`;
+}
+
+/** The bot's own wake phrase at the start of what was said, or "Hey <nickname or name>" when it has none. */
+export function matchBotWake(text: string, bot: WakeBot): { woke: boolean; rest: string } {
+  const phrase = bot.wakePhrase?.trim();
+  if (phrase) return matchWakePhrase(text, phrase);
+  return matchWakeWord(text, [bot.nickname?.trim(), bot.name].filter((n): n is string => Boolean(n)));
+}
+
+/**
+ * A wake phrase the person chose ("Computer", "Wake up Friday"): at the start of what was said, alone
+ * or before a request, with or without a greeting first, and compared loosely like names.
+ */
+export function matchWakePhrase(text: string, phrase: string): { woke: boolean; rest: string } {
+  const wanted = normalize(phrase);
+  const t = normalize(text);
+  if (!wanted || !t) return { woke: false, rest: "" };
+  const size = wanted.split(" ").length;
+  for (const said of new Set([t, t.replace(WAKE_PREFIX, "")])) {
+    const words = said.split(" ");
+    for (let take = Math.max(1, size - 1); take <= Math.min(words.length, size + 2); take++) {
+      const candidate = words.slice(0, take).join(" ");
+      // Squashed for a phrase heard in pieces ("wake up fry day"), but starting the same ("my computer" isn't "computer").
+      const squashed = candidate[0] === wanted[0] && closeEnough(wanted.replace(/ /g, ""), candidate.replace(/ /g, ""));
+      if (closeEnough(wanted, candidate) || squashed) return { woke: true, rest: restoreCase(text, words.slice(take).join(" ")) };
+    }
+  }
+  return { woke: false, rest: "" };
+}
+
 /**
  * Closing voice mode in the user's own words, said anywhere in a short sentence: "you are done for
  * now, now you can exit the voice mode", "close voice", "turn off voice mode". A question about it

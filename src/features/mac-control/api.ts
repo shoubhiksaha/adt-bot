@@ -13,6 +13,15 @@ export type MacPermissions = {
   microphone?: string;
   app?: string;
   screen?: { width: number; height: number; backing: number } | null;
+  /** Linux (electron/features/76-linux-control.cjs): the session, and how each part works there. */
+  linux?: {
+    session: "x11" | "wayland" | "none" | "unknown";
+    atspi: boolean;
+    input: "xtest" | "portal" | "portal-saved" | "portal-needs-approval" | "none";
+    screenshot: "x11" | "portal" | "none";
+    missing: string[];
+    error?: string;
+  };
 };
 
 export type MacScreenshot = {
