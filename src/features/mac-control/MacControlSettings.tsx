@@ -266,6 +266,12 @@ function LinuxPermissions({
         use="needed to click and type"
         action={l?.input === "portal-needs-approval" ? { label: busy ? "Waiting for your OK…" : "Allow control", onClick: onAllow } : undefined}
       />
+      <PermissionRow
+        ok={l?.ocr ? true : null}
+        title="Reading text on screen"
+        status={l ? (l.ocr ? "Working" : "Optional: sudo apt install tesseract-ocr (Fedora: sudo dnf install tesseract)") : "Checking…"}
+        use="lets bots find words on screen that apps don't report, and click them"
+      />
       {l?.input === "portal-needs-approval" && (
         <p className="small muted">
           The desktop shows its own dialog: turn on <strong>Allow Remote Interaction</strong>, keep <strong>Remember This Selection</strong> ticked, and click

@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -87,6 +88,26 @@ def proc_name(pid):
             return f.read().strip()
     except OSError:
         return f"pid {pid}"
+
+
+# Chromium's own files sit next to the program in every Chromium-based app (Chrome, Edge, Brave,
+# VS Code, Slack, Discord…).
+CHROMIUM_FILES = ("chrome_100_percent.pak", "resources.pak", "v8_context_snapshot.bin")
+
+
+def chromium_based(pid):
+    try:
+        folder = os.path.dirname(os.readlink(f"/proc/{pid}/exe"))
+    except OSError:
+        return False
+    return any(os.path.exists(os.path.join(folder, f)) for f in CHROMIUM_FILES)
+
+
+CHROMIUM_HIDDEN = (
+    "{name} isn't showing its controls: apps built on Chromium (Chrome, VS Code, Slack…) only do that when they're started "
+    "with accessibility on. If the user agrees to close {name} (its windows close), quit it and open it again with "
+    "mac_open_app: ADT Bot then starts it that way. Until then, use mac_find_text or mac_screenshot and click points."
+)
 
 
 def is_self(pid):
@@ -608,7 +629,7 @@ class Portal:
         except OSError:
             restore = ""
         if not restore and not ask:
-            raise Fail("On Wayland, controlling the pointer and keyboard needs the user's OK once: Settings → Computer control → Allow control on Wayland.", "needs-approval")
+            raise Fail("On Wayland, controlling the pointer and keyboard needs the user's OK once: in ADT Bot, Settings → Computer control → Pointer and keyboard → Allow control (only the user can do this).", "needs-approval")
         rd = "org.freedesktop.portal.RemoteDesktop"
         code, results = self._request(rd, "CreateSession", None, lambda t: GLib.Variant("(a{sv})", ({"handle_token": GLib.Variant("s", t), "session_handle_token": GLib.Variant("s", t + "s")},)), 30)
         if code != 0:
@@ -1137,6 +1158,7 @@ def snapshot(req):
     _previous, _current = _current, {}
     if window is not None:
         walk(window, None, 0)
+    hidden_tree = window is not None and not nodes and state["visited"] <= 12 and chromium_based(pid)
     if words:
         nodes = [n for n in nodes if all(w in f'{n.get("label", "")} {n.get("value", "")} {n["role"]}'.lower() for w in words)]
     matched = len(nodes)
@@ -1155,7 +1177,9 @@ def snapshot(req):
         "windows": titles, "elements": nodes, "matched": matched, "truncated": state["truncated"],
         "frontmost": bool(pid) and pid == front_pid(),
     }
-    if window is None:
+    if hidden_tree:
+        out["note"] = CHROMIUM_HIDDEN.format(name=clip(app_name, 80))
+    elif window is None:
         out["note"] = "No window could be read."
     elif offset is None and SESSION == "wayland":
         out["note"] = "On Wayland apps don't know where they are on screen: act on controls by id (mac_press, mac_set_text), or click points in a screenshot."
@@ -1582,17 +1606,47 @@ def desktop_names_for(want):
     return {exec_name(entry), entry["id"].lower()} - {""} if entry else set()
 
 
+def chromium_folder(command):
+    """The program folder of a launcher command that starts a Chromium-based app, else None."""
+    try:
+        program = shutil.which(command) or command
+        folder = os.path.dirname(os.path.realpath(program))
+    except (OSError, ValueError):
+        return None
+    return folder if any(os.path.exists(os.path.join(folder, f)) for f in CHROMIUM_FILES) else None
+
+
+def running_from(folder):
+    for entry in os.listdir("/proc"):
+        if entry.isdigit():
+            try:
+                if os.path.dirname(os.readlink(f"/proc/{entry}/exe")) == folder:
+                    return True
+            except OSError:
+                pass
+    return False
+
+
 def open_cmd(req):
     name = str(req.get("name") or "").strip()
     entry = find_entry(name)
     if not entry:
         raise Fail(f'No app named "{name}" is installed.', "not-found")
+    args = [a for a in shlex.split(entry["exec"]) if not re.fullmatch(r"%[a-zA-Z]", a)]
+    folder = chromium_folder(args[0]) if args else None
+    if folder and not running_from(folder):
+        # Chromium-based apps (Chrome, VS Code…) show bots their controls only when started with this flag,
+        # with accessibility on too (switching it on later, or restarting them, isn't enough). A running
+        # one keeps its own flags.
+        if Atspi is not None:
+            safe(atspi)
+        subprocess.Popen([*args, "--force-renderer-accessibility"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        return {"name": entry["name"] or name, "controls": True}
     if Gio is not None:
         info = Gio.DesktopAppInfo.new_from_filename(entry["path"])
         if info is not None and info.launch([], None):
             return {"name": entry["name"] or name}
     # Without GIO: the entry's command, its field codes dropped, run directly (no shell).
-    args = [a for a in shlex.split(entry["exec"]) if not re.fullmatch(r"%[a-zA-Z]", a)]
     subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     return {"name": entry["name"] or name}
 

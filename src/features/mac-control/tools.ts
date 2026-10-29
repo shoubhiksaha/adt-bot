@@ -4,7 +4,7 @@ import { deniedRuleForCall } from "../../lib/agent/vendor/openbot/approvalPolicy
 import { type AgentTool, getTool, num, registerTool, registerToolGroup, str, type ToolContext, type ToolRisk, toResult } from "../../lib/agent/tools";
 import { type MacApp, type MacFrontmost, type MacScreenshot, mac } from "./api";
 import { deleteRecipe, fill, findRecipe, highestRisk, markRun, missingParams, recipeLine, saveRecipe, useRecipes, validateRecipe } from "./recipes";
-import { isComputerControlDesktop, isMacDesktop, platformComputerNoun, useMacControl, whileControlling } from "./store";
+import { isComputerControlDesktop, isLinuxDesktop, isMacDesktop, platformComputerNoun, useMacControl, whileControlling } from "./store";
 import { formatPage, formatUi, matchLines, normalize, type PageSnapshot, pickElement, RISKY_LABEL, type UiElement, type UiSnapshot } from "./ui";
 
 /** "Mac" on macOS, "PC" on Windows and Linux. The tool names stay mac_* everywhere for compatibility. */
@@ -29,7 +29,7 @@ const available = (ctx: Pick<ToolContext, "settings">) => {
   return isComputerControlDesktop() && access !== "sandbox" && (useMacControl.getState().enabled || access === "full");
 };
 
-/** Tools that only exist on macOS (AppleScript, browser scripting over Apple events, screen OCR). */
+/** Tools that only exist on macOS (AppleScript, browser scripting over Apple events). */
 const macOnly = (ctx: Pick<ToolContext, "settings">) => isMacDesktop() && available(ctx);
 
 const COORDS = "Coordinates are pixels in the latest mac_screenshot image (top-left is 0,0), or an element's @(x,y) from mac_ui.";
@@ -632,7 +632,7 @@ const findTextTool = macTool({
   risk: "read",
   timeoutMs: 60_000,
   description:
-    "Read the text visible on this Mac's main display with on-device text recognition, each line with its @(x,y) for mac_click. " +
+    `Read the text visible on this ${DEVICE}'s main display with on-device text recognition${DEVICE === "Mac" ? "" : " (Tesseract, if the user installed it)"}, each line with its @(x,y) for mac_click. ` +
     "Use it when mac_ui can't see something (canvases, games, remote desktops, images, apps without accessibility) — faster and cheaper than a screenshot. query: only lines containing these words.",
   parameters: {
     type: "object",
@@ -764,8 +764,9 @@ const recipeRunTool = macTool({
 
 macTools.push(browserTool, findTextTool, recipesTool, recipeRunTool);
 
-// AppleScript, browser scripting and screen OCR are macOS-only; hide them on Windows and Linux.
-const MAC_ONLY = new Set(["mac_applescript", "mac_browser", "mac_find_text"]);
+// AppleScript and browser scripting are macOS-only; screen OCR is on macOS and Linux (Tesseract).
+const MAC_ONLY = new Set(["mac_applescript", "mac_browser"]);
 for (const tool of macTools) if (MAC_ONLY.has(tool.name)) tool.available = macOnly;
+findTextTool.available = (ctx) => (isMacDesktop() || isLinuxDesktop()) && available(ctx);
 
 for (const tool of macTools) registerTool(tool);

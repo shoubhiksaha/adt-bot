@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { EventEmitter } from "node:events";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -211,7 +211,40 @@ describe("requests through a scripted helper", () => {
     linux.setHelper(fakeHelper({ ping: { locked: false, idle: 3, session: "wayland", atspi: true, input: "portal", screenshot: "portal", missing: [] } }).child);
     const perms = await linux.permissions();
     expect(perms).toMatchObject({ supported: true, platform: "linux", accessibility: true, screenRecording: "granted" });
-    expect(perms.linux).toEqual({ session: "wayland", atspi: true, input: "portal", screenshot: "portal", missing: [], error: undefined });
+    expect(perms.linux).toEqual({ session: "wayland", atspi: true, input: "portal", screenshot: "portal", missing: [], ocr: expect.any(Boolean), error: undefined });
+  });
+});
+
+describe("reading text on screen (Tesseract)", () => {
+  const tsv = [
+    "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext",
+    "1\t1\t0\t0\t0\t0\t0\t0\t2560\t1440\t-1\t",
+    "5\t1\t1\t1\t1\t1\t100\t200\t80\t20\t96\tSave",
+    "5\t1\t1\t1\t1\t2\t190\t202\t60\t20\t90\tdraft",
+    "5\t1\t2\t1\t1\t1\t900\t40\t30\t18\t40\t|",
+    "5\t1\t3\t1\t1\t1\t500\t600\t120\t30\t71\tInbox",
+  ].join("\n");
+
+  it("joins Tesseract's words into lines with their centre and confidence, skipping stray marks", () => {
+    expect(linux.ocrLines(tsv)).toEqual([
+      { text: "Save draft", confidence: 0.93, x: 175, y: 211 },
+      { text: "Inbox", confidence: 0.71, x: 560, y: 615 },
+    ]);
+    expect(linux.ocrLines("")).toEqual([]);
+  });
+
+  it("says how to install Tesseract when it's missing", async () => {
+    linux.setSupported(true);
+    const path = process.env.PATH;
+    process.env.PATH = "/nonexistent";
+    try {
+      // (Unless this machine has it in a standard place.)
+      if (!["/usr/bin/tesseract", "/usr/local/bin/tesseract", "/snap/bin/tesseract"].some((f) => existsSync(f))) {
+        await expect(linux.findText({})).rejects.toMatchObject({ code: "missing", message: expect.stringMatching(/sudo apt install tesseract-ocr/) });
+      }
+    } finally {
+      process.env.PATH = path;
+    }
   });
 });
 
@@ -249,6 +282,28 @@ describe("ADT Bot's own windows", () => {
     expect(sent.some((r) => r.cmd === "key" || r.cmd === "type")).toBe(false);
     // On X11 the helper brings a named app forward first, so naming it is fine.
     expect(await linux.typeText({ text: "hi", app: "Text Editor" })).toMatchObject({ to: "app" });
+  });
+
+  it("on Wayland says ADT Bot is in front while it has the keyboard (AT-SPI's own idea lags)", async () => {
+    linux.setSupported(true);
+    fakeWindow(true);
+    const { child, sent } = fakeHelper({
+      ping: { locked: false, idle: 9, session: "wayland" },
+      apps: { apps: [{ name: "Google Chrome", pid: 50, active: true, hidden: false }, { name: "code", pid: 60, active: false, hidden: false }] },
+      front: { name: "Google Chrome", pid: 50, window: "Inbox", bounds: null },
+      geometry: screen,
+      snapshot: { name: "Google Chrome", pid: 50, window: "Inbox", windows: ["Inbox"], elements: [], matched: 0, truncated: false, frontmost: true },
+    });
+    linux.setHelper(child);
+    await linux.permissions();
+    expect((await linux.listApps()).map((a: { active: boolean }) => a.active)).toEqual([false, false]);
+    expect(await linux.frontmost()).toMatchObject({ name: "ADT Bot", pid: process.pid });
+    expect(sent.some((r) => r.cmd === "front")).toBe(false);
+    expect((await linux.ui({ app: "Google Chrome" })).frontmost).toBe(false);
+    // Once the user switches away, the helper's answer stands again.
+    fakeWindow(false);
+    expect((await linux.listApps())[0].active).toBe(true);
+    expect(await linux.frontmost()).toMatchObject({ name: "Google Chrome" });
   });
 
   it("on Wayland refuses keys while ADT Bot has the keyboard, even with an app named", async () => {
@@ -346,7 +401,7 @@ describe("feature registration", () => {
 });
 
 describe("renderer tools on Linux", () => {
-  it("exposes the cross-platform tools and hides the macOS-only ones", async () => {
+  it("exposes the cross-platform tools (and reading text on screen) and hides the macOS-only ones", async () => {
     vi.stubGlobal("window", { adtbotDesktop: { platform: "linux", proxyToken: "", version: "44", invoke: vi.fn() } });
     const { macTools } = await import("./tools");
     const { setMacControlEnabled, isLinuxDesktop, platformComputerNoun } = await import("./store");
@@ -355,8 +410,9 @@ describe("renderer tools on Linux", () => {
     const by = Object.fromEntries(macTools.map((t) => [t.name, t]));
     expect(isLinuxDesktop()).toBe(true);
     expect(platformComputerNoun()).toBe("PC");
-    for (const name of ["mac_click", "mac_ui", "mac_screenshot", "mac_type", "mac_key", "mac_open_app"]) expect(by[name].available?.(ctx)).toBe(true);
-    for (const name of ["mac_applescript", "mac_browser", "mac_find_text"]) expect(by[name].available?.(ctx)).toBe(false);
+    for (const name of ["mac_click", "mac_ui", "mac_screenshot", "mac_type", "mac_key", "mac_open_app", "mac_find_text"]) expect(by[name].available?.(ctx)).toBe(true);
+    for (const name of ["mac_applescript", "mac_browser"]) expect(by[name].available?.(ctx)).toBe(false);
+    expect(by.mac_find_text.description).toMatch(/this PC's main display .*Tesseract/);
     expect(by.mac_click.available?.({ settings: { agent: { access: "sandbox" } } } as never)).toBe(false);
     setMacControlEnabled(false);
     vi.unstubAllGlobals();

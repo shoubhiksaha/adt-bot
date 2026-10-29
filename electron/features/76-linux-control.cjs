@@ -246,6 +246,7 @@ async function ui({ app: appName, window, query, menus, max } = {}) {
     { app: appName ? String(appName).slice(0, 200) : undefined, window: window ? String(window).slice(0, 200) : undefined, query: query ? String(query).slice(0, 200) : undefined, menus: menus === true, max: Number(max) || undefined },
     { what: "Reading the app's controls", timeoutMs: 25_000 },
   );
+  if (ownWindowInFront()) snap.frontmost = false;
   const frame = await currentFrame();
   const width = frame.width * frame.scale;
   const height = frame.height * frame.scale;
@@ -278,6 +279,14 @@ let browserWindow = () => electronApi()?.BrowserWindow;
 /** An ADT Bot window has the keyboard (Electron knows; AT-SPI often can't tell on Wayland). */
 function adtFocused() {
   return Boolean(browserWindow()?.getFocusedWindow?.());
+}
+
+/**
+ * On Wayland, AT-SPI's "active" window lags behind (the app the user left still says it's in front),
+ * so while an ADT Bot window has the keyboard, that's what's in front: the app list and the key tools agree.
+ */
+function ownWindowInFront() {
+  return session === "wayland" && adtFocused();
 }
 
 /**
@@ -437,11 +446,15 @@ async function cursor() {
 async function listApps() {
   ensureLinux();
   const reply = await helperCall("apps", {}, { what: "Listing apps", timeoutMs: 15_000 });
-  return Array.isArray(reply?.apps) ? reply.apps : [];
+  const apps = Array.isArray(reply?.apps) ? reply.apps : [];
+  return ownWindowInFront() ? apps.map((a) => ({ ...a, active: false })) : apps;
 }
 
 async function frontmost() {
   ensureLinux();
+  if (ownWindowInFront()) {
+    return { name: "ADT Bot", bundleId: null, pid: process.pid, window: browserWindow()?.getFocusedWindow?.()?.getTitle?.() || "ADT Bot", bounds: null };
+  }
   return helperCall("front", {}, { what: "Reading the frontmost app" });
 }
 
@@ -514,6 +527,104 @@ async function screenshot({ region, window: frontWindow = false, maxWidth = MAX_
 }
 
 // ---------------------------------------------------------------------------------------------
+// Reading text on screen: Tesseract, if it's installed (sudo apt install tesseract-ocr), on a
+// full-size screenshot. Nothing leaves the PC.
+
+/** Where Tesseract is, or null. */
+function tesseractPath() {
+  const dirs = [...String(process.env.PATH ?? "").split(":"), "/usr/bin", "/usr/local/bin", "/snap/bin"].filter(Boolean);
+  for (const dir of new Set(dirs)) {
+    const file = path.join(dir, "tesseract");
+    try {
+      fs.accessSync(file, fs.constants.X_OK);
+      return file;
+    } catch {
+      // Not here.
+    }
+  }
+  return null;
+}
+
+/** Tesseract's TSV (one row per word) -> lines of text with their centre and confidence, in image pixels. */
+function ocrLines(tsv) {
+  const lines = new Map();
+  for (const row of String(tsv ?? "").split("\n").slice(1)) {
+    // level page block paragraph line word left top width height conf text
+    const c = row.split("\t");
+    if (c.length < 12 || c[0] !== "5") continue;
+    const text = c.slice(11).join(" ").trim();
+    const conf = Number(c[10]);
+    const [left, top, width, height] = c.slice(6, 10).map(Number);
+    if (!text || !(conf >= 0) || ![left, top, width, height].every(Number.isFinite)) continue;
+    const key = `${c[2]}.${c[3]}.${c[4]}`;
+    const line = lines.get(key) ?? { words: [], conf: 0, x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity };
+    line.words.push(text);
+    line.conf += conf;
+    line.x1 = Math.min(line.x1, left);
+    line.y1 = Math.min(line.y1, top);
+    line.x2 = Math.max(line.x2, left + width);
+    line.y2 = Math.max(line.y2, top + height);
+    lines.set(key, line);
+  }
+  return [...lines.values()]
+    .map((l) => ({ text: l.words.join(" "), confidence: Math.round(l.conf / l.words.length) / 100, x: (l.x1 + l.x2) / 2, y: (l.y1 + l.y2) / 2 }))
+    .filter((l) => /[\p{L}\p{N}]/u.test(l.text));
+}
+
+function runTesseract(program, file, timeoutMs = 60_000) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(program, [file, "stdout", "--psm", "11", "tsv"], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("Reading text on screen took too long."));
+    }, timeoutMs);
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (err = (err + d).slice(-2000)));
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(out);
+      else reject(new Error(`Reading text on screen failed: ${err.trim().split("\n").pop() || `Tesseract exited with ${code}`}`));
+    });
+  });
+}
+
+async function findText({ fast } = {}) {
+  ensureLinux();
+  const program = tesseractPath();
+  if (!program) throw Object.assign(new Error("Reading text on screen needs Tesseract, which isn't installed. The user can install it: sudo apt install tesseract-ocr (Fedora: sudo dnf install tesseract)."), { code: "missing" });
+  // A full-size capture reads small text better; the bot's own screenshot frame stays as it was.
+  const previous = lastFrame;
+  let shot;
+  let ocrFrame;
+  try {
+    shot = await screenshot({ format: "png", maxWidth: fast === true ? MAX_WIDTH : 2560 });
+    ocrFrame = lastFrame;
+  } finally {
+    lastFrame = previous;
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "adt-ocr-"));
+  try {
+    const file = path.join(dir, "screen.png");
+    fs.writeFileSync(file, Buffer.from(shot.data, "base64"));
+    const tsv = await runTesseract(program, file);
+    const frame = await currentFrame();
+    const lines = ocrLines(tsv).map((l) => {
+      const screen = toScreenPoint(ocrFrame, l.x, l.y);
+      return { text: l.text, confidence: l.confidence, at: toImagePoint(frame, screen.x, screen.y), screen };
+    });
+    return { lines, screen: shot.screen };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Opening and quitting apps
 
 async function openApp({ name } = {}) {
@@ -558,6 +669,7 @@ async function permissions() {
       input: caps.input ?? "none",
       screenshot: caps.screenshot ?? "none",
       missing: Array.isArray(caps.missing) ? caps.missing : [],
+      ocr: Boolean(tesseractPath()),
       error: caps.error,
     },
     accessibility: caps.atspi === true,
@@ -611,7 +723,8 @@ exports.register = ({ app, ipcMain, shell, access, onStopAll, userData }) => {
   act("open", openApp);
   act("quit", quitApp);
   act("openUrl", (payload) => openUrl(shell, payload));
-  for (const name of ["applescript", "browser", "findText"]) {
+  handle("findText", findText);
+  for (const name of ["applescript", "browser"]) {
     act(name, () => {
       throw new Error("This isn't available on Linux.");
     });
@@ -636,6 +749,8 @@ exports._test = {
   helperEnv,
   helperPath,
   cropFor,
+  ocrLines,
+  findText,
   permissions,
   ui,
   typeText,
@@ -643,6 +758,7 @@ exports._test = {
   click,
   screenshot,
   listApps,
+  frontmost,
   openApp,
   quitApp,
   helperCall,

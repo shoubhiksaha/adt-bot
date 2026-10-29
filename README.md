@@ -230,6 +230,13 @@ Bots can do things as well as talk. Turn it on or off, and choose what needs you
   guard and the Stop-all shortcut (Ctrl+Alt+Shift+Esc). Bots can't read or control apps running as administrator
   unless ADT Bot runs as administrator too. AppleScript, in-browser page control and on-screen text recognition are
   macOS-only. (New in 1.2.0 and not yet tried on a real Windows PC.)
+- **Control this PC** (desktop, Linux): bots read and press apps' controls through AT-SPI, Linux's accessibility
+  system, on X11 and Wayland, with the same approvals and the Stop-all shortcut. On Wayland the desktop asks once
+  before bots may use the pointer and keyboard (**Settings → Computer control → Pointer and keyboard → Allow
+  control**). Chrome, VS Code and other Chromium-based apps show their controls only when started with accessibility
+  on, so ADT Bot starts them that way when a bot opens them; one you opened yourself shows none until it's reopened.
+  With Tesseract installed (`sudo apt install tesseract-ocr`), bots can also read text on screen and click it.
+  AppleScript and in-browser page control are macOS-only.
 - **Each bot's own computer** (desktop): a Docker container per bot with a persistent `/workspace`,
   resource limits, and an optional "no network" switch. See **Computers** in the sidebar.
 - **Rooms** (desktop): people on your network chat with each other and your bots from any browser by

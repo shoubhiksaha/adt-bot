@@ -20,6 +20,8 @@ export type MacPermissions = {
     input: "xtest" | "portal" | "portal-saved" | "portal-needs-approval" | "none";
     screenshot: "x11" | "portal" | "none";
     missing: string[];
+    /** Tesseract is installed: bots can read text on screen (mac_find_text). */
+    ocr?: boolean;
     error?: string;
   };
 };
