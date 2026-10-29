@@ -210,6 +210,7 @@ describe("renderer tools on Windows", () => {
     expect(by.mac_ui.available?.(ctx)).toBe(true);
     // AppleScript, browser scripting and screen OCR don't exist on Windows.
     expect(by.mac_applescript.available?.(ctx)).toBe(false);
+    expect(by.mac_clipboard.available?.(ctx)).toBe(true);
     expect(by.mac_browser.available?.(ctx)).toBe(false);
     expect(by.mac_find_text.available?.(ctx)).toBe(false);
     // Nothing runs in Sandbox mode.

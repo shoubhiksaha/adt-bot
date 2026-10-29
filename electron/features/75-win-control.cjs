@@ -38,6 +38,7 @@ const {
   createHelper,
   APP_LINK,
   openUrl,
+  createClipboard,
   electronApi,
 } = require("../control-common.cjs");
 
@@ -478,6 +479,7 @@ exports.register = ({ app, ipcMain, shell, access, onStopAll }) => {
   act("openUrl", (payload) => openUrl(shell, payload));
   // Mac-only tools (AppleScript, browser scripting, screen OCR) are not exposed on Windows, but keep
   // a clear error in case an old recipe or a bot calls their channels.
+  act("clipboard", (payload) => createClipboard({ clipboard: electronApi()?.clipboard })(payload));
   for (const name of ["applescript", "browser", "findText"]) {
     act(name, () => {
       throw new Error("This isn't available on Windows.");

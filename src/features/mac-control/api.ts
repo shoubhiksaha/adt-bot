@@ -22,6 +22,10 @@ export type MacPermissions = {
     missing: string[];
     /** Tesseract is installed: bots can read text on screen (mac_find_text). */
     ocr?: boolean;
+    /** Browsers that let ADT Bot use their pages now (remote debugging on, browser open). */
+    browsers?: string[];
+    /** How the clipboard is reached: wl-clipboard is needed for it on Wayland. */
+    clipboard?: "built-in" | "wl-clipboard" | "missing";
     error?: string;
   };
 };

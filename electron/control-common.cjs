@@ -1,6 +1,9 @@
 // What "Control this PC" shares between Windows (features/75-win-control.cjs) and Linux
 // (features/76-linux-control.cjs): screenshot-to-screen coordinates, the JSON-lines helper client,
-// clicks and app links. Pure, apart from the helper's child process.
+// clicks, app links and the clipboard (macOS uses it too). Pure, apart from the helper's child
+// process and wl-clipboard.
+const { spawn } = require("node:child_process");
+const path = require("node:path");
 
 /** Wide enough to read UI text, small enough for a vision model. */
 const MAX_WIDTH = 1280;
@@ -74,6 +77,86 @@ async function openUrl(shell, { url } = {}) {
   return { ok: true, url: value };
 }
 
+/** Most of the clipboard a bot gets back at once. */
+const MAX_CLIPBOARD = 50_000;
+
+/** Runs wl-copy (the text on stdin) or wl-paste (the text on stdout). */
+function runClipboardTool(file, args, input) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(file, args, { stdio: [input === undefined ? "ignore" : "pipe", input === undefined ? "pipe" : "ignore", "pipe"] });
+    let out = "";
+    let err = "";
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error("The clipboard didn't answer."));
+    }, 10_000);
+    child.stdout?.on("data", (d) => {
+      if (out.length < MAX_CLIPBOARD * 4) out += d;
+    });
+    child.stderr.on("data", (d) => {
+      err += d;
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    // wl-paste's output is all there once it closes; wl-copy forks to serve the text, so its exit counts.
+    child.on(input === undefined ? "close" : "exit", (code) => {
+      clearTimeout(timer);
+      if (input !== undefined) setTimeout(() => child.stderr.destroy(), 100); // wl-copy's server keeps it open
+      if (code === 0) resolve(out);
+      else reject(new Error(err.trim() || `${path.basename(file)} failed`));
+    });
+    if (input !== undefined) {
+      child.stdin.on("error", () => undefined);
+      child.stdin.end(input);
+    }
+  });
+}
+
+/**
+ * mac_clipboard: the clipboard's text, through Electron's clipboard on every desktop. On Wayland
+ * an app in the background can't reach the clipboard, so there it goes through wl-clipboard
+ * (wl-copy, wl-paste) when that's installed. tools: {copy, paste} file paths, or null.
+ */
+function createClipboard({ clipboard, tools = null, run = runClipboardTool }) {
+  async function electronRead() {
+    // Electron's clipboard is asynchronous (the web's clipboard API).
+    const value = await clipboard.readText();
+    if (value) return value;
+    const items = await Promise.resolve(clipboard.read?.()).catch(() => []);
+    return (items ?? []).some((item) => item.types?.length) ? null : "";
+  }
+  return async ({ action = "read", text } = {}) => {
+    if (action === "read") {
+      // wl-clipboard's own answers for an empty clipboard or one without text; anything else
+      // (it can't reach the desktop) falls back to Electron's clipboard.
+      const value = tools
+        ? await run(tools.paste, ["--no-newline", "--type", "text"]).catch((error) => {
+            if (/nothing is copied|no selection/i.test(error.message)) return "";
+            if (/no suitable type/i.test(error.message)) return null;
+            if (clipboard) return electronRead();
+            throw error;
+          })
+        : await electronRead();
+      if (value === null) return { text: "", length: 0, notText: true };
+      return { text: value.slice(0, MAX_CLIPBOARD), length: value.length, truncated: value.length > MAX_CLIPBOARD };
+    }
+    if (action === "write") {
+      const value = String(text ?? "");
+      if (value.length > MAX_TEXT) throw new Error(`Text is too long (max ${MAX_TEXT} characters).`);
+      if (tools) {
+        await run(tools.copy, ["--type", "text/plain;charset=utf-8"], value).catch((error) => {
+          if (!clipboard) throw error;
+          return clipboard.writeText(value);
+        });
+      } else await clipboard.writeText(value);
+      return { ok: true, length: value.length };
+    }
+    throw new Error("action must be read or write.");
+  };
+}
+
 function electronApi() {
   try {
     const e = require("electron");
@@ -83,4 +166,4 @@ function electronApi() {
   }
 }
 
-module.exports = { MAX_WIDTH, SUSPICIOUS_BYTES, MAX_TEXT, frameFor, defaultFrame, toScreenPoint, toImagePoint, clickPayload, createHelper, APP_LINK, openUrl, electronApi };
+module.exports = { MAX_WIDTH, SUSPICIOUS_BYTES, MAX_TEXT, MAX_CLIPBOARD, frameFor, defaultFrame, toScreenPoint, toImagePoint, clickPayload, createHelper, APP_LINK, openUrl, createClipboard, runClipboardTool, electronApi };

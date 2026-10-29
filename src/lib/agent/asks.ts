@@ -35,6 +35,7 @@ export const ASKS: Record<string, string> = {
   mac_open_app: "open",
   mac_applescript: "run an AppleScript",
   mac_browser: "use your browser",
+  mac_clipboard: "put text on your clipboard",
   mac_recipes: "save a recipe",
   mac_recipe_run: "run a recipe",
   delegate_to_cli_agent: "hand a task to a coding agent",

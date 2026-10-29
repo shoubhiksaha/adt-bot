@@ -21,7 +21,8 @@ const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { MAX_WIDTH, SUSPICIOUS_BYTES, MAX_TEXT, frameFor, defaultFrame, toScreenPoint, toImagePoint, clickPayload, createHelper, openUrl, electronApi } = require("../control-common.cjs");
+const { MAX_WIDTH, SUSPICIOUS_BYTES, MAX_TEXT, frameFor, defaultFrame, toScreenPoint, toImagePoint, clickPayload, createHelper, openUrl, createClipboard, electronApi } = require("../control-common.cjs");
+const { createLinuxBrowser, reachableBrowsers } = require("../linux-browser.cjs");
 
 let SUPPORTED = process.platform === "linux";
 
@@ -670,6 +671,8 @@ async function permissions() {
       screenshot: caps.screenshot ?? "none",
       missing: Array.isArray(caps.missing) ? caps.missing : [],
       ocr: Boolean(tesseractPath()),
+      browsers: [...new Set((await reachableBrowsers().catch(() => [])).map((b) => b.name))],
+      clipboard: session === "wayland" || process.env.WAYLAND_DISPLAY ? (wlClipboard() ? "wl-clipboard" : "missing") : "built-in",
       error: caps.error,
     },
     accessibility: caps.atspi === true,
@@ -680,10 +683,24 @@ async function permissions() {
   };
 }
 
+/** wl-copy and wl-paste on Wayland, where an app in the background can't reach the clipboard itself; else null. */
+function wlClipboard(env = process.env) {
+  if (env.XDG_SESSION_TYPE !== "wayland" && !env.WAYLAND_DISPLAY) return null;
+  const find = (name) => [...(env.PATH || "").split(":"), "/usr/bin", "/usr/local/bin"].map((d) => path.join(d || ".", name)).find((f) => fs.existsSync(f));
+  const copy = find("wl-copy");
+  const paste = find("wl-paste");
+  return copy && paste ? { copy, paste } : null;
+}
+
 exports.register = ({ app, ipcMain, shell, access, onStopAll, userData }) => {
   if (!SUPPORTED) return; // macOS and Windows have their own (70-mac-control.cjs, 75-win-control.cjs).
   if (userData) stateDir = path.join(userData, "linux-control");
   onStopAll?.(stopHelper);
+  const linuxBrowser = createLinuxBrowser({
+    front: async () => (await frontmost()).name ?? "",
+    openExternal: (url) => shell?.openExternal(url),
+  });
+  const clipboard = (payload) => createClipboard({ clipboard: electronApi()?.clipboard, tools: wlClipboard() })(payload);
   const handle = (name, fn) => ipcMain.handle(`adt:mac:${name}`, (_e, payload) => fn(payload ?? {}));
   /** Anything that acts on the PC is off in Sandbox mode (looking and permissions still work). */
   const act = (name, fn) =>
@@ -724,17 +741,22 @@ exports.register = ({ app, ipcMain, shell, access, onStopAll, userData }) => {
   act("quit", quitApp);
   act("openUrl", (payload) => openUrl(shell, payload));
   handle("findText", findText);
-  for (const name of ["applescript", "browser"]) {
-    act(name, () => {
-      throw new Error("This isn't available on Linux.");
-    });
-  }
-  app?.on?.("will-quit", stopHelper);
+  act("browser", (payload) => linuxBrowser({ ...payload, maxText: MAX_TEXT }));
+  act("clipboard", (payload) => clipboard(payload));
+  act("applescript", () => {
+    throw new Error("This isn't available on Linux.");
+  });
+  onStopAll?.(linuxBrowser.closeAll);
+  app?.on?.("will-quit", () => {
+    stopHelper();
+    linuxBrowser.closeAll();
+  });
 };
 
 exports.stopHelper = stopHelper;
 
 exports._test = {
+  wlClipboard,
   get SUPPORTED() {
     return SUPPORTED;
   },

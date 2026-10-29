@@ -41,6 +41,7 @@ export const RECIPE_TOOLS = new Set([
   "mac_scroll",
   "mac_browser",
   "mac_find_text",
+  "mac_clipboard",
 ]);
 
 export const MAX_STEPS = 25;

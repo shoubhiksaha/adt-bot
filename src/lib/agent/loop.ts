@@ -118,7 +118,7 @@ export const TOOL_GUIDANCE = [
 export const COMPUTER_GUIDANCE = [
   "Using apps on this Mac:",
   "- Work by name, not by pixels: mac_ui lists an app's controls with [id]s; act with mac_press and mac_set_text. They return the window afterwards, so don't look again unless something is missing. Typing into an app in the background leaves the user's window in front.",
-  "- Inside web pages (Safari, Chrome, Brave, Edge, Arc), use mac_browser: it reads and acts on the page itself, signed in as the user, even in the background. If it says the browser doesn't allow JavaScript from Apple Events, call mac_browser with action allow_page_access once (never AppleScript or menu clicks for this).",
+  "- Inside web pages (Safari, Chrome, Brave, Edge, Arc; on Linux Chrome, Chromium, Brave, Edge, Vivaldi), use mac_browser: it reads and acts on the page itself, signed in as the user, even in the background. If it says the browser doesn't allow JavaScript from Apple Events, call mac_browser with action allow_page_access once (never AppleScript or menu clicks for this). On Linux, if it says the browser doesn't let ADT Bot use its pages, pass the user the steps it gives; never switch that setting on yourself.",
   "- When mac_ui can't see something, mac_find_text reads the text on screen with positions for mac_click; use mac_screenshot only for what has no text (images, canvases, games) or to check something visual.",
   "- Check mac_recipes first: if a saved recipe does the task, run it with mac_recipe_run. After working out a multi-step task the user may ask for again, save it as a recipe (steps that worked, elements named by text, changing values as {{params}}).",
   "- Take the shortest path: app links (whatsapp://send?phone=…&text=…, mailto:, spotify:…) and keyboard shortcuts (mac_key) beat clicking through menus. mac_open_app opens an app and lists its controls in one step.",
@@ -133,7 +133,7 @@ export const COMPUTER_GUIDANCE = [
 /** Screen tools that only look: their result shows the app or screen as it is now. */
 const SCREEN_LOOKS = new Set(["mac_ui", "mac_screenshot", "mac_find_text"]);
 /** mac_ tools that don't act on the screen. */
-const OFF_SCREEN = new Set(["mac_recipes", "mac_list_apps"]);
+const OFF_SCREEN = new Set(["mac_recipes", "mac_list_apps", "mac_clipboard"]);
 
 /**
  * After a screen tool ran: the action whose result nobody has looked at yet (its name), or null once

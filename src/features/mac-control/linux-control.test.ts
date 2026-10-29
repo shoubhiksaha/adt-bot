@@ -211,7 +211,7 @@ describe("requests through a scripted helper", () => {
     linux.setHelper(fakeHelper({ ping: { locked: false, idle: 3, session: "wayland", atspi: true, input: "portal", screenshot: "portal", missing: [] } }).child);
     const perms = await linux.permissions();
     expect(perms).toMatchObject({ supported: true, platform: "linux", accessibility: true, screenRecording: "granted" });
-    expect(perms.linux).toEqual({ session: "wayland", atspi: true, input: "portal", screenshot: "portal", missing: [], ocr: expect.any(Boolean), error: undefined });
+    expect(perms.linux).toEqual({ session: "wayland", atspi: true, input: "portal", screenshot: "portal", missing: [], ocr: expect.any(Boolean), browsers: expect.any(Array), clipboard: expect.stringMatching(/^(wl-clipboard|missing)$/), error: undefined });
   });
 });
 
@@ -389,7 +389,7 @@ describe("feature registration", () => {
   it("registers the adt:mac:* channels only on Linux", () => {
     expect(Object.keys(register("darwin"))).toEqual([]);
     const channels = Object.keys(register("linux"));
-    for (const ch of ["ui", "press", "click", "key", "screenshot", "status", "connect", "applescript"]) expect(channels).toContain(`adt:mac:${ch}`);
+    for (const ch of ["ui", "press", "click", "key", "screenshot", "status", "connect", "applescript", "browser", "clipboard"]) expect(channels).toContain(`adt:mac:${ch}`);
   });
 
   it("acts on nothing in Sandbox mode, and keeps macOS-only tools clearly unavailable", async () => {
@@ -397,6 +397,14 @@ describe("feature registration", () => {
     expect(() => handlers["adt:mac:click"]({}, { x: 1, y: 1 })).toThrow(/Sandbox/);
     const open = register("linux");
     expect(() => open["adt:mac:applescript"]({}, {})).toThrow(/isn't available on Linux/);
+    expect(() => handlers["adt:mac:browser"]({}, { action: "read" })).toThrow(/Sandbox/);
+    expect(() => handlers["adt:mac:clipboard"]({}, { action: "write", text: "x" })).toThrow(/Sandbox/);
+  });
+
+  it("uses wl-clipboard on Wayland only, and only when both of its programs are there", () => {
+    const dir = join(__dirname, "..", "..", "..", "electron", "native");
+    expect(linux.wlClipboard({ XDG_SESSION_TYPE: "x11", PATH: dir })).toBeNull();
+    expect(linux.wlClipboard({ XDG_SESSION_TYPE: "wayland", PATH: "/nonexistent" })).toBeNull();
   });
 });
 
@@ -410,9 +418,13 @@ describe("renderer tools on Linux", () => {
     const by = Object.fromEntries(macTools.map((t) => [t.name, t]));
     expect(isLinuxDesktop()).toBe(true);
     expect(platformComputerNoun()).toBe("PC");
-    for (const name of ["mac_click", "mac_ui", "mac_screenshot", "mac_type", "mac_key", "mac_open_app", "mac_find_text"]) expect(by[name].available?.(ctx)).toBe(true);
-    for (const name of ["mac_applescript", "mac_browser"]) expect(by[name].available?.(ctx)).toBe(false);
+    for (const name of ["mac_click", "mac_ui", "mac_screenshot", "mac_type", "mac_key", "mac_open_app", "mac_find_text", "mac_browser", "mac_clipboard"]) expect(by[name].available?.(ctx)).toBe(true);
+    expect(by.mac_applescript.available?.(ctx)).toBe(false);
     expect(by.mac_find_text.description).toMatch(/this PC's main display .*Tesseract/);
+    expect(by.mac_browser.description).toMatch(/Chromium.*not Firefox/);
+    expect(by.mac_browser.description).toMatch(/remote debugging once/);
+    expect(by.mac_browser.description).not.toMatch(/Apple Events/);
+    expect(by.mac_clipboard.description).toMatch(/ctrl\+v/);
     expect(by.mac_click.available?.({ settings: { agent: { access: "sandbox" } } } as never)).toBe(false);
     setMacControlEnabled(false);
     vi.unstubAllGlobals();

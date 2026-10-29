@@ -228,15 +228,21 @@ Bots can do things as well as talk. Turn it on or off, and choose what needs you
   PowerShell helper bundled in the app (nothing to install or switch on). Listing, pressing and typing work by app and
   element name, in the background where possible, with the same approvals, risky-button rules, the wait-for-you
   guard and the Stop-all shortcut (Ctrl+Alt+Shift+Esc). Bots can't read or control apps running as administrator
-  unless ADT Bot runs as administrator too. AppleScript, in-browser page control and on-screen text recognition are
-  macOS-only. (New in 1.2.0 and not yet tried on a real Windows PC.)
+  unless ADT Bot runs as administrator too. AppleScript, in-browser page control and on-screen text recognition aren't
+  available on Windows. (New in 1.2.0 and not yet tried on a real Windows PC.)
 - **Control this PC** (desktop, Linux): bots read and press apps' controls through AT-SPI, Linux's accessibility
   system, on X11 and Wayland, with the same approvals and the Stop-all shortcut. On Wayland the desktop asks once
   before bots may use the pointer and keyboard (**Settings → Computer control → Pointer and keyboard → Allow
   control**). Chrome, VS Code and other Chromium-based apps show their controls only when started with accessibility
   on, so ADT Bot starts them that way when a bot opens them; one you opened yourself shows none until it's reopened.
   With Tesseract installed (`sudo apt install tesseract-ocr`), bots can also read text on screen and click it.
-  AppleScript and in-browser page control are macOS-only.
+  Bots use web pages in Chrome, Chromium, Brave, Edge, Vivaldi or Opera (version 144 or later), signed in as you,
+  once you type `chrome://inspect/#remote-debugging` into that browser's address bar and tick **Allow remote
+  debugging for this browser instance** (it stays on). The browser then asks you to Allow ADT Bot each time ADT Bot
+  connects; ADT Bot keeps the connection until 15 idle minutes or Stop all. Firefox isn't supported for this. On Wayland, the clipboard tool needs wl-clipboard (`sudo apt install wl-clipboard`).
+  AppleScript is macOS-only.
+- **Clipboard** (desktop: macOS, Windows, Linux): bots can read the text you copied and put text on the clipboard;
+  putting text there asks per your Computer access.
 - **Each bot's own computer** (desktop): a Docker container per bot with a persistent `/workspace`,
   resource limits, and an optional "no network" switch. See **Computers** in the sidebar.
 - **Rooms** (desktop): people on your network chat with each other and your bots from any browser by

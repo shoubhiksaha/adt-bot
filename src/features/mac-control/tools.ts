@@ -445,7 +445,8 @@ const PAGE_ACCESS_OFF = /^(?:Error: )?(.+?) doesn't let apps read pages until "A
 function browserRisk(args: Record<string, unknown>): ToolRisk {
   const action = str(args, "action", "read");
   // One of the browser's own settings, switched on once: asks under Restrictive access (with Always allow).
-  if (action === "allow_page_access") return "write";
+  // On Linux it only checks, and gives the user the steps.
+  if (action === "allow_page_access") return isMacDesktop() ? "write" : "read";
   if (BROWSER_READS.has(action)) return "read";
   if (action === "click") {
     const id = num(args, "id", NaN);
@@ -512,11 +513,15 @@ const browserTool = macTool({
   riskFor: browserRisk,
   timeoutMs: 60_000,
   description:
-    "Use web pages in the user's own browser (Safari, Chrome, Brave, Edge, Arc, Vivaldi), signed in as them, even with the browser in the background. " +
+    (DEVICE === "Mac"
+      ? "Use web pages in the user's own browser (Safari, Chrome, Brave, Edge, Arc, Vivaldi), signed in as them, even with the browser in the background. "
+      : "Use web pages in the user's own browser (Chrome, Chromium, Brave, Edge, Vivaldi, Opera; not Firefox), signed in as them, even with the browser in the background. ") +
     "action read: the page's links, buttons and fields with [id]s (content:true adds the page's text; query filters). click: by id or element text. type: into a field by id or element (its label/placeholder), " +
     "text = what to type, submit:true presses Enter; also picks options in drop-downs. scroll, back, forward, reload. tabs: list tabs; switch: tab index; open: a url in a new tab (starts the browser if it isn't open); go: a url in this tab. " +
     "Prefer this over mac_ui/screenshots for anything inside a web page. Defaults to the browser in front. " +
-    'allow_page_access: switches on the browser\'s "Allow JavaScript from Apple Events", which it needs before pages can be read (once per browser; never use AppleScript for it).',
+    (DEVICE === "Mac"
+      ? 'allow_page_access: switches on the browser\'s "Allow JavaScript from Apple Events", which it needs before pages can be read (once per browser; never use AppleScript for it).'
+      : "allow_page_access: checks whether the browser lets ADT Bot use its pages, and if not, gives the steps for the user (they switch on remote debugging once; only they should)."),
   parameters: {
     type: "object",
     properties: {
@@ -536,15 +541,19 @@ const browserTool = macTool({
     },
   },
   summary: (args) =>
-    str(args, "action") === "allow_page_access"
-      ? `Turn on page access in ${str(args, "browser") || "the browser"} (its "Allow JavaScript from Apple Events" setting), so bots can read and use pages there`
-      : "",
+    str(args, "action") !== "allow_page_access"
+      ? ""
+      : DEVICE === "Mac"
+        ? `Turn on page access in ${str(args, "browser") || "the browser"} (its "Allow JavaScript from Apple Events" setting), so bots can read and use pages there`
+        : `Check whether ${str(args, "browser") || "the browser"} lets bots use its pages`,
   async run(args, ctx) {
     const action = str(args, "action", "read");
     const source = { untrustedSource: "a web page in the browser" };
     if (action === "allow_page_access") {
-      const done = await mac<{ browser: string; already?: boolean }>("browser", { browser: str(args, "browser") || undefined, action });
-      return done.already ? `Page access was already on in ${done.browser}.` : `Turned on page access in ${done.browser} ("Allow JavaScript from Apple Events"). Pages there can be read now.`;
+      const done = await mac<{ browser: string; already?: boolean; steps?: string }>("browser", { browser: str(args, "browser") || undefined, action });
+      if (done.already) return `Page access was already on in ${done.browser}.`;
+      if (done.steps) return `${done.browser} doesn't let ADT Bot use its pages yet. ${done.steps} Then read the page again.`;
+      return `Turned on page access in ${done.browser} ("Allow JavaScript from Apple Events"). Pages there can be read now.`;
     }
     if (action === "read") {
       const offset = num(args, "offset", 0);
@@ -623,7 +632,39 @@ const browserTool = macTool({
               : action === "switch"
                 ? `Switched to tab ${num(args, "tab", 0)}.`
                 : `Done (${action}).`;
+    // Started just now (Linux): it can't be read until the user lets ADT Bot in.
+    if (done.started && DEVICE !== "Mac") return { content: `${what} Reading its pages needs the user's OK first: try action read, which says what to do if it isn't on yet.`, ...source };
     return { ...(await pageAfter(args, what)), ...source };
+  },
+});
+
+const clipboardTool = macTool({
+  name: "mac_clipboard",
+  risk: "read",
+  riskFor: (args) => (str(args, "action", "read") === "write" ? "write" : "read"),
+  description:
+    `Read or set the text on this ${DEVICE}'s clipboard. action read: what's copied now (e.g. after the user copied something, or after mac_key ${DEVICE === "Mac" ? "cmd" : "ctrl"}+c). ` +
+    `write: put text there, e.g. to paste it with mac_key ${DEVICE === "Mac" ? "cmd" : "ctrl"}+v. Text only. What the user copied may be private (a password): don't repeat it without reason.`,
+  parameters: {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ["read", "write"], description: "Default read" },
+      text: { type: "string", description: "write: the text to put on the clipboard" },
+    },
+  },
+  summary: (args) => (str(args, "action", "read") === "write" ? `Put this on the clipboard: "${str(args, "text").slice(0, 120)}${str(args, "text").length > 120 ? "…" : ""}"` : ""),
+  async run(args) {
+    if (str(args, "action", "read") === "write") {
+      const done = await mac<{ length: number }>("clipboard", { action: "write", text: str(args, "text") });
+      return `Put ${done.length} characters on the clipboard.`;
+    }
+    const got = await mac<{ text: string; length: number; truncated?: boolean; notText?: boolean }>("clipboard", { action: "read" });
+    if (got.notText) return "The clipboard holds something that isn't text (an image or files).";
+    if (!got.length) return "The clipboard is empty.";
+    return {
+      content: `The clipboard has ${got.length} characters${got.truncated ? ` (the first ${got.text.length} shown)` : ""}:\n${got.text}`,
+      untrustedSource: `the clipboard of this ${DEVICE}`,
+    };
   },
 });
 
@@ -762,11 +803,13 @@ const recipeRunTool = macTool({
   },
 });
 
-macTools.push(browserTool, findTextTool, recipesTool, recipeRunTool);
+macTools.push(browserTool, clipboardTool, findTextTool, recipesTool, recipeRunTool);
 
-// AppleScript and browser scripting are macOS-only; screen OCR is on macOS and Linux (Tesseract).
-const MAC_ONLY = new Set(["mac_applescript", "mac_browser"]);
+// AppleScript is macOS-only; web pages (AppleScript on macOS, the browser's debugging connection on
+// Linux) and screen OCR (Tesseract on Linux) are on macOS and Linux.
+const MAC_ONLY = new Set(["mac_applescript"]);
 for (const tool of macTools) if (MAC_ONLY.has(tool.name)) tool.available = macOnly;
+browserTool.available = (ctx) => (isMacDesktop() || isLinuxDesktop()) && available(ctx);
 findTextTool.available = (ctx) => (isMacDesktop() || isLinuxDesktop()) && available(ctx);
 
 for (const tool of macTools) registerTool(tool);

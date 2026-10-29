@@ -43,6 +43,7 @@ const LABELS: Record<string, string> = {
   mac_applescript: "Ran an AppleScript",
   mac_browser: "Used the browser",
   mac_find_text: "Read the screen",
+  mac_clipboard: "Used the clipboard",
   mac_recipes: "Recipes",
   mac_recipe_run: "Ran a recipe",
   create_routine: "Scheduled",

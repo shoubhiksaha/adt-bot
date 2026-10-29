@@ -272,6 +272,21 @@ function LinuxPermissions({
         status={l ? (l.ocr ? "Working" : "Optional: sudo apt install tesseract-ocr (Fedora: sudo dnf install tesseract)") : "Checking…"}
         use="lets bots find words on screen that apps don't report, and click them"
       />
+      <PermissionRow
+        ok={l?.browsers?.length ? true : null}
+        title="Web pages in your browser"
+        status={
+          l
+            ? l.browsers?.length
+              ? `Working in ${l.browsers.join(", ")}`
+              : 'Optional: in Chrome, Chromium, Brave, Edge or Vivaldi, type chrome://inspect/#remote-debugging into the address bar and tick "Allow remote debugging for this browser instance"'
+            : "Checking…"
+        }
+        use="lets bots read and use pages, signed in as you; the browser asks you to Allow ADT Bot each time it connects"
+      />
+      {l?.clipboard === "missing" && (
+        <PermissionRow ok={null} title="Clipboard" status="Optional: sudo apt install wl-clipboard" use="lets bots read what you copied and put text on the clipboard (Wayland needs it)" />
+      )}
       {l?.input === "portal-needs-approval" && (
         <p className="small muted">
           The desktop shows its own dialog: turn on <strong>Allow Remote Interaction</strong>, keep <strong>Remember This Selection</strong> ticked, and click
@@ -311,6 +326,7 @@ const VARIABLE_RISK: Record<string, string> = {
   mac_press: "asks per your policy; delete, pay, sign out and similar always ask",
   mac_set_text: "asks per your policy; typing into a terminal always asks",
   mac_browser: "reading runs on its own; clicking and typing ask per your policy; payments, deletes and passwords always ask",
+  mac_clipboard: "reading runs on its own; putting text there asks per your policy",
   mac_recipes: "listing runs on its own; saving asks per your policy",
   mac_recipe_run: "asks like its riskiest step",
   mac_applescript: "follows your Computer access; scripts that delete, quit apps, shut down, need admin rights or run risky shell commands always ask",
