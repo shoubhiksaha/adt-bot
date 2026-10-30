@@ -124,8 +124,9 @@ function createClipboard({ clipboard, tools = null, run = runClipboardTool }) {
     // Electron's clipboard is asynchronous (the web's clipboard API).
     const value = await clipboard.readText();
     if (value) return value;
+    // On macOS Electron always lists the find pasteboard's text too, even when nothing is copied.
     const items = await Promise.resolve(clipboard.read?.()).catch(() => []);
-    return (items ?? []).some((item) => item.types?.length) ? null : "";
+    return (items ?? []).some((item) => item.types?.some((type) => type !== "electron application/findtext")) ? null : "";
   }
   return async ({ action = "read", text } = {}) => {
     if (action === "read") {

@@ -935,6 +935,25 @@ def is_active(window):
     return s(Atspi.StateType.ACTIVE)
 
 
+def is_shell(pid, name=""):
+    return proc_name(pid).lower() in SHELLS or (name or "").lower() in SHELLS
+
+
+def shell_last(entries):
+    """
+    GNOME Shell's own window can say it's active while an app's window has the keyboard: the app
+    comes first, the shell only counts when no app's window is active (its menus, its dialogs).
+    """
+    return sorted(entries, key=lambda e: is_shell(e[2], e[1]))
+
+
+def shell_asking(entries=None):
+    """GNOME is asking the user something in a dialog it draws itself."""
+    if Atspi is None:
+        return False
+    return any(is_shell(pid, name) and is_guarded(pid) for _app, name, pid, _windows in (entries if entries is not None else apps_and_windows()))
+
+
 def window_title(window):
     return clip(safe(lambda: window.get_name(), "") or "", 120)
 
@@ -1033,7 +1052,10 @@ def find_window(app_name, window_name):
         raise Fail(f'"{app_name}" isn\'t running, or it doesn\'t show its controls to accessibility tools. Open it first (mac_open_app).', "not-running")
     if refused:
         raise Fail(*refused)
-    for _app, _name, pid, windows in entries:
+    # The desktop asking the user something (GNOME draws those dialogs itself) comes first.
+    if shell_asking(entries):
+        raise Fail(GUARDED_REFUSAL, "guarded")
+    for _app, _name, pid, windows in shell_last(entries):
         if is_self(pid):
             continue
         for w in windows:
@@ -1059,7 +1081,7 @@ def front_pid():
             pass
     if Atspi is None:
         return 0
-    for _app, _name, pid, windows in apps_and_windows():
+    for _app, _name, pid, windows in shell_last(apps_and_windows()):
         if any(is_active(w) for w in windows):
             return pid
     return 0
@@ -1350,7 +1372,7 @@ def target_pid(req):
 
 def require_other_app_in_front(what):
     front = front_pid()
-    if is_guarded(front):
+    if is_guarded(front) or (SESSION != "x11" and shell_asking()):
         raise Fail(GUARDED_REFUSAL, "guarded")
     if is_self(front):
         raise Fail(f'{what} would go to ADT Bot, which is in front. Name the app to send it to (app: "Text Editor"), or open it first.', "self")
@@ -1407,7 +1429,7 @@ def refuse_self_at(x, y, shielded=False):
             hit = None
         if hit and refusal_for(hit["pid"]):
             raise Fail(*refusal_for(hit["pid"]))
-    elif is_guarded(front_pid()):
+    elif is_guarded(front_pid()) or shell_asking():
         raise Fail(GUARDED_REFUSAL, "guarded")
     elif not shielded and is_self(front_pid()):
         # Wayland doesn't say where windows are: refuse while ADT Bot is the window in front.
@@ -1508,7 +1530,7 @@ def front_cmd():
             return {"name": clip(proc_name(w["pid"]), 80), "bundleId": None, "pid": w["pid"], "window": clip(w["title"], 120), "bounds": w["bounds"]}
     if Atspi is None:
         return None
-    for _app, name, pid, windows in apps_and_windows():
+    for _app, name, pid, windows in shell_last(apps_and_windows()):
         for w in windows:
             if is_active(w):
                 bounds = extents(w, Atspi.CoordType.SCREEN) if SESSION == "x11" else None

@@ -306,6 +306,24 @@ describe("ADT Bot's own windows", () => {
     expect(await linux.frontmost()).toMatchObject({ name: "Google Chrome" });
   });
 
+  it("says ADT Bot is in front on Wayland even before the helper has said which session it is", async () => {
+    linux.setSupported(true);
+    linux.resetFrame();
+    fakeWindow(true);
+    const { child, sent } = fakeHelper({ front: { name: "adt-bot", pid: 70, window: "ADT Bot", bounds: null } });
+    linux.setHelper(child);
+    vi.stubEnv("XDG_SESSION_TYPE", "wayland");
+    try {
+      expect(await linux.frontmost()).toMatchObject({ name: "ADT Bot", pid: process.pid });
+      expect(sent.some((r) => r.cmd === "front")).toBe(false);
+      vi.stubEnv("XDG_SESSION_TYPE", "x11");
+      vi.stubEnv("WAYLAND_DISPLAY", "");
+      expect(await linux.frontmost()).toMatchObject({ name: "adt-bot" });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("on Wayland refuses keys while ADT Bot has the keyboard, even with an app named", async () => {
     linux.setSupported(true);
     fakeWindow(true);
@@ -405,6 +423,23 @@ describe("feature registration", () => {
     const dir = join(__dirname, "..", "..", "..", "electron", "native");
     expect(linux.wlClipboard({ XDG_SESSION_TYPE: "x11", PATH: dir })).toBeNull();
     expect(linux.wlClipboard({ XDG_SESSION_TYPE: "wayland", PATH: "/nonexistent" })).toBeNull();
+  });
+
+  it("tells the bot when, on Wayland without wl-clipboard, the clipboard can't be reached from the background", async () => {
+    let held = "";
+    const clipboard = { readText: async () => held, writeText: async (t: string) => void (held = t), read: async () => [] };
+    const wayland = { XDG_SESSION_TYPE: "wayland" };
+    try {
+      linux.setBrowserWindow({ getFocusedWindow: () => null });
+      expect(await linux.linuxClipboard({ action: "write", text: "hi" }, { tools: null, env: wayland, clipboard })).toMatchObject({ ok: true, note: expect.stringMatching(/sudo apt install wl-clipboard/) });
+      expect(held).toBe("hi");
+      expect((await linux.linuxClipboard({ action: "write", text: "x" }, { tools: null, env: { XDG_SESSION_TYPE: "x11" }, clipboard })).note).toBeUndefined();
+      expect((await linux.linuxClipboard({ action: "read" }, { tools: null, env: wayland, clipboard })).note).toMatch(/^This may be out of date or empty/);
+      linux.setBrowserWindow({ getFocusedWindow: () => ({}) });
+      expect((await linux.linuxClipboard({ action: "write", text: "y" }, { tools: null, env: wayland, clipboard })).note).toBeUndefined();
+    } finally {
+      linux.setBrowserWindow(null);
+    }
   });
 });
 

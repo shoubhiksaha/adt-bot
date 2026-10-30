@@ -287,7 +287,9 @@ function adtFocused() {
  * so while an ADT Bot window has the keyboard, that's what's in front: the app list and the key tools agree.
  */
 function ownWindowInFront() {
-  return session === "wayland" && adtFocused();
+  // Before the helper has said which session this is, the environment does.
+  const wayland = session === "unknown" ? process.env.XDG_SESSION_TYPE === "wayland" || Boolean(process.env.WAYLAND_DISPLAY) : session === "wayland";
+  return wayland && adtFocused();
 }
 
 /**
@@ -692,6 +694,19 @@ function wlClipboard(env = process.env) {
   return copy && paste ? { copy, paste } : null;
 }
 
+/**
+ * mac_clipboard. On Wayland without wl-clipboard, ADT Bot only reaches the clipboard other apps use
+ * while its own window has the keyboard (seen on GNOME), so the bot is told when it doesn't.
+ */
+async function linuxClipboard(payload, { tools = wlClipboard(), env = process.env, clipboard = electronApi()?.clipboard } = {}) {
+  const done = await createClipboard({ clipboard, tools })(payload);
+  const wayland = env.XDG_SESSION_TYPE === "wayland" || Boolean(env.WAYLAND_DISPLAY);
+  if (wayland && !tools && !adtFocused()) {
+    done.note = `${payload.action === "write" ? "Other apps may not get it" : "This may be out of date or empty"}: on Wayland, without wl-clipboard, ADT Bot only reaches the clipboard while its own window is in front. Tell the user; installing wl-clipboard (sudo apt install wl-clipboard) fixes this.`;
+  }
+  return done;
+}
+
 exports.register = ({ app, ipcMain, shell, access, onStopAll, userData }) => {
   if (!SUPPORTED) return; // macOS and Windows have their own (70-mac-control.cjs, 75-win-control.cjs).
   if (userData) stateDir = path.join(userData, "linux-control");
@@ -700,7 +715,6 @@ exports.register = ({ app, ipcMain, shell, access, onStopAll, userData }) => {
     front: async () => (await frontmost()).name ?? "",
     openExternal: (url) => shell?.openExternal(url),
   });
-  const clipboard = (payload) => createClipboard({ clipboard: electronApi()?.clipboard, tools: wlClipboard() })(payload);
   const handle = (name, fn) => ipcMain.handle(`adt:mac:${name}`, (_e, payload) => fn(payload ?? {}));
   /** Anything that acts on the PC is off in Sandbox mode (looking and permissions still work). */
   const act = (name, fn) =>
@@ -742,7 +756,7 @@ exports.register = ({ app, ipcMain, shell, access, onStopAll, userData }) => {
   act("openUrl", (payload) => openUrl(shell, payload));
   handle("findText", findText);
   act("browser", (payload) => linuxBrowser({ ...payload, maxText: MAX_TEXT }));
-  act("clipboard", (payload) => clipboard(payload));
+  act("clipboard", (payload) => linuxClipboard(payload));
   act("applescript", () => {
     throw new Error("This isn't available on Linux.");
   });
@@ -757,6 +771,7 @@ exports.stopHelper = stopHelper;
 
 exports._test = {
   wlClipboard,
+  linuxClipboard,
   get SUPPORTED() {
     return SUPPORTED;
   },

@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -79,14 +79,19 @@ describe("finding the browser", () => {
   it("finds the browsers with remote debugging on (a port file and something listening), in normal, snap and Flatpak folders", async () => {
     const home = mkdtempSync(join(tmpdir(), "adt-lb-"));
     cleanup.push(() => rmSync(home, { recursive: true, force: true }));
-    const put = (dir: string, text: string) => {
+    // A running browser keeps SingletonLock -> "host-pid" in its profile; this test's own pid is alive.
+    const put = (dir: string, text: string, lock: string | null = `host-${process.pid}`) => {
       mkdirSync(join(home, dir), { recursive: true });
       writeFileSync(join(home, dir, "DevToolsActivePort"), text);
+      if (lock) symlinkSync(lock, join(home, dir, "SingletonLock"));
     };
     put(".config/google-chrome", "9222\n/devtools/browser/aaaaaaaa-1");
     put("snap/chromium/common/chromium", "9333\n/devtools/browser/bbbbbbbb-2");
-    put(".var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser", "9444\n/devtools/browser/cccccccc-3");
+    put(".var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser", "9444\n/devtools/browser/cccccccc-3", "host-2"); // Flatpak: its own pids
     put(".config/microsoft-edge", "9555\n/devtools/browser/dddddddd-4"); // left behind: nothing listens
+    // Quit (cleanly, or killed): the port file stays, while another browser listens on that port now.
+    put(".config/vivaldi", "9222\n/devtools/browser/eeeeeeee-5", null);
+    put(".config/opera", "9222\n/devtools/browser/ffffffff-6", "host-999999999");
     const found = await lb.reachableBrowsers({ home, configHome: join(home, ".config"), isListening: async (port: number) => port !== 9555 });
     expect(found.map((b: { name: string; port: number }) => [b.name, b.port])).toEqual([
       ["Google Chrome", 9222],
@@ -178,6 +183,14 @@ describe("mac_browser on Linux", () => {
     expect(await ready({ action: "allow_page_access" })).toEqual({ browser: "Brave", ok: true, already: true });
   });
 
+  it("gives the steps for the browser the user is in, when several are installed", async () => {
+    const which = (c: string) => (["google-chrome", "brave-browser"].includes(c) ? `/usr/bin/${c}` : null);
+    const inBrave = lb.createLinuxBrowser({ reach: async () => [], which, front: async () => "brave" });
+    expect((await inBrave({ action: "allow_page_access" })).browser).toBe("Brave");
+    const elsewhere = lb.createLinuxBrowser({ reach: async () => [], which, front: async () => "mousepad" });
+    expect((await elsewhere({ action: "allow_page_access" })).browser).toBe("Google Chrome");
+  });
+
   it("falls back to the default browser to open a page when no supported one is installed", async () => {
     const opened: string[] = [];
     const browser = lb.createLinuxBrowser({ reach: async () => [], which: () => null, openExternal: async (u: string) => opened.push(u) });
@@ -227,6 +240,9 @@ describe("mac_clipboard", () => {
   it("says when what's copied isn't text, and cuts very long text", async () => {
     const image = common.createClipboard({ clipboard: { readText: async () => "", read: async () => [{ types: ["image/png"] }] } });
     expect(await image({ action: "read" })).toEqual({ text: "", length: 0, notText: true });
+    // macOS: an empty clipboard still lists Electron's find text.
+    const empty = common.createClipboard({ clipboard: { readText: async () => "", read: async () => [{ types: ["electron application/findtext"] }] } });
+    expect(await empty({ action: "read" })).toEqual({ text: "", length: 0, truncated: false });
     const long = common.createClipboard({ clipboard: { readText: async () => "y".repeat(common.MAX_CLIPBOARD + 10), read: async () => [] } });
     expect(await long({ action: "read" })).toMatchObject({ length: common.MAX_CLIPBOARD + 10, truncated: true });
   });

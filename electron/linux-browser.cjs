@@ -93,8 +93,31 @@ function listening(port, timeoutMs = 800) {
   });
 }
 
+/**
+ * Whether the browser using this profile is running: Chromium keeps a SingletonLock link
+ * ("host-pid") there while it is. Its DevToolsActivePort stays behind when it quits, and another
+ * browser may be listening on the same port by then (9222 for all of them).
+ */
+function running(dir) {
+  let target;
+  try {
+    target = fs.readlinkSync(path.join(dir, "SingletonLock"));
+  } catch {
+    return false;
+  }
+  const pid = Number(/-(\d+)$/.exec(target)?.[1]);
+  // Flatpak browsers count their processes in their own sandbox.
+  if (!pid || dir.includes(`${path.sep}.var${path.sep}app${path.sep}`)) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
 /** Browsers that let ADT Bot connect right now: [{name, browser, dir, port, path}]. */
-async function reachableBrowsers({ only, home, configHome, isListening = listening } = {}) {
+async function reachableBrowsers({ only, home, configHome, isListening = listening, isRunning = running } = {}) {
   const found = [];
   for (const browser of only ? [only] : BROWSERS) {
     for (const dir of profileDirs(browser, { home, configHome })) {
@@ -105,7 +128,7 @@ async function reachableBrowsers({ only, home, configHome, isListening = listeni
         continue;
       }
       const at = parseActivePort(text);
-      if (at && (await isListening(at.port))) found.push({ name: browser.name, browser, dir, ...at });
+      if (at && isRunning(dir) && (await isListening(at.port))) found.push({ name: browser.name, browser, dir, ...at });
     }
   }
   return found;
@@ -351,7 +374,10 @@ function createLinuxBrowser(deps = {}) {
     const only = findBrowser(asked);
     const open = await reach({ only });
     if (open.length) return { browser: open[0].name, ok: true, already: true };
-    const name = only?.name ?? BROWSERS.find((b) => program(b))?.name;
+    // The one the user is using, if it's one of these; else the first installed.
+    const installed = BROWSERS.filter((b) => program(b));
+    const front = only ? "" : String((await deps.front?.().catch(() => "")) ?? "").toLowerCase();
+    const name = only?.name ?? (installed.find((b) => front && front.includes(brandOf(b.name))) ?? installed[0])?.name;
     if (!name) throw new Error(`None of the browsers ADT Bot can use is installed (${NAMES}).`);
     return { browser: name, ok: true, steps: howToAllow(name) };
   }
@@ -429,4 +455,4 @@ function createLinuxBrowser(deps = {}) {
   return browser;
 }
 
-module.exports = { BROWSERS, SWITCH_PAGE, SWITCH_LABEL, Cdp, createLinuxBrowser, findBrowser, profileDirs, parseActivePort, reachableBrowsers, listening, isTab };
+module.exports = { BROWSERS, SWITCH_PAGE, SWITCH_LABEL, Cdp, createLinuxBrowser, findBrowser, profileDirs, parseActivePort, reachableBrowsers, listening, running, isTab };

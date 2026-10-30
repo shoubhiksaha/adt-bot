@@ -655,14 +655,15 @@ const clipboardTool = macTool({
   summary: (args) => (str(args, "action", "read") === "write" ? `Put this on the clipboard: "${str(args, "text").slice(0, 120)}${str(args, "text").length > 120 ? "…" : ""}"` : ""),
   async run(args) {
     if (str(args, "action", "read") === "write") {
-      const done = await mac<{ length: number }>("clipboard", { action: "write", text: str(args, "text") });
-      return `Put ${done.length} characters on the clipboard.`;
+      const done = await mac<{ length: number; note?: string }>("clipboard", { action: "write", text: str(args, "text") });
+      return `Put ${done.length} characters on the clipboard.${done.note ? ` ${done.note}` : ""}`;
     }
-    const got = await mac<{ text: string; length: number; truncated?: boolean; notText?: boolean }>("clipboard", { action: "read" });
-    if (got.notText) return "The clipboard holds something that isn't text (an image or files).";
-    if (!got.length) return "The clipboard is empty.";
+    const got = await mac<{ text: string; length: number; truncated?: boolean; notText?: boolean; note?: string }>("clipboard", { action: "read" });
+    const note = got.note ? ` (${got.note})` : "";
+    if (got.notText) return `The clipboard holds something that isn't text (an image or files).${note}`;
+    if (!got.length) return `The clipboard is empty.${note}`;
     return {
-      content: `The clipboard has ${got.length} characters${got.truncated ? ` (the first ${got.text.length} shown)` : ""}:\n${got.text}`,
+      content: `The clipboard has ${got.length} characters${got.truncated ? ` (the first ${got.text.length} shown)` : ""}${note}:\n${got.text}`,
       untrustedSource: `the clipboard of this ${DEVICE}`,
     };
   },

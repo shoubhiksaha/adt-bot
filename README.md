@@ -239,7 +239,7 @@ Bots can do things as well as talk. Turn it on or off, and choose what needs you
   Bots use web pages in Chrome, Chromium, Brave, Edge, Vivaldi or Opera (version 144 or later), signed in as you,
   once you type `chrome://inspect/#remote-debugging` into that browser's address bar and tick **Allow remote
   debugging for this browser instance** (it stays on). The browser then asks you to Allow ADT Bot each time ADT Bot
-  connects; ADT Bot keeps the connection until 15 idle minutes or Stop all. Firefox isn't supported for this. On Wayland, the clipboard tool needs wl-clipboard (`sudo apt install wl-clipboard`).
+  connects; ADT Bot keeps the connection until 15 idle minutes or Stop all. Firefox isn't supported for this. On Wayland, the clipboard tool needs wl-clipboard (`sudo apt install wl-clipboard`); without it, ADT Bot only reaches the clipboard while its own window is in front, and tells the bot so.
   AppleScript is macOS-only.
 - **Clipboard** (desktop: macOS, Windows, Linux): bots can read the text you copied and put text on the clipboard;
   putting text there asks per your Computer access.
